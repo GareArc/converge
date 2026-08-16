@@ -1,0 +1,7 @@
+# Local-only working files (plans, design docs)
+docs/superpowers/
+
+# Go build/test artifacts
+*.test
+*.out
+/bin/
