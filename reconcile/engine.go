@@ -97,7 +97,7 @@ func (b *tokenBucket) wait(ctx context.Context) error {
 type config struct {
 	name             string
 	rec              Reconciler
-	triggers         []any
+	triggers         []Trigger
 	concurrency      int
 	runMode          converge.RunMode
 	deadLetterAfter  int
