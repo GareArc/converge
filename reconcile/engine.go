@@ -377,3 +377,135 @@ func (e *engine) key(parts ...string) string {
 	elems = append(elems, parts...)
 	return strings.Join(elems, "/")
 }
+
+func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
+	if err := e.bind(deps); err != nil {
+		return err
+	}
+	defer func() {
+		e.mu.Lock()
+		e.queue = nil
+		e.mu.Unlock()
+	}()
+	if e.cfg.runMode == converge.OnAllReplicas {
+		e.runActive(ctx, nil)
+		return nil
+	}
+	return e.leaseLoop(ctx)
+}
+
+func (e *engine) bind(deps converge.JobDeps) error {
+	e.deps = deps
+	if e.cfg.runMode == converge.OnOneReplica && deps.Lease == nil {
+		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.name)
+	}
+	for _, t := range e.cfg.triggers {
+		switch tr := t.(type) {
+		case *scheduleTrigger:
+			if deps.KV == nil {
+				return fmt.Errorf("reconcile: job %q: Schedule needs Options.KV", e.cfg.name)
+			}
+		case *messageTrigger:
+			if err := tr.bind(e); err != nil {
+				return err
+			}
+		}
+	}
+	return e.bindCore(deps)
+}
+
+func (e *engine) leaseLoop(ctx context.Context) error {
+	name := e.key("lease")
+	retry := e.deps.LeaseTTL / 3
+	for {
+		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)
+		e.markReady()
+		if err == nil && ok {
+			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.name, Acquired: true})
+			e.runActive(ctx, h)
+			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.name, Acquired: false})
+			if ctx.Err() != nil {
+				return nil
+			}
+			e.queue.reset()
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-e.deps.Clock.After(retry):
+		}
+	}
+}
+
+func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
+	intake, stopIntake := context.WithCancel(ctx)
+	defer stopIntake()
+	hctx, stopHandlers := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopHandlers()
+
+	var aux sync.WaitGroup
+	if h != nil {
+		aux.Add(1)
+		go func() {
+			defer aux.Done()
+			e.heartbeat(intake, h, stopIntake, stopHandlers)
+		}()
+	}
+	for i, t := range e.cfg.triggers {
+		aux.Add(1)
+		go func(i int, t Trigger) {
+			defer aux.Done()
+			e.runTrigger(intake, i, t)
+		}(i, t)
+	}
+	var runs sync.WaitGroup
+	aux.Add(1)
+	go func() {
+		defer aux.Done()
+		e.dispatch(intake, hctx, &runs)
+	}()
+	e.markReady()
+
+	<-intake.Done()
+	aux.Wait()
+	if ctx.Err() != nil {
+		drained := make(chan struct{})
+		go func() {
+			runs.Wait()
+			close(drained)
+		}()
+		select {
+		case <-drained:
+		case <-e.deps.Clock.After(e.deps.DrainTimeout):
+			stopHandlers()
+			<-drained
+		}
+	} else {
+		stopHandlers()
+		runs.Wait()
+	}
+	if h != nil {
+		h.Release(context.WithoutCancel(ctx))
+	}
+}
+
+func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stopIntake, stopHandlers func()) {
+	interval := e.deps.LeaseTTL / 3
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-h.Done():
+			stopHandlers()
+			stopIntake()
+			return
+		case <-e.deps.Clock.After(interval):
+			if err := h.Extend(ctx, e.deps.LeaseTTL); err != nil {
+				stopHandlers()
+				stopIntake()
+				return
+			}
+		}
+	}
+}
