@@ -85,4 +85,27 @@ func Lease(t *testing.T, open func(t *testing.T) converge.Lease, o LeaseOptions)
 		}
 		_ = h2
 	})
+
+	t.Run("release after expiry must not disturb the successor", func(t *testing.T) {
+		if o.Advance == nil {
+			t.Skip("no clock control")
+		}
+		l := open(t)
+		h1, ok, err := l.TryAcquire(ctx, "job", ttl)
+		if err != nil || !ok {
+			t.Fatalf("first acquire = %v, %v", ok, err)
+		}
+		o.Advance(ttl + time.Second)
+		h2, ok, err := l.TryAcquire(ctx, "job", ttl)
+		if err != nil || !ok {
+			t.Fatalf("takeover after expiry = %v, %v", ok, err)
+		}
+		if err := h1.Release(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, _ := l.TryAcquire(ctx, "job", ttl); ok {
+			t.Fatal("stale release must not free the successor's claim")
+		}
+		_ = h2
+	})
 }

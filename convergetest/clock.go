@@ -39,10 +39,9 @@ func (c *Clock) After(d time.Duration) <-chan time.Time {
 func (c *Clock) Advance(d time.Duration) {
 	c.mu.Lock()
 	c.now = c.now.Add(d)
-	now := c.now
 	var keep, fire []clockWaiter
 	for _, w := range c.waiters {
-		if w.at.After(now) {
+		if w.at.After(c.now) {
 			keep = append(keep, w)
 		} else {
 			fire = append(fire, w)
@@ -51,6 +50,6 @@ func (c *Clock) Advance(d time.Duration) {
 	c.waiters = keep
 	c.mu.Unlock()
 	for _, w := range fire {
-		w.ch <- now
+		w.ch <- w.at
 	}
 }
