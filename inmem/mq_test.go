@@ -74,3 +74,29 @@ func recv(t *testing.T, ch chan converge.Delivery) converge.Delivery {
 		return nil
 	}
 }
+
+func TestPublishedMessageIsIsolatedFromCaller(t *testing.T) {
+	clock := convergetest.NewClock(time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC))
+	mq := inmem.NewMQWithClock(clock)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := make(chan converge.Delivery, 16)
+	go mq.Consume(ctx, "q", func(d converge.Delivery) { got <- d })
+	payload := []byte("original")
+	headers := map[string]string{"k": "v"}
+	if err := mq.Publish(ctx, "q", converge.Message{Headers: headers, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	payload[0] = 'X'
+	headers["k"] = "mutated"
+	d := recv(t, got)
+	m := d.Message()
+	if string(m.Payload) != "original" || m.Headers["k"] != "v" {
+		t.Fatalf("delivery sees caller mutations: %q %q", m.Payload, m.Headers["k"])
+	}
+	m.Payload[0] = 'Y'
+	if string(d.Message().Payload) != "original" {
+		t.Fatal("consumer mutation leaked back into the store")
+	}
+	d.Ack(ctx)
+}

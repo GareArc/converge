@@ -171,14 +171,14 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
 		mustPublish(t, base, "q", converge.Message{Payload: []byte("before")})
-		gotA := make(chan converge.Delivery, 16)
-		gotB := make(chan converge.Delivery, 16)
+		gotA := make(chan converge.Delivery, 64)
+		gotB := make(chan converge.Delivery, 64)
 		go bc.ConsumeBroadcast(ctx, "q", func(d converge.Delivery) { gotA <- d })
 		go bc.ConsumeBroadcast(ctx, "q", func(d converge.Delivery) { gotB <- d })
-		time.Sleep(20 * time.Millisecond)
+		awaitBroadcastAttach(t, base, "q", gotA, gotB)
 		mustPublish(t, base, "q", converge.Message{Payload: []byte("after")})
 		for _, ch := range []chan converge.Delivery{gotA, gotB} {
-			d := recvDelivery(t, ch)
+			d := recvBroadcast(t, ch)
 			if string(d.Message().Payload) != "after" {
 				t.Fatalf("got %q; pre-subscribe messages must not be delivered", d.Message().Payload)
 			}
@@ -245,5 +245,48 @@ func assertNoDelivery(t *testing.T, ch chan converge.Delivery) {
 	case d := <-ch:
 		t.Fatalf("unexpected delivery: %+v", d.Message())
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+const probeKind = "converge.portcheck.probe"
+
+func awaitBroadcastAttach(t *testing.T, mq converge.MQ, queue string, subs ...chan converge.Delivery) {
+	t.Helper()
+	attached := make([]bool, len(subs))
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		remaining := 0
+		for i, ch := range subs {
+			if attached[i] {
+				continue
+			}
+			select {
+			case d := <-ch:
+				if d.Message().Kind != probeKind {
+					t.Fatalf("pre-subscribe message delivered during attach: %q", d.Message().Payload)
+				}
+				attached[i] = true
+			default:
+				remaining++
+			}
+		}
+		if remaining == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("broadcast subscribers never attached")
+		}
+		mustPublish(t, mq, queue, converge.Message{Kind: probeKind})
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func recvBroadcast(t *testing.T, ch chan converge.Delivery) converge.Delivery {
+	t.Helper()
+	for {
+		d := recvDelivery(t, ch)
+		if d.Message().Kind != probeKind {
+			return d
+		}
 	}
 }

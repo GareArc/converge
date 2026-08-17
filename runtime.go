@@ -42,28 +42,33 @@ func init() {
 }
 
 func (rt *Runtime) register(j job) error {
+	name := j.Name()
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.frozen {
-		return fmt.Errorf("converge: register %q: runtime already running", j.Name())
+		return fmt.Errorf("converge: register %q: runtime already running", name)
 	}
-	if j.Name() == "" {
+	if name == "" {
 		return errors.New("converge: job name must not be empty")
 	}
-	if _, dup := rt.jobs[j.Name()]; dup {
-		return fmt.Errorf("converge: duplicate job name %q", j.Name())
+	if _, dup := rt.jobs[name]; dup {
+		return fmt.Errorf("converge: duplicate job name %q", name)
 	}
-	rt.jobs[j.Name()] = j
-	rt.order = append(rt.order, j.Name())
+	rt.jobs[name] = j
+	rt.order = append(rt.order, name)
 	return nil
 }
 
 func (rt *Runtime) Stats() []JobStats {
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	out := make([]JobStats, 0, len(rt.order))
+	jobs := make([]job, 0, len(rt.order))
 	for _, name := range rt.order {
-		out = append(out, rt.jobs[name].Stats())
+		jobs = append(jobs, rt.jobs[name])
+	}
+	rt.mu.Unlock()
+	out := make([]JobStats, 0, len(jobs))
+	for _, j := range jobs {
+		out = append(out, j.Stats())
 	}
 	return out
 }

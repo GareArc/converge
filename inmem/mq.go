@@ -1,14 +1,22 @@
 package inmem
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/GareArc/converge"
 )
+
+func cloneMessage(m converge.Message) converge.Message {
+	m.Headers = maps.Clone(m.Headers)
+	m.Payload = bytes.Clone(m.Payload)
+	return m
+}
 
 const DefaultVisibility = 30 * time.Second
 
@@ -65,7 +73,7 @@ func (q *MQ) publish(queue string, m converge.Message, delay time.Duration) erro
 	now := q.clock.Now()
 	qu := q.ensureQueue(queue)
 	qu.seq++
-	s := storedMsg{id: qu.seq, m: m, enqueuedAt: now, notBefore: now.Add(delay)}
+	s := storedMsg{id: qu.seq, m: cloneMessage(m), enqueuedAt: now, notBefore: now.Add(delay)}
 	qu.backlog = append(qu.backlog, s)
 	for _, g := range qu.groups {
 		g.pending = append(g.pending, &mqMsg{storedMsg: s, availableAt: s.notBefore})
@@ -155,7 +163,7 @@ type mqDelivery struct {
 	attempt int
 }
 
-func (d *mqDelivery) Message() converge.Message { return d.msg.m }
+func (d *mqDelivery) Message() converge.Message { return cloneMessage(d.msg.m) }
 func (d *mqDelivery) Attempt() int              { return d.attempt }
 func (d *mqDelivery) EnqueuedAt() time.Time     { return d.msg.enqueuedAt }
 
@@ -244,7 +252,7 @@ type mqSub struct {
 
 type broadcastDelivery struct{ s storedMsg }
 
-func (d broadcastDelivery) Message() converge.Message                   { return d.s.m }
+func (d broadcastDelivery) Message() converge.Message                   { return cloneMessage(d.s.m) }
 func (d broadcastDelivery) Attempt() int                                { return 1 }
 func (d broadcastDelivery) EnqueuedAt() time.Time                       { return d.s.enqueuedAt }
 func (d broadcastDelivery) Ack(context.Context) error                   { return nil }
