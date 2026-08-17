@@ -2,11 +2,17 @@ package reconcile
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math/rand"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/internal/mw"
+	"github.com/GareArc/converge/internal/sig"
 )
 
 const (
@@ -86,4 +92,270 @@ func (b *tokenBucket) wait(ctx context.Context) error {
 		case <-b.clock.After(need):
 		}
 	}
+}
+
+type config struct {
+	name             string
+	rec              Reconciler
+	triggers         []any
+	concurrency      int
+	runMode          converge.RunMode
+	deadLetterAfter  int
+	versions         VersionSource
+	rateLimit        converge.Rate
+	middleware       []converge.Middleware
+	allowUnscheduled bool
+	paused           bool
+	single           bool
+}
+
+type engine struct {
+	cfg       config
+	deps      converge.JobDeps
+	limit     *tokenBucket
+	handler   converge.Handler
+	ready     chan struct{}
+	readyOnce sync.Once
+
+	mu          sync.Mutex
+	queue       *wakeQueue
+	lastSuccess time.Time
+	consecFails int
+}
+
+func (e *engine) Name() string { return e.cfg.name }
+
+func (e *engine) Ready() <-chan struct{} { return e.ready }
+
+func (e *engine) markReady() { e.readyOnce.Do(func() { close(e.ready) }) }
+
+func (e *engine) bindCore(deps converge.JobDeps) error {
+	e.deps = deps
+	mws := append(slices.Clone(deps.Middleware), e.cfg.middleware...)
+	final := func(ctx context.Context, r converge.Run) error {
+		return e.invoke(ctx, ID(r.ID))
+	}
+	e.handler = mw.Chain(mws, final)
+	e.limit = newTokenBucket(e.cfg.rateLimit, deps.Clock)
+	e.mu.Lock()
+	e.queue = newWakeQueue(deps.Clock, wakePolicy{
+		deadLetterAfter: e.cfg.deadLetterAfter,
+		backoff:         backoffAfter,
+		floor:           floorDelay,
+	}, e.cfg.paused)
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *engine) wakeQueueRef() *wakeQueue {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.queue
+}
+
+func (e *engine) Poke(id string) error {
+	q := e.wakeQueueRef()
+	if q == nil {
+		return fmt.Errorf("reconcile: job %q is not running", e.cfg.name)
+	}
+	if id == "" && !e.cfg.single {
+		return fmt.Errorf("reconcile: job %q: poke needs an id", e.cfg.name)
+	}
+	e.report(ID(id), q.wake(ID(id), wakePoke))
+	return nil
+}
+
+func (e *engine) Stats() converge.JobStats {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s := converge.JobStats{
+		Job:              e.cfg.name,
+		Surface:          converge.SurfaceReconcile,
+		RunMode:          e.cfg.runMode,
+		LastSuccess:      e.lastSuccess,
+		ConsecutiveFails: e.consecFails,
+	}
+	if e.queue != nil {
+		c := e.queue.counts()
+		s.QueueDepth = c.depth
+		s.Parked = c.parked
+	}
+	return s
+}
+
+func (e *engine) hint(id ID) {
+	if id == "" && !e.cfg.single {
+		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
+		return
+	}
+	e.report(id, e.queue.wake(id, wakeHint))
+}
+
+func (e *engine) report(id ID, res wakeResult) {
+	var reason converge.WakeDiscardReason
+	switch res {
+	case wakeDroppedParked:
+		reason = converge.DiscardParked
+	case wakeDroppedPaused:
+		reason = converge.DiscardPaused
+	case wakeDroppedOverflow:
+		reason = converge.DiscardOverflow
+	default:
+		return
+	}
+	e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: reason})
+}
+
+func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.WaitGroup) {
+	slots := make(chan struct{}, e.cfg.concurrency)
+	for {
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		if err := e.limit.wait(ctx); err != nil {
+			return
+		}
+		id, ok := e.awaitDue(ctx)
+		if !ok {
+			return
+		}
+		wg.Add(1)
+		go func(id ID) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			e.runOne(hctx, id)
+		}(id)
+	}
+}
+
+func (e *engine) awaitDue(ctx context.Context) (ID, bool) {
+	for {
+		if id, ok := e.queue.next(e.deps.Clock.Now()); ok {
+			return id, true
+		}
+		var timer <-chan time.Time
+		if due, ok := e.queue.nextDue(); ok {
+			timer = e.deps.Clock.After(due.Sub(e.deps.Clock.Now()))
+		}
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-e.queue.notify:
+		case <-timer:
+		}
+	}
+}
+
+func (e *engine) runOne(hctx context.Context, id ID) {
+	start := e.deps.Clock.Now()
+	run := converge.Run{Job: e.cfg.name, Surface: converge.SurfaceReconcile, ID: string(id)}
+	err := e.handler(hctx, run)
+	e.settle(hctx, id, err, e.deps.Clock.Now().Sub(start))
+}
+
+func (e *engine) invoke(ctx context.Context, id ID) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("reconcile: %s: panic: %v", e.cfg.name, r)
+		}
+	}()
+	return e.cfg.rec.Reconcile(ctx, id)
+}
+
+func (e *engine) settle(hctx context.Context, id ID, err error, took time.Duration) {
+	var (
+		kind  finishKind
+		delay time.Duration
+		wrong converge.Surface
+	)
+	s, isSig := sig.FromError(err)
+	switch {
+	case err == nil:
+		kind = finishSuccess
+	case isSig && s.ControlSurface() != converge.SurfaceReconcile:
+		kind = finishForcePark
+		wrong = s.ControlSurface()
+	case isSig:
+		if d, ok := checkAgainDelay(s); ok {
+			kind = finishDelay
+			delay = d
+		} else if errors.Is(s, ErrOutdated) {
+			kind = finishDelay
+		} else {
+			kind = finishFailure
+		}
+	case hctx.Err() != nil:
+		kind = finishNeutral
+	default:
+		kind = finishFailure
+	}
+	res := e.queue.finish(id, kind, delay)
+	if !res.settled {
+		return
+	}
+	e.record(kind)
+	if kind == finishNeutral {
+		return
+	}
+	e.deps.Observer.Observe(converge.RunCompleted{
+		Job:      e.cfg.name,
+		Surface:  converge.SurfaceReconcile,
+		ID:       string(id),
+		Attempt:  res.attempt,
+		Duration: took,
+		Err:      runErr(kind, err),
+	})
+	if wrong != 0 {
+		e.deps.Observer.Observe(converge.WrongSurfaceSignal{Job: e.cfg.name, ID: string(id), Surface: wrong})
+	}
+	if res.fallback {
+		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.name, ID: string(id), Consecutive: noBackoffLimit})
+	}
+	if res.parked {
+		e.deps.Observer.Observe(converge.IDDeadLettered{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})
+	}
+	if res.droppedHint {
+		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardParked})
+	}
+}
+
+func checkAgainDelay(s sig.Signal) (time.Duration, bool) {
+	switch v := s.(type) {
+	case CheckAgain:
+		return v.In, true
+	case *CheckAgain:
+		return v.In, true
+	}
+	return 0, false
+}
+
+func runErr(kind finishKind, err error) error {
+	if kind == finishSuccess || kind == finishDelay {
+		return nil
+	}
+	return err
+}
+
+func (e *engine) record(kind finishKind) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch kind {
+	case finishSuccess, finishDelay:
+		e.lastSuccess = e.deps.Clock.Now()
+		e.consecFails = 0
+	case finishFailure, finishForcePark:
+		e.consecFails++
+	}
+}
+
+func (e *engine) key(parts ...string) string {
+	elems := make([]string, 0, len(parts)+4)
+	if e.deps.Namespace != "" {
+		elems = append(elems, e.deps.Namespace)
+	}
+	elems = append(elems, "converge", "reconcile", e.cfg.name)
+	elems = append(elems, parts...)
+	return strings.Join(elems, "/")
 }
