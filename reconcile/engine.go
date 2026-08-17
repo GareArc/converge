@@ -404,6 +404,9 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	if e.cfg.runMode == converge.OnOneReplica && deps.Lease == nil {
 		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.name)
 	}
+	if e.cfg.versions != nil && deps.KV == nil {
+		return fmt.Errorf("reconcile: job %q: Versions needs Options.KV", e.cfg.name)
+	}
 	for _, t := range e.cfg.triggers {
 		switch tr := t.(type) {
 		case *scheduleTrigger:

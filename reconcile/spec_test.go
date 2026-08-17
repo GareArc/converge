@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/inmem"
 )
 
 func okSpec() Spec {
@@ -58,7 +59,8 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"zero id source", func(s *Spec) { s.Triggers = []Trigger{Schedule(IDSource{}, Every(time.Hour))} }, "IDSource"},
 		{"bad cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Every(-time.Second))} }, "positive"},
 		{"zero cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cadence{})} }, "Cadence"},
-		{"versions not wired", func(s *Spec) { s.Versions = fakeVersions{} }, "not supported"},
+		{"tracker namespace mismatch", func(s *Spec) { s.Versions = NewTracker(inmem.NewKV(), "other-job") }, "must equal Spec.Name"},
+		{"misconstructed tracker", func(s *Spec) { s.Versions = NewTracker(nil, "job") }, "needs a KV"},
 		{"bad cron", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cron("@daily", CronOpts{}))} }, "descriptors"},
 		{"message trigger without queue", func(s *Spec) {
 			s.AllowUnscheduled = true
@@ -98,6 +100,18 @@ func TestSpecValidationMatrix(t *testing.T) {
 type fakeVersions struct{}
 
 func (fakeVersions) Latest(context.Context, ID) (Version, error) { return 0, nil }
+
+func TestVersionsAccepted(t *testing.T) {
+	base := okSpec()
+	base.Versions = NewTracker(inmem.NewKV(), base.Name)
+	if _, err := newEngine(base); err != nil {
+		t.Fatalf("matching Tracker namespace rejected: %v", err)
+	}
+	base.Versions = fakeVersions{}
+	if _, err := newEngine(base); err != nil {
+		t.Fatalf("non-Tracker VersionSource rejected: %v", err)
+	}
+}
 
 func TestNewEngineAppliesDefaults(t *testing.T) {
 	e, err := newEngine(okSpec())

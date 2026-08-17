@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -106,6 +107,23 @@ func TestRunRejectsBadDeps(t *testing.T) {
 	deps2 := converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &eventRecorder{}}
 	if err := e2.Run(context.Background(), deps2); err == nil {
 		t.Fatal("Schedule without KV must fail Run")
+	}
+}
+
+func TestVersionsRequireKV(t *testing.T) {
+	s := Spec{
+		Name:             "job",
+		Reconciler:       Func(func(context.Context, ID) error { return nil }),
+		AllowUnscheduled: true,
+		Versions:         fakeVersions{},
+	}
+	e, err := newEngine(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = e.bind(converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &eventRecorder{}})
+	if err == nil || !strings.Contains(err.Error(), "Versions needs Options.KV") {
+		t.Fatalf("bind without KV = %v", err)
 	}
 }
 
