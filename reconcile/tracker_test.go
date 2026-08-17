@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 
@@ -123,5 +124,20 @@ func TestMisconstructedTrackerErrorsOnUse(t *testing.T) {
 		if _, err := tr.Latest(ctx, "a"); err == nil {
 			t.Fatal("misconstructed Tracker must error, not panic")
 		}
+	}
+}
+
+func TestMarkChangedOverflowErrors(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	ctx := context.Background()
+	if err := kv.Set(ctx, "converge/tracker/job/a", []byte("18446744073709551615"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.MarkChanged(ctx, "a"); err == nil {
+		t.Fatal("MarkChanged at MaxUint64 must error, not wrap to 0")
+	}
+	if v, err := tr.Latest(ctx, "a"); err != nil || v != Version(math.MaxUint64) {
+		t.Fatalf("Latest after refused overflow = %d, %v", v, err)
 	}
 }

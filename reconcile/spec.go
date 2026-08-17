@@ -90,6 +90,9 @@ func newEngine(s Spec) (*engine, error) {
 		}
 	}
 	if t, ok := s.Versions.(*Tracker); ok {
+		if t == nil {
+			return nil, fail("Versions must not be a nil *Tracker")
+		}
 		if t.err != nil {
 			return nil, fmt.Errorf("reconcile: job %q: %w", s.Name, t.err)
 		}

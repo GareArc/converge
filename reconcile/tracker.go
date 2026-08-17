@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -61,6 +62,9 @@ func (t *Tracker) MarkChanged(ctx context.Context, id ID) (Version, error) {
 		cur, raw, err := t.read(ctx, id)
 		if err != nil {
 			return 0, err
+		}
+		if cur == math.MaxUint64 {
+			return 0, fmt.Errorf("reconcile: tracker %q: version overflow for id %q", t.namespace, string(id))
 		}
 		next := cur + 1
 		ok, err := t.kv.SetCAS(ctx, t.key(id), raw, []byte(strconv.FormatUint(uint64(next), 10)))

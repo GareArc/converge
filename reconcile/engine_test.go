@@ -656,13 +656,12 @@ func TestMidRunVersionBumpStillRevives(t *testing.T) {
 		t.Fatal(err)
 	}
 	var mu sync.Mutex
-	fail := true
 	runs := 0
 	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(hctx context.Context, id ID) error {
 		mu.Lock()
 		defer mu.Unlock()
 		runs++
-		if fail {
+		if runs == 1 {
 			if _, err := tr.MarkChanged(hctx, id); err != nil {
 				return err
 			}
@@ -671,13 +670,78 @@ func TestMidRunVersionBumpStillRevives(t *testing.T) {
 		return nil
 	})
 	te.e.hint(ctx, "a")
-	await(t, func() bool { return te.e.Stats().Parked == 1 })
-	mu.Lock()
-	fail = false
-	mu.Unlock()
-	te.e.hint(ctx, "a")
 	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
 	await(t, func() bool { return te.e.Stats().Parked == 0 })
+	await(t, func() bool {
+		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		return err == nil && !ok
+	})
+	if n := te.rec.count(func(e converge.Event) bool {
+		_, ok := e.(converge.IDParked)
+		return ok
+	}); n != 1 {
+		t.Fatalf("park-then-revive must still event the park: got %d IDParked", n)
+	}
+}
+
+func TestInvalidMarkBlocksVersionRevival(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	ctx := context.Background()
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	runs := 0
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
+		mu.Lock()
+		runs++
+		mu.Unlock()
+		return errors.New("boom")
+	})
+	te.e.hint(ctx, "a")
+	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	await(t, func() bool {
+		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		return err == nil && ok
+	})
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := kv.Delete(ctx, te.e.parkKey("a")); err != nil {
+		t.Fatal(err)
+	}
+	te.e.hint(ctx, "a")
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	if err := kv.Set(ctx, te.e.parkKey("a"), []byte("junk"), 0); err != nil {
+		t.Fatal(err)
+	}
+	te.e.hint(ctx, "a")
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	assertStable(t, func() bool { return te.e.Stats().Parked == 1 })
+}
+
+func TestActivationClearsMarkForActiveID(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	kv := inmem.NewKVWithClock(clock)
+	e := &engine{cfg: config{name: "job", concurrency: 1, rec: Func(func(context.Context, ID) error { return nil })}, ready: make(chan struct{})}
+	if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &eventRecorder{}, Clock: clock}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := kv.Set(ctx, e.parkKey("a"), []byte("0"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Poke("a"); err != nil {
+		t.Fatal(err)
+	}
+	e.loadParked(ctx)
+	if _, ok, err := kv.Get(ctx, e.parkKey("a")); err != nil || ok {
+		t.Fatalf("mark for an already-queued id must be cleared at activation: ok=%v err=%v", ok, err)
+	}
+	if c := e.queue.counts(); c.parked != 0 || c.depth != 1 {
+		t.Fatalf("queued id must stay queued, not re-park: %+v", c)
+	}
 }
 
 func TestOnAllReplicasParksInMemoryOnly(t *testing.T) {

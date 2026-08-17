@@ -62,6 +62,7 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"zero cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cadence{})} }, "Cadence"},
 		{"tracker namespace mismatch", func(s *Spec) { s.Versions = NewTracker(inmem.NewKV(), "other-job") }, "must equal Spec.Name"},
 		{"misconstructed tracker", func(s *Spec) { s.Versions = NewTracker(nil, "job") }, "needs a KV"},
+		{"typed-nil tracker", func(s *Spec) { var tr *Tracker; s.Versions = tr }, "nil *Tracker"},
 		{"bad cron", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cron("@daily", CronOpts{}))} }, "descriptors"},
 		{"message trigger without queue", func(s *Spec) {
 			s.AllowUnscheduled = true

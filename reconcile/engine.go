@@ -210,25 +210,25 @@ func (e *engine) tryRevive(ctx context.Context, id ID) bool {
 	if e.cfg.versions == nil {
 		return false
 	}
-	marked := e.parkedVersion(ctx, id)
+	marked, ok := e.parkedVersion(ctx, id)
+	if !ok {
+		return false
+	}
 	latest, err := e.cfg.versions.Latest(ctx, id)
 	if err != nil || latest <= marked {
 		return false
 	}
-	if e.queue.wake(id, wakeVersion) != wakeRevived {
-		return false
-	}
 	e.deleteKey(ctx, e.parkKey(id))
-	return true
+	return e.queue.wake(id, wakeVersion) == wakeRevived
 }
 
-func (e *engine) parkedVersion(ctx context.Context, id ID) Version {
+func (e *engine) parkedVersion(ctx context.Context, id ID) (Version, bool) {
 	raw := e.readString(ctx, e.parkKey(id))
 	n, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	return Version(n)
+	return Version(n), true
 }
 
 func (e *engine) report(id ID, res wakeResult) {
@@ -389,7 +389,7 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 	if res.parked {
 		e.deps.Observer.Observe(converge.IDParked{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})
 		if !res.revived {
-			e.markParked(hctx, id, snap)
+			e.parkOrRevive(hctx, id, snap)
 		}
 	}
 	if res.droppedHint {
@@ -443,9 +443,16 @@ func (e *engine) durableParks() bool {
 	return e.deps.KV != nil && e.cfg.runMode != converge.OnAllReplicas
 }
 
-func (e *engine) markParked(ctx context.Context, id ID, snap versionSnapshot) {
+func (e *engine) parkOrRevive(ctx context.Context, id ID, snap versionSnapshot) {
 	if !e.durableParks() {
 		return
+	}
+	if e.cfg.versions != nil && snap.known {
+		latest, err := e.cfg.versions.Latest(ctx, id)
+		if err == nil && latest > snap.v {
+			e.queue.wake(id, wakeVersion)
+			return
+		}
 	}
 	if e.cfg.versions != nil && snap.known && snap.v == 0 {
 		e.deps.Observer.Observe(converge.VersionZero{Job: e.cfg.name, ID: string(id)})
@@ -469,7 +476,10 @@ func (e *engine) loadParked(ctx context.Context) {
 		}
 		for _, k := range keys {
 			id := ID(strings.TrimPrefix(k, prefix))
-			if !e.queue.restorePark(id) {
+			switch e.queue.restorePark(id) {
+			case restoreBusy:
+				e.deleteKey(ctx, k)
+			case restoreOverflow:
 				e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
 			}
 		}
