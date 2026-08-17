@@ -310,3 +310,163 @@ func TestCountsAndReset(t *testing.T) {
 		t.Fatalf("counts after reset = %+v", c)
 	}
 }
+
+func heapLen(q *wakeQueue) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.heap)
+}
+
+func idsLen(q *wakeQueue) int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.ids)
+}
+
+func TestUnknownFinishKindBehavesLikeFailure(t *testing.T) {
+	q, clock := newTestQueue(0, false)
+	q.wake("x", wakeHint)
+	mustPop(t, q, clock, "x")
+	res := q.finish("x", finishKind(99), 0)
+	if !res.settled || res.attempt != 1 {
+		t.Fatalf("unknown finish kind = %+v, want settled failure with attempt 1", res)
+	}
+	due, ok := q.nextDue()
+	if !ok || !due.Equal(clock.Now().Add(time.Minute)) {
+		t.Fatalf("unknown finish kind due = %v %v, want backoff distance", due, ok)
+	}
+}
+
+func TestFinishOnUnknownIDIsUnsettled(t *testing.T) {
+	q, _ := newTestQueue(0, false)
+	if res := q.finish("x", finishFailure, 0); res.settled {
+		t.Fatalf("finish on unregistered id = %+v, want unsettled", res)
+	}
+}
+
+func TestUnknownWakeClassFailsClosed(t *testing.T) {
+	qBackoff, clockBackoff := newTestQueue(0, false)
+	qBackoff.wake("x", wakeHint)
+	mustPop(t, qBackoff, clockBackoff, "x")
+	qBackoff.finish("x", finishFailure, 0)
+	if got := qBackoff.wake("x", wakeClass(99)); got != wakeCollapsed {
+		t.Fatalf("unknown class on backoff id = %v, want collapsed", got)
+	}
+
+	qParked, clockParked := newTestQueue(1, false)
+	qParked.wake("x", wakeHint)
+	mustPop(t, qParked, clockParked, "x")
+	qParked.finish("x", finishFailure, 0)
+	if got := qParked.wake("x", wakeClass(99)); got != wakeDroppedParked {
+		t.Fatalf("unknown class on parked id = %v, want dropped", got)
+	}
+}
+
+func TestPendingPokeSurvivesFailure(t *testing.T) {
+	q, clock := newTestQueue(0, false)
+	q.wake("x", wakeHint)
+	mustPop(t, q, clock, "x")
+	q.wake("x", wakePoke)
+	res := q.finish("x", finishFailure, 0)
+	if !res.rerun || res.attempt != 1 {
+		t.Fatalf("failure with pending poke = %+v, want rerun with attempt 1", res)
+	}
+	mustPop(t, q, clock, "x")
+}
+
+func TestPendingPokeSurvivesParking(t *testing.T) {
+	q, clock := newTestQueue(2, false)
+	q.wake("x", wakeHint)
+	mustPop(t, q, clock, "x")
+	q.finish("x", finishFailure, 0)
+	clock.Advance(time.Minute)
+	mustPop(t, q, clock, "x")
+	q.wake("x", wakePoke)
+	res := q.finish("x", finishFailure, 0)
+	if !res.parked || !res.revived {
+		t.Fatalf("failure with pending poke at threshold = %+v, want parked and revived", res)
+	}
+	mustPop(t, q, clock, "x")
+	if res := q.finish("x", finishFailure, 0); res.parked {
+		t.Fatal("revived-through-park id must get a fresh failure budget")
+	}
+}
+
+func TestPendingHintDroppedOnParking(t *testing.T) {
+	q, clock := newTestQueue(1, false)
+	q.wake("x", wakeHint)
+	mustPop(t, q, clock, "x")
+	q.wake("x", wakeHint)
+	res := q.finish("x", finishFailure, 0)
+	if !res.parked || !res.droppedHint {
+		t.Fatalf("failure with pending hint at threshold = %+v, want parked and droppedHint", res)
+	}
+	if got := q.wake("x", wakeHint); got != wakeDroppedParked {
+		t.Fatalf("post-park hint = %v, want dropped", got)
+	}
+}
+
+func TestPendingHintPullsDelayForward(t *testing.T) {
+	q, clock := newTestQueue(0, false)
+	q.wake("x", wakeHint)
+	mustPop(t, q, clock, "x")
+	q.wake("x", wakeHint)
+	q.finish("x", finishDelay, time.Hour)
+	mustPop(t, q, clock, "x")
+}
+
+func TestFallbackParksAfterRepeatedFallbacks(t *testing.T) {
+	q, clock := newTestQueue(2, false)
+	q.wake("x", wakeHint)
+	var last finishResult
+	for i := 0; i < 22; i++ {
+		mustPop(t, q, clock, "x")
+		last = q.finish("x", finishDelay, 0)
+		if last.fallback {
+			clock.Advance(time.Minute)
+		} else {
+			clock.Advance(250 * time.Millisecond)
+		}
+	}
+	if !last.fallback || !last.parked {
+		t.Fatalf("22nd requeue = %+v, want fallback and parked", last)
+	}
+	if q.counts().parked != 1 {
+		t.Fatal("id must be parked after the second fallback")
+	}
+}
+
+func TestHeapStaysBounded(t *testing.T) {
+	q, clock := newTestQueue(0, false)
+	q.wake("x", wakeHint)
+	mustPop(t, q, clock, "x")
+	for i := 0; i < 200; i++ {
+		q.finish("x", finishFailure, 0)
+		if got := q.wake("x", wakePoke); got != wakeBypassed {
+			t.Fatalf("iteration %d: wake = %v, want bypassed", i, got)
+		}
+		if hl, il := heapLen(q), idsLen(q); hl > 4*il+16 {
+			t.Fatalf("iteration %d: heap len %d exceeds bound for %d ids", i, hl, il)
+		}
+		mustPop(t, q, clock, "x")
+	}
+}
+
+func TestStaleDuplicateHeapEntryDiscardedAfterDispatch(t *testing.T) {
+	q, clock := newTestQueue(0, false)
+	q.wake("x", wakeHint)
+	mustPop(t, q, clock, "x")
+	q.finish("x", finishFailure, 0)
+	due, ok := q.nextDue()
+	if !ok {
+		t.Fatal("expected a pending backoff due time")
+	}
+	clock.Advance(due.Sub(clock.Now()))
+	if got := q.wake("x", wakePoke); got != wakeBypassed {
+		t.Fatalf("poke at due instant = %v, want bypassed", got)
+	}
+	mustPop(t, q, clock, "x")
+	if _, ok := q.next(clock.Now()); ok {
+		t.Fatal("duplicate stale heap entry must be discarded, not redispatched")
+	}
+}

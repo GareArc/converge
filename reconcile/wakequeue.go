@@ -16,6 +16,24 @@ const (
 	wakeVersion
 )
 
+func (c wakeClass) bypassesBackoff() bool {
+	switch c {
+	case wakePoke, wakeVersion:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c wakeClass) revivesParked() bool {
+	switch c {
+	case wakePoke, wakeVersion:
+		return true
+	default:
+		return false
+	}
+}
+
 type idPhase int
 
 const (
@@ -62,18 +80,23 @@ type wakePolicy struct {
 }
 
 type idState struct {
-	phase     idPhase
-	due       time.Time
-	rerun     bool
-	fails     int
-	noBackoff int
+	phase      idPhase
+	due        time.Time
+	hasPending bool
+	pending    wakeClass
+	fails      int
+	noBackoff  int
+	fallbacks  int
 }
 
 type finishResult struct {
-	attempt  int
-	parked   bool
-	rerun    bool
-	fallback bool
+	attempt     int
+	parked      bool
+	rerun       bool
+	fallback    bool
+	settled     bool
+	droppedHint bool
+	revived     bool
 }
 
 type queueCounts struct {
@@ -130,16 +153,31 @@ func (q *wakeQueue) signal() {
 
 func (q *wakeQueue) push(id ID, due time.Time) {
 	heap.Push(&q.heap, dueItem{id: id, due: due})
+	if len(q.heap) > 4*len(q.ids)+16 {
+		q.rebuildHeap()
+	}
 	q.signal()
 }
 
+func (q *wakeQueue) rebuildHeap() {
+	fresh := make(dueHeap, 0, len(q.ids))
+	for id, st := range q.ids {
+		switch st.phase {
+		case phaseQueued, phaseBackoff, phaseDelayed:
+			fresh = append(fresh, dueItem{id: id, due: st.due})
+		}
+	}
+	heap.Init(&fresh)
+	q.heap = fresh
+}
+
 func (q *wakeQueue) wake(id ID, class wakeClass) wakeResult {
+	now := q.clock.Now()
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.paused {
 		return wakeDroppedPaused
 	}
-	now := q.clock.Now()
 	st := q.ids[id]
 	if st == nil {
 		if len(q.ids) >= wakeQueueBound {
@@ -153,13 +191,17 @@ func (q *wakeQueue) wake(id ID, class wakeClass) wakeResult {
 	case phaseQueued:
 		return wakeCollapsed
 	case phaseRunning:
-		if st.rerun {
-			return wakeCollapsed
+		if !st.hasPending {
+			st.hasPending = true
+			st.pending = class
+			return wakeRerunArmed
 		}
-		st.rerun = true
-		return wakeRerunArmed
+		if class.bypassesBackoff() && !st.pending.bypassesBackoff() {
+			st.pending = class
+		}
+		return wakeCollapsed
 	case phaseBackoff:
-		if class == wakeHint {
+		if !class.bypassesBackoff() {
 			return wakeCollapsed
 		}
 		st.phase = phaseQueued
@@ -172,13 +214,14 @@ func (q *wakeQueue) wake(id ID, class wakeClass) wakeResult {
 		q.push(id, now)
 		return wakePulledForward
 	case phaseParked:
-		if class == wakeHint {
+		if !class.revivesParked() {
 			return wakeDroppedParked
 		}
 		st.phase = phaseQueued
 		st.due = now
 		st.fails = 0
 		st.noBackoff = 0
+		st.fallbacks = 0
 		q.push(id, now)
 		return wakeRevived
 	}
@@ -200,7 +243,7 @@ func (q *wakeQueue) next(now time.Time) (ID, bool) {
 		}
 		heap.Pop(&q.heap)
 		st.phase = phaseRunning
-		st.rerun = false
+		st.hasPending = false
 		return top.id, true
 	}
 	return "", false
@@ -221,23 +264,81 @@ func (q *wakeQueue) nextDue() (time.Time, bool) {
 	return time.Time{}, false
 }
 
+func (q *wakeQueue) applyBackoffOrBypass(id ID, st *idState, now time.Time, attempt int, wait time.Duration) finishResult {
+	res := finishResult{attempt: attempt, settled: true}
+	pendingBypass := st.hasPending && st.pending.bypassesBackoff()
+	st.hasPending = false
+	if pendingBypass {
+		st.phase = phaseQueued
+		st.due = now
+		q.push(id, now)
+		res.rerun = true
+		return res
+	}
+	st.phase = phaseBackoff
+	st.due = now.Add(wait)
+	q.push(id, st.due)
+	return res
+}
+
+func (q *wakeQueue) applyPark(id ID, st *idState, now time.Time, attempt int) finishResult {
+	res := finishResult{attempt: attempt, parked: true, settled: true}
+	if st.hasPending && st.pending.revivesParked() {
+		st.hasPending = false
+		st.phase = phaseQueued
+		st.due = now
+		st.fails = 0
+		st.noBackoff = 0
+		st.fallbacks = 0
+		q.push(id, now)
+		res.revived = true
+		return res
+	}
+	if st.hasPending {
+		st.hasPending = false
+		res.droppedHint = true
+	}
+	st.phase = phaseParked
+	return res
+}
+
+func (q *wakeQueue) applyFailure(id ID, st *idState, now time.Time) finishResult {
+	st.fails++
+	st.noBackoff = 0
+	st.fallbacks = 0
+	attempt := st.fails
+	if q.policy.deadLetterAfter > 0 && attempt >= q.policy.deadLetterAfter {
+		return q.applyPark(id, st, now, attempt)
+	}
+	return q.applyBackoffOrBypass(id, st, now, attempt, q.policy.backoff(st.fails))
+}
+
+func (q *wakeQueue) applyFallback(id ID, st *idState, now time.Time) finishResult {
+	attempt := st.fallbacks
+	if q.policy.deadLetterAfter > 0 && attempt >= q.policy.deadLetterAfter {
+		return q.applyPark(id, st, now, attempt)
+	}
+	return q.applyBackoffOrBypass(id, st, now, attempt, q.policy.backoff(st.fallbacks))
+}
+
 func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishResult {
+	now := q.clock.Now()
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	st := q.ids[id]
 	if st == nil || st.phase != phaseRunning {
 		return finishResult{}
 	}
-	now := q.clock.Now()
 	switch kind {
 	case finishSuccess:
-		res := finishResult{attempt: st.fails + 1}
-		if st.rerun {
+		res := finishResult{attempt: st.fails + 1, settled: true}
+		if st.hasPending {
+			st.hasPending = false
 			st.phase = phaseQueued
 			st.due = now
-			st.rerun = false
 			st.fails = 0
 			st.noBackoff = 0
+			st.fallbacks = 0
 			q.push(id, now)
 			res.rerun = true
 			return res
@@ -245,54 +346,42 @@ func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishRe
 		delete(q.ids, id)
 		return res
 	case finishFailure:
-		st.fails++
-		st.noBackoff = 0
-		st.rerun = false
-		if q.policy.deadLetterAfter > 0 && st.fails >= q.policy.deadLetterAfter {
-			st.phase = phaseParked
-			return finishResult{attempt: st.fails, parked: true}
-		}
-		st.phase = phaseBackoff
-		st.due = now.Add(q.policy.backoff(st.fails))
-		q.push(id, st.due)
-		return finishResult{attempt: st.fails}
+		return q.applyFailure(id, st, now)
 	case finishDelay:
-		res := finishResult{attempt: st.fails + 1}
-		st.rerun = false
 		st.noBackoff++
 		if st.noBackoff > noBackoffLimit {
 			st.noBackoff = 0
-			st.fails++
-			res.attempt = st.fails
+			st.fallbacks++
+			res := q.applyFallback(id, st, now)
 			res.fallback = true
-			if q.policy.deadLetterAfter > 0 && st.fails >= q.policy.deadLetterAfter {
-				st.phase = phaseParked
-				res.parked = true
-				return res
-			}
-			st.phase = phaseBackoff
-			st.due = now.Add(q.policy.backoff(st.fails))
-			q.push(id, st.due)
 			return res
 		}
+		res := finishResult{attempt: st.fails + 1, settled: true}
 		st.fails = 0
+		if st.hasPending {
+			st.hasPending = false
+			st.phase = phaseQueued
+			st.due = now
+			q.push(id, now)
+			res.rerun = true
+			return res
+		}
 		st.phase = phaseDelayed
 		st.due = now.Add(q.policy.floor(delay))
 		q.push(id, st.due)
 		return res
 	case finishNeutral:
+		st.hasPending = false
 		st.phase = phaseQueued
 		st.due = now
-		st.rerun = false
 		q.push(id, now)
-		return finishResult{}
+		return finishResult{settled: true}
 	case finishForcePark:
 		st.fails++
-		st.phase = phaseParked
-		st.rerun = false
-		return finishResult{attempt: st.fails, parked: true}
+		return q.applyPark(id, st, now, st.fails)
+	default:
+		return q.applyFailure(id, st, now)
 	}
-	return finishResult{}
 }
 
 func (q *wakeQueue) counts() queueCounts {
@@ -306,7 +395,7 @@ func (q *wakeQueue) counts() queueCounts {
 		case phaseQueued, phaseBackoff, phaseDelayed:
 			c.depth++
 		case phaseRunning:
-			if st.rerun {
+			if st.hasPending {
 				c.depth++
 			}
 		}
