@@ -11,7 +11,12 @@ import (
 	"github.com/GareArc/converge/inmem"
 )
 
-var _ converge.MQ = (*inmem.MQ)(nil)
+var (
+	_ converge.MQ                = (*inmem.MQ)(nil)
+	_ converge.GroupConsumer     = (*inmem.MQ)(nil)
+	_ converge.BroadcastConsumer = (*inmem.MQ)(nil)
+	_ converge.DelayedPublisher  = (*inmem.MQ)(nil)
+)
 
 func TestMQContract(t *testing.T) {
 	clock := convergetest.NewClock(time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC))

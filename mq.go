@@ -45,5 +45,7 @@ type BroadcastConsumer interface {
 }
 
 type DelayedPublisher interface {
+	// PublishDelayed affects group consumption only; broadcast is for hints,
+	// which are never delayed.
 	PublishDelayed(ctx context.Context, queue string, m Message, delay time.Duration) error
 }

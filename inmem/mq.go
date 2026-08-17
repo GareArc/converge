@@ -24,6 +24,7 @@ type mqQueue struct {
 	seq     int
 	backlog []storedMsg
 	groups  map[string]*mqGroup
+	subs    []*mqSub
 }
 
 type storedMsg struct {
@@ -68,6 +69,9 @@ func (q *MQ) publish(queue string, m converge.Message, delay time.Duration) erro
 	qu.backlog = append(qu.backlog, s)
 	for _, g := range qu.groups {
 		g.pending = append(g.pending, &mqMsg{storedMsg: s, availableAt: s.notBefore})
+	}
+	for _, sub := range qu.subs {
+		sub.pending = append(sub.pending, s)
 	}
 	return nil
 }
@@ -191,3 +195,62 @@ func (d *mqDelivery) Extend(_ context.Context, visibility time.Duration) error {
 	d.msg.deadline = d.q.clock.Now().Add(visibility)
 	return nil
 }
+
+func (q *MQ) ConsumeGroup(ctx context.Context, queue, group string, deliver func(converge.Delivery)) error {
+	return q.consumeGroup(ctx, queue, group, deliver)
+}
+
+func (q *MQ) PublishDelayed(_ context.Context, queue string, m converge.Message, delay time.Duration) error {
+	return q.publish(queue, m, delay)
+}
+
+// Broadcast subscribers only see messages published after they subscribe;
+// their deliveries are fire-and-forget (Attempt always 1, Ack/Nack no-ops).
+func (q *MQ) ConsumeBroadcast(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
+	sub := &mqSub{}
+	q.mu.Lock()
+	qu := q.ensureQueue(queue)
+	qu.subs = append(qu.subs, sub)
+	q.mu.Unlock()
+	defer func() {
+		q.mu.Lock()
+		for i, s := range qu.subs {
+			if s == sub {
+				qu.subs = append(qu.subs[:i], qu.subs[i+1:]...)
+				break
+			}
+		}
+		q.mu.Unlock()
+	}()
+	for {
+		q.mu.Lock()
+		var msg *storedMsg
+		if len(sub.pending) > 0 {
+			msg = &sub.pending[0]
+			sub.pending = sub.pending[1:]
+		}
+		q.mu.Unlock()
+		if msg == nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(pollInterval):
+			}
+			continue
+		}
+		deliver(broadcastDelivery{*msg})
+	}
+}
+
+type mqSub struct {
+	pending []storedMsg
+}
+
+type broadcastDelivery struct{ s storedMsg }
+
+func (d broadcastDelivery) Message() converge.Message                   { return d.s.m }
+func (d broadcastDelivery) Attempt() int                                { return 1 }
+func (d broadcastDelivery) EnqueuedAt() time.Time                       { return d.s.enqueuedAt }
+func (d broadcastDelivery) Ack(context.Context) error                   { return nil }
+func (d broadcastDelivery) Nack(context.Context, time.Duration) error   { return nil }
+func (d broadcastDelivery) Extend(context.Context, time.Duration) error { return nil }

@@ -126,6 +126,71 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		assertNoDelivery(t, got)
 		d.Ack(ctx)
 	})
+
+	t.Run("named groups each receive every message", func(t *testing.T) {
+		base := open(t)
+		gc, ok := base.(converge.GroupConsumer)
+		if !ok {
+			t.Skip("no GroupConsumer capability")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		gotA := make(chan converge.Delivery, 16)
+		gotB := make(chan converge.Delivery, 16)
+		go gc.ConsumeGroup(ctx, "q", "a", func(d converge.Delivery) { gotA <- d })
+		go gc.ConsumeGroup(ctx, "q", "b", func(d converge.Delivery) { gotB <- d })
+		mustPublish(t, base, "q", converge.Message{Payload: []byte("x")})
+		recvDelivery(t, gotA).Ack(ctx)
+		recvDelivery(t, gotB).Ack(ctx)
+	})
+
+	t.Run("broadcast reaches every subscriber, later subscribers miss earlier messages", func(t *testing.T) {
+		base := open(t)
+		bc, ok := base.(converge.BroadcastConsumer)
+		if !ok {
+			t.Skip("no BroadcastConsumer capability")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		mustPublish(t, base, "q", converge.Message{Payload: []byte("before")})
+		gotA := make(chan converge.Delivery, 16)
+		gotB := make(chan converge.Delivery, 16)
+		go bc.ConsumeBroadcast(ctx, "q", func(d converge.Delivery) { gotA <- d })
+		go bc.ConsumeBroadcast(ctx, "q", func(d converge.Delivery) { gotB <- d })
+		time.Sleep(20 * time.Millisecond) // let subscriptions attach
+		mustPublish(t, base, "q", converge.Message{Payload: []byte("after")})
+		for _, ch := range []chan converge.Delivery{gotA, gotB} {
+			d := recvDelivery(t, ch)
+			if string(d.Message().Payload) != "after" {
+				t.Fatalf("got %q; pre-subscribe messages must not be delivered", d.Message().Payload)
+			}
+			if d.Attempt() != 1 {
+				t.Fatalf("broadcast Attempt = %d, want always 1", d.Attempt())
+			}
+		}
+		assertNoDelivery(t, gotA)
+	})
+
+	t.Run("delayed publish holds until due", func(t *testing.T) {
+		if o.Advance == nil {
+			t.Skip("no clock control")
+		}
+		base := open(t)
+		dp, ok := base.(converge.DelayedPublisher)
+		if !ok {
+			t.Skip("no DelayedPublisher capability")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		got := make(chan converge.Delivery, 16)
+		go base.Consume(ctx, "q", func(d converge.Delivery) { got <- d })
+		if err := dp.PublishDelayed(ctx, "q", converge.Message{Payload: []byte("later")}, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+		assertNoDelivery(t, got)
+		o.Advance(time.Hour + time.Second)
+		recvDelivery(t, got).Ack(ctx)
+	})
 }
 
 func startConsumer(t *testing.T, open func(t *testing.T) converge.MQ) (converge.MQ, chan converge.Delivery, context.Context) {
