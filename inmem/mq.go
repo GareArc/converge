@@ -83,8 +83,12 @@ func (q *MQ) consumeGroup(ctx context.Context, queue, group string, deliver func
 	for {
 		q.mu.Lock()
 		msg := g.next(q.clock.Now())
+		var d *mqDelivery
+		if msg != nil {
+			d = &mqDelivery{q: q, g: g, msg: msg, attempt: msg.attempt}
+		}
 		q.mu.Unlock()
-		if msg == nil {
+		if d == nil {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -92,7 +96,7 @@ func (q *MQ) consumeGroup(ctx context.Context, queue, group string, deliver func
 			}
 			continue
 		}
-		deliver(&mqDelivery{q: q, g: g, msg: msg})
+		deliver(d)
 	}
 }
 
@@ -143,18 +147,22 @@ func (g *mqGroup) next(now time.Time) *mqMsg {
 }
 
 type mqDelivery struct {
-	q   *MQ
-	g   *mqGroup
-	msg *mqMsg
+	q       *MQ
+	g       *mqGroup
+	msg     *mqMsg
+	attempt int // snapshot at delivery; fences stale Ack/Nack/Extend after reclaim
 }
 
 func (d *mqDelivery) Message() converge.Message { return d.msg.m }
-func (d *mqDelivery) Attempt() int              { return d.msg.attempt }
+func (d *mqDelivery) Attempt() int              { return d.attempt }
 func (d *mqDelivery) EnqueuedAt() time.Time     { return d.msg.enqueuedAt }
 
 func (d *mqDelivery) Ack(context.Context) error {
 	d.q.mu.Lock()
 	defer d.q.mu.Unlock()
+	if im, ok := d.g.inflight[d.msg.id]; !ok || im.attempt != d.attempt {
+		return nil
+	}
 	delete(d.g.inflight, d.msg.id)
 	return nil
 }
@@ -162,7 +170,8 @@ func (d *mqDelivery) Ack(context.Context) error {
 func (d *mqDelivery) Nack(_ context.Context, after time.Duration) error {
 	d.q.mu.Lock()
 	defer d.q.mu.Unlock()
-	if _, ok := d.g.inflight[d.msg.id]; !ok {
+	im, ok := d.g.inflight[d.msg.id]
+	if !ok || im.attempt != d.attempt {
 		return nil
 	}
 	delete(d.g.inflight, d.msg.id)
@@ -175,7 +184,8 @@ func (d *mqDelivery) Nack(_ context.Context, after time.Duration) error {
 func (d *mqDelivery) Extend(_ context.Context, visibility time.Duration) error {
 	d.q.mu.Lock()
 	defer d.q.mu.Unlock()
-	if _, ok := d.g.inflight[d.msg.id]; !ok {
+	im, ok := d.g.inflight[d.msg.id]
+	if !ok || im.attempt != d.attempt {
 		return errors.New("inmem: delivery no longer in flight")
 	}
 	d.msg.deadline = d.q.clock.Now().Add(visibility)
