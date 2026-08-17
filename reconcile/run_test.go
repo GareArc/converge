@@ -675,6 +675,7 @@ func bootPersistent(t *testing.T, clock *convergetest.Clock, kv converge.KV, fn 
 		DrainTimeout: 30 * time.Second,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	done := make(chan error, 1)
 	go func() { done <- e.Run(ctx, deps) }()
 	select {
