@@ -468,7 +468,10 @@ func (e *engine) loadParked(ctx context.Context) {
 			continue
 		}
 		for _, k := range keys {
-			e.queue.restorePark(ID(strings.TrimPrefix(k, prefix)))
+			id := ID(strings.TrimPrefix(k, prefix))
+			if !e.queue.restorePark(id) {
+				e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
+			}
 		}
 		if next == "" {
 			return
