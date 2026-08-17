@@ -98,7 +98,7 @@ func (e *engine) runTrigger(ctx context.Context, idx int, t Trigger) {
 func (e *engine) runMessages(ctx context.Context, t *messageTrigger) {
 	backoff := triggerRestartMin
 	deliver := func(d converge.Delivery) {
-		e.deliverHint(t, d)
+		e.deliverHint(ctx, t, d)
 	}
 	for {
 		if t.delivery == converge.Broadcast {
@@ -118,12 +118,12 @@ func (e *engine) runMessages(ctx context.Context, t *messageTrigger) {
 	}
 }
 
-func (e *engine) deliverHint(t *messageTrigger, d converge.Delivery) {
+func (e *engine) deliverHint(ctx context.Context, t *messageTrigger, d converge.Delivery) {
 	id, err := t.idf(d.Message().Payload)
 	if err != nil {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardUndecodable})
 	} else {
 		e.hint(id)
 	}
-	d.Ack(context.Background())
+	d.Ack(ctx)
 }
