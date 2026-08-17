@@ -76,6 +76,9 @@ func (t *messageTrigger) bind(e *engine) error {
 
 func (e *engine) runTrigger(ctx context.Context, idx int, t Trigger) {
 	switch tr := t.(type) {
+	case *scheduleTrigger:
+		e.runSchedule(ctx, idx, tr)
+		return
 	case *messageTrigger:
 		e.runMessages(ctx, tr)
 		return

@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"container/heap"
+	"context"
 	"sync"
 	"time"
 
@@ -125,22 +126,24 @@ func (h *dueHeap) Pop() any {
 }
 
 type wakeQueue struct {
-	mu     sync.Mutex
-	clock  converge.Clock
-	policy wakePolicy
-	paused bool
-	ids    map[ID]*idState
-	heap   dueHeap
-	notify chan struct{}
+	mu      sync.Mutex
+	clock   converge.Clock
+	policy  wakePolicy
+	paused  bool
+	ids     map[ID]*idState
+	heap    dueHeap
+	notify  chan struct{}
+	waiters map[ID][]chan struct{}
 }
 
 func newWakeQueue(clock converge.Clock, policy wakePolicy, paused bool) *wakeQueue {
 	return &wakeQueue{
-		clock:  clock,
-		policy: policy,
-		paused: paused,
-		ids:    map[ID]*idState{},
-		notify: make(chan struct{}, 1),
+		clock:   clock,
+		policy:  policy,
+		paused:  paused,
+		ids:     map[ID]*idState{},
+		waiters: map[ID][]chan struct{}{},
+		notify:  make(chan struct{}, 1),
 	}
 }
 
@@ -329,6 +332,7 @@ func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishRe
 	if st == nil || st.phase != phaseRunning {
 		return finishResult{}
 	}
+	defer q.wakeWaiters(id)
 	switch kind {
 	case finishSuccess:
 		res := finishResult{attempt: st.fails + 1, settled: true}
@@ -408,4 +412,29 @@ func (q *wakeQueue) reset() {
 	defer q.mu.Unlock()
 	q.ids = map[ID]*idState{}
 	q.heap = nil
+}
+
+func (q *wakeQueue) awaitSettle(ctx context.Context, id ID) bool {
+	q.mu.Lock()
+	st := q.ids[id]
+	if st == nil || (st.phase != phaseRunning && st.phase != phaseQueued) {
+		q.mu.Unlock()
+		return true
+	}
+	ch := make(chan struct{})
+	q.waiters[id] = append(q.waiters[id], ch)
+	q.mu.Unlock()
+	select {
+	case <-ch:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (q *wakeQueue) wakeWaiters(id ID) {
+	for _, ch := range q.waiters[id] {
+		close(ch)
+	}
+	delete(q.waiters, id)
 }
