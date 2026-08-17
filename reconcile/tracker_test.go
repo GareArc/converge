@@ -116,7 +116,7 @@ func TestCorruptStoredVersionErrors(t *testing.T) {
 
 func TestMisconstructedTrackerErrorsOnUse(t *testing.T) {
 	ctx := context.Background()
-	for _, tr := range []*Tracker{NewTracker(nil, "job"), NewTracker(inmem.NewKV(), "")} {
+	for _, tr := range []*Tracker{NewTracker(nil, "job"), NewTracker(inmem.NewKV(), ""), NewTracker(inmem.NewKV(), "a/b")} {
 		if _, err := tr.MarkChanged(ctx, "a"); err == nil {
 			t.Fatal("misconstructed Tracker must error, not panic")
 		}

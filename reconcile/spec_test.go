@@ -26,6 +26,7 @@ func TestSpecValidationMatrix(t *testing.T) {
 	}{
 		{"valid", func(s *Spec) {}, ""},
 		{"empty name", func(s *Spec) { s.Name = "" }, "Name"},
+		{"slash in name", func(s *Spec) { s.Name = "a/b" }, "must not contain"},
 		{"nil reconciler", func(s *Spec) { s.Reconciler = nil }, "Reconciler"},
 		{"negative concurrency", func(s *Spec) { s.Concurrency = -1 }, "Concurrency"},
 		{"negative dead letter", func(s *Spec) { s.DeadLetterAfter = -1 }, "DeadLetterAfter"},

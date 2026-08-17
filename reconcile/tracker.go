@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/GareArc/converge"
 )
@@ -27,6 +28,8 @@ func NewTracker(kv converge.KV, namespace string) *Tracker {
 		t.err = errors.New("reconcile: Tracker needs a KV")
 	} else if namespace == "" {
 		t.err = errors.New("reconcile: Tracker needs a namespace")
+	} else if strings.Contains(namespace, "/") {
+		t.err = errors.New(`reconcile: Tracker namespace must not contain "/"`)
 	}
 	return t
 }

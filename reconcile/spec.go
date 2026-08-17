@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
@@ -37,6 +38,9 @@ func newEngine(s Spec) (*engine, error) {
 		return nil, errors.New("reconcile: Spec.Name is required")
 	}
 	fail := func(msg string) error { return fmt.Errorf("reconcile: job %q: %s", s.Name, msg) }
+	if strings.Contains(s.Name, "/") {
+		return nil, fail(`Name must not contain "/"`)
+	}
 	if s.Reconciler == nil {
 		return nil, fail("Spec.Reconciler is required")
 	}
