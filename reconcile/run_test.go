@@ -126,10 +126,7 @@ func TestLeaderRunsPassStandbyWaits(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("standby must be ready without the lease")
 	}
-	time.Sleep(20 * time.Millisecond)
-	if got := acquired(leader.rec); got != 1 {
-		t.Fatalf("standby must not acquire while leader holds: %d", got)
-	}
+	assertStable(t, func() bool { return acquired(leader.rec) == 1 })
 }
 
 func TestLeaseLossStepsDownAndReelects(t *testing.T) {
@@ -182,12 +179,14 @@ func TestShutdownGivesDrainGraceThenReturnsNil(t *testing.T) {
 		t.Fatal("handler never started")
 	}
 	cancel()
-	time.Sleep(20 * time.Millisecond)
-	select {
-	case err := <-le.done:
-		t.Fatalf("Run returned before drain grace elapsed: %v", err)
-	default:
-	}
+	assertStable(t, func() bool {
+		select {
+		case <-le.done:
+			return false
+		default:
+			return true
+		}
+	})
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		select {

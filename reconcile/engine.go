@@ -34,7 +34,7 @@ func backoffAfter(consecutiveFails int) time.Duration {
 
 func floorDelay(d time.Duration) time.Duration {
 	if d < noBackoffFloor {
-		return jitter(noBackoffFloor)
+		return noBackoffFloor + time.Duration(rand.Int63n(int64(noBackoffFloor/2)+1))
 	}
 	return d
 }
@@ -164,6 +164,9 @@ func (e *engine) Poke(id string) error {
 	if id == "" && !e.cfg.single {
 		return fmt.Errorf("reconcile: job %q: poke needs an id", e.cfg.name)
 	}
+	if e.cfg.single {
+		id = ""
+	}
 	e.report(ID(id), q.wake(ID(id), wakePoke))
 	return nil
 }
@@ -219,11 +222,12 @@ func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.Wa
 		case <-hctx.Done():
 			return
 		}
-		if err := e.limit.wait(ctx); err != nil {
-			return
-		}
 		id, ok := e.awaitDue(ctx)
 		if !ok {
+			return
+		}
+		if err := e.limit.wait(ctx); err != nil {
+			e.queue.finish(id, finishNeutral, 0)
 			return
 		}
 		wg.Add(1)
@@ -357,11 +361,12 @@ func runErr(kind finishKind, err error) error {
 }
 
 func (e *engine) record(kind finishKind) {
+	now := e.deps.Clock.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	switch kind {
 	case finishSuccess, finishDelay:
-		e.lastSuccess = e.deps.Clock.Now()
+		e.lastSuccess = now
 		e.consecFails = 0
 	case finishFailure, finishForcePark:
 		e.consecFails++

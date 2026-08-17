@@ -37,8 +37,8 @@ func TestFloorDelay(t *testing.T) {
 	}
 	for i := 0; i < 50; i++ {
 		d := floorDelay(0)
-		if d < noBackoffFloor/2 || d > noBackoffFloor {
-			t.Fatalf("floorDelay(0) = %v, want within [%v, %v]", d, noBackoffFloor/2, noBackoffFloor)
+		if d < noBackoffFloor || d > noBackoffFloor+noBackoffFloor/2 {
+			t.Fatalf("floorDelay(0) = %v, want within [%v, %v]", d, noBackoffFloor, noBackoffFloor+noBackoffFloor/2)
 		}
 	}
 }

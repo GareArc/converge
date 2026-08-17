@@ -83,34 +83,32 @@ func (e *engine) runTrigger(ctx context.Context, idx int, t Trigger) {
 		e.runMessages(ctx, tr)
 		return
 	}
-	backoff := triggerRestartMin
-	for {
-		t.Run(ctx, e.hint)
-		if ctx.Err() != nil {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-e.deps.Clock.After(jitter(backoff)):
-		}
-		backoff = min(backoff*2, triggerRestartMax)
-	}
+	e.supervise(ctx, func() { t.Run(ctx, e.hint) })
 }
 
 func (e *engine) runMessages(ctx context.Context, t *messageTrigger) {
-	backoff := triggerRestartMin
 	deliver := func(d converge.Delivery) {
 		e.deliverHint(ctx, t, d)
 	}
-	for {
+	e.supervise(ctx, func() {
 		if t.delivery == converge.Broadcast {
 			t.mq.(converge.BroadcastConsumer).ConsumeBroadcast(ctx, t.queue, deliver)
 		} else {
 			t.mq.(converge.GroupConsumer).ConsumeGroup(ctx, t.queue, e.key("hints"), deliver)
 		}
+	})
+}
+
+func (e *engine) supervise(ctx context.Context, run func()) {
+	backoff := triggerRestartMin
+	for {
+		start := e.deps.Clock.Now()
+		run()
 		if ctx.Err() != nil {
 			return
+		}
+		if e.deps.Clock.Now().Sub(start) >= triggerRestartMax {
+			backoff = triggerRestartMin
 		}
 		select {
 		case <-ctx.Done():

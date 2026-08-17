@@ -59,6 +59,14 @@ func advanceUntil(t *testing.T, te *testEngine, step time.Duration, cond func() 
 	}
 }
 
+func assertStable(t *testing.T, cond func() bool) {
+	t.Helper()
+	time.Sleep(20 * time.Millisecond)
+	if !cond() {
+		t.Fatal("state changed while it must hold")
+	}
+}
+
 type testEngine struct {
 	e      *engine
 	clock  *convergetest.Clock
@@ -357,13 +365,7 @@ func TestRateLimitThrottlesRuns(t *testing.T) {
 	te.e.hint("a")
 	te.e.hint("b")
 	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
-	time.Sleep(20 * time.Millisecond)
-	mu.Lock()
-	got := calls
-	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("second run must wait for the bucket, got %d", got)
-	}
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	advanceUntil(t, te, 10*time.Minute, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 }
 
@@ -401,6 +403,25 @@ func TestPokeEmptyIDOnMultiIDJobFails(t *testing.T) {
 	if err := te.e.Poke("a"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestPokeOnSingleJobCoercesIDToEmpty(t *testing.T) {
+	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
+	if err := te.e.Poke("whatever"); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.ID == ""
+		}) == 1
+	})
+	assertStable(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.ID == "whatever"
+		}) == 0
+	})
 }
 
 func TestKeyNamespacing(t *testing.T) {

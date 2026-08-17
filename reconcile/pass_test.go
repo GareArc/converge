@@ -46,10 +46,7 @@ func TestSteadyStateFiresOncePerPeriod(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		te.clock.Advance(time.Minute)
 	}
-	time.Sleep(20 * time.Millisecond)
-	if got := runCount(te); got != 2 {
-		t.Fatalf("mid-period run count = %d", got)
-	}
+	assertStable(t, func() bool { return runCount(te) == 2 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 3 })
 }
 
@@ -66,10 +63,7 @@ func TestMissedTickRunOnceRunsOneMakeupPass(t *testing.T) {
 	seedLastFire(t, te, wqStart.Add(-5*time.Hour))
 	startSchedule(t, te, SingleID(), Every(time.Hour))
 	await(t, func() bool { return runCount(te) == 1 })
-	time.Sleep(20 * time.Millisecond)
-	if got := runCount(te); got != 1 {
-		t.Fatalf("RunOnce must run exactly one makeup pass, got %d", got)
-	}
+	assertStable(t, func() bool { return runCount(te) == 1 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 2 })
 }
 
@@ -77,10 +71,7 @@ func TestMissedTickSkipSkipsAll(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	seedLastFire(t, te, wqStart.Add(-5*time.Hour))
 	startSchedule(t, te, SingleID(), Cron("0 * * * *", CronOpts{MissedTick: Skip}))
-	time.Sleep(20 * time.Millisecond)
-	if got := runCount(te); got != 0 {
-		t.Fatalf("Skip must not run makeup passes, got %d", got)
-	}
+	assertStable(t, func() bool { return runCount(te) == 0 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 1 })
 }
 
@@ -152,19 +143,13 @@ func TestFirstPassOverrunSkipsWithoutMakeup(t *testing.T) {
 			return ok
 		}) >= 1
 	})
-	time.Sleep(20 * time.Millisecond)
-	if got := runCount(te); got != 1 {
-		t.Fatalf("boundaries consumed by an overrunning first pass must not trigger makeup passes, got %d", got)
-	}
+	assertStable(t, func() bool { return runCount(te) == 1 })
 }
 
 func TestErroredCadenceDoesNotPanic(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	startSchedule(t, te, SingleID(), Every(0))
-	time.Sleep(20 * time.Millisecond)
-	if got := runCount(te); got != 0 {
-		t.Fatalf("errored cadence must not run, got %d", got)
-	}
+	assertStable(t, func() bool { return runCount(te) == 0 })
 }
 
 func TestCursorClearedAfterPassCompletes(t *testing.T) {

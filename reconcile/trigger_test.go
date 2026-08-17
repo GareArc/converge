@@ -70,6 +70,46 @@ func TestCustomTriggerIsRestartedAfterFailure(t *testing.T) {
 	})
 }
 
+func TestCustomTriggerRestartBackoffResetsAfterHealthyRun(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var mu sync.Mutex
+	starts := 0
+	trig := funcTrigger{run: func(ctx context.Context, wake func(ID)) error {
+		mu.Lock()
+		starts++
+		n := starts
+		mu.Unlock()
+		if n == 2 {
+			te.clock.Advance(triggerRestartMax)
+		}
+		return errors.New("source died")
+	}}
+	go te.e.runTrigger(ctx, 0, trig)
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return starts >= 1
+	})
+	advanceUntil(t, te, time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return starts >= 2
+	})
+	assertStable(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return starts < 3
+	})
+	te.clock.Advance(time.Second)
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return starts >= 3
+	})
+}
+
 func TestCustomTriggerStopsOnCancel(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	ctx, cancel := context.WithCancel(context.Background())
