@@ -139,21 +139,6 @@ func TestPassResumesFromPersistedCursor(t *testing.T) {
 	}
 }
 
-func TestPassOverrunSkipsAndEvents(t *testing.T) {
-	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
-	slow := IDs(func(ctx context.Context) ([]ID, error) {
-		te.clock.Advance(150 * time.Minute)
-		return []ID{"a"}, nil
-	})
-	startSchedule(t, te, slow, Every(time.Hour))
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
-			_, ok := e.(converge.PassOverrun)
-			return ok
-		}) >= 1
-	})
-}
-
 func TestFirstPassOverrunSkipsWithoutMakeup(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	slow := IDs(func(ctx context.Context) ([]ID, error) {

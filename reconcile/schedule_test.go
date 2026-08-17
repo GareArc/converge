@@ -50,6 +50,17 @@ func TestCronHonorsLocation(t *testing.T) {
 	if got := c.next(time.Time{}, after); !got.Equal(want) {
 		t.Fatalf("next = %v, want %v", got, want)
 	}
+
+	west := time.FixedZone("UTC-8", -8*3600)
+	cWest := Cron("0 3 * * *", CronOpts{Location: west})
+	if cWest.err != nil {
+		t.Fatal(cWest.err)
+	}
+	afterWest := time.Date(2026, 8, 16, 5, 0, 0, 0, time.UTC)
+	wantWest := time.Date(2026, 8, 16, 3, 0, 0, 0, west)
+	if got := cWest.next(time.Time{}, afterWest); !got.Equal(wantWest) {
+		t.Fatalf("next = %v, want %v", got, wantWest)
+	}
 }
 
 func TestCronNextIsAlwaysInTheFuture(t *testing.T) {
