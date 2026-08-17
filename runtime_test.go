@@ -26,3 +26,15 @@ func TestNewRejectsNegativeDurations(t *testing.T) {
 		t.Fatal("negative DrainTimeout must be rejected")
 	}
 }
+
+func TestNewClonesMiddleware(t *testing.T) {
+	mws := []Middleware{func(next Handler) Handler { return next }}
+	rt, err := New(Options{Middleware: mws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mws[0] = nil
+	if rt.opts.Middleware[0] == nil {
+		t.Fatal("New must clone Options.Middleware")
+	}
+}

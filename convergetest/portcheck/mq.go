@@ -144,6 +144,24 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		recvDelivery(t, gotB).Ack(ctx)
 	})
 
+	t.Run("named group created later receives the backlog", func(t *testing.T) {
+		base := open(t)
+		gc, ok := base.(converge.GroupConsumer)
+		if !ok {
+			t.Skip("no GroupConsumer capability")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		mustPublish(t, base, "q", converge.Message{Payload: []byte("early")})
+		got := make(chan converge.Delivery, 16)
+		go gc.ConsumeGroup(ctx, "q", "late", func(d converge.Delivery) { got <- d })
+		d := recvDelivery(t, got)
+		if string(d.Message().Payload) != "early" {
+			t.Fatalf("got %q; groups must receive the pre-creation backlog", d.Message().Payload)
+		}
+		d.Ack(ctx)
+	})
+
 	t.Run("broadcast reaches every subscriber, later subscribers miss earlier messages", func(t *testing.T) {
 		base := open(t)
 		bc, ok := base.(converge.BroadcastConsumer)

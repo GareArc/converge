@@ -31,9 +31,9 @@ type Delivery interface {
 // lacks a required capability fails the registration that needs it.
 
 type GroupConsumer interface {
-	// ConsumeGroup is Consume with named groups: each group receives every
-	// message published after the group was first created, competing within
-	// the group.
+	// ConsumeGroup is Consume with named groups: each group competes
+	// internally and receives every message on the queue, including
+	// messages published before the group was first created.
 	ConsumeGroup(ctx context.Context, queue, group string, deliver func(Delivery)) error
 }
 

@@ -7,6 +7,7 @@ package converge
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -43,6 +44,7 @@ func New(o Options) (*Runtime, error) {
 	if o.Clock == nil {
 		o.Clock = systemClock{}
 	}
+	o.Middleware = slices.Clone(o.Middleware)
 	return &Runtime{
 		opts:  o,
 		jobs:  map[string]job{},

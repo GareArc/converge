@@ -138,7 +138,7 @@ func (rt *Runtime) Run(ctx context.Context) error {
 
 // Ready closes when every registered job's consumers and triggers are live.
 // With no jobs it closes as soon as Run starts. Select against your own context
-// as well: if shutdown wins before every job becomes ready, this channel never closes.
+// and Run's return as well: if shutdown or a startup failure wins before every job becomes ready, this channel never closes.
 func (rt *Runtime) Ready() <-chan struct{} { return rt.ready }
 
 // Poke wakes one ID of one job: bypasses backoff and revives parked IDs
