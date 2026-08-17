@@ -114,14 +114,6 @@ func awaitTrue(t *testing.T, cond func() bool) {
 	}
 }
 
-func stableTrue(t *testing.T, cond func() bool) {
-	t.Helper()
-	time.Sleep(20 * time.Millisecond)
-	if !cond() {
-		t.Fatal("state changed while it must hold")
-	}
-}
-
 func (w *world) advanceUntil(t *testing.T, step time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -560,7 +552,7 @@ func TestScenarioBParkedRevivesOnMarkChanged(t *testing.T) {
 	broken = false
 	mu.Unlock()
 	w.clock.Advance(time.Minute)
-	stableTrue(t, func() bool { mu.Lock(); defer mu.Unlock(); return !converged })
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !converged })
 	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
 		t.Fatal(err)
 	}
