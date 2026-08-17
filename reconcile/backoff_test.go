@@ -107,14 +107,14 @@ func TestTokenBucketWaitHonorsContext(t *testing.T) {
 	}
 }
 
-func TestTokenBucketDoesNotSpinOnFractionalState(t *testing.T) {
+func TestTokenBucketClampsSubMillisecondWaits(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
-	b := newTokenBucket(converge.Rate{Events: 1, Per: time.Hour}, clock)
+	b := newTokenBucket(converge.Rate{Events: 1_000_000, Per: time.Second}, clock)
 	ctx := context.Background()
-	if err := b.wait(ctx); err != nil {
-		t.Fatal(err)
-	}
-	clock.Advance(30 * time.Minute)
+	b.mu.Lock()
+	b.tokens = 0.999999999
+	b.last = clock.Now()
+	b.mu.Unlock()
 	done := make(chan error, 1)
 	go func() { done <- b.wait(ctx) }()
 	select {
@@ -122,13 +122,13 @@ func TestTokenBucketDoesNotSpinOnFractionalState(t *testing.T) {
 		t.Fatal("wait must block and not spin within 20ms")
 	case <-time.After(20 * time.Millisecond):
 	}
-	clock.Advance(time.Hour)
+	clock.Advance(time.Millisecond)
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatal(err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("bucket never refilled")
+		t.Fatal("wait never returned after advance")
 	}
 }
