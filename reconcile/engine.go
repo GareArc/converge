@@ -505,7 +505,6 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 
 func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stop <-chan struct{}, stopIntake, stopHandlers func()) {
 	interval := e.leaseInterval()
-	extendCtx := context.WithoutCancel(ctx)
 	for {
 		select {
 		case <-stop:
@@ -515,7 +514,10 @@ func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stop <-c
 			stopIntake()
 			return
 		case <-e.deps.Clock.After(interval):
-			if err := h.Extend(extendCtx, e.deps.LeaseTTL); err != nil {
+			extendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), interval)
+			err := h.Extend(extendCtx, e.deps.LeaseTTL)
+			cancel()
+			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}

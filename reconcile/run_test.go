@@ -407,9 +407,10 @@ type flakyLease struct {
 }
 
 type flakyHandle struct {
-	l          *flakyLease
-	extendErrs int
-	done       chan struct{}
+	l           *flakyLease
+	extendErrs  int
+	extendCalls int
+	done        chan struct{}
 }
 
 func (l *flakyLease) TryAcquire(context.Context, string, time.Duration) (converge.LeaseHandle, bool, error) {
@@ -436,14 +437,27 @@ func (l *flakyLease) armExtendErr() {
 	}
 }
 
+func (l *flakyLease) currentHandle() *flakyHandle {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.handle
+}
+
 func (h *flakyHandle) Extend(context.Context, time.Duration) error {
 	h.l.mu.Lock()
 	defer h.l.mu.Unlock()
+	h.extendCalls++
 	if h.extendErrs > 0 {
 		h.extendErrs--
 		return errors.New("flaky: extend failed")
 	}
 	return nil
+}
+
+func (h *flakyHandle) extendCount() int {
+	h.l.mu.Lock()
+	defer h.l.mu.Unlock()
+	return h.extendCalls
 }
 
 func (h *flakyHandle) Release(context.Context) error {
@@ -547,6 +561,76 @@ func TestHeartbeatExtendErrorStepsDownAndReacquires(t *testing.T) {
 			t.Fatal("engine never re-acquired after step-down")
 		}
 		clock.Advance(10 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func TestHeartbeatExtendsThroughDrain(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	rec := &eventRecorder{}
+	lease := &flakyLease{}
+	started := make(chan struct{})
+	var once sync.Once
+	spec := specWithSchedule()
+	spec.Reconciler = Func(func(ctx context.Context, id ID) error {
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := converge.JobDeps{
+		Lease:        lease,
+		KV:           inmem.NewKVWithClock(clock),
+		Observer:     rec,
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: 30 * time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, deps) }()
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+	h := lease.currentHandle()
+	if h == nil {
+		t.Fatal("lease was never acquired")
+	}
+	before := h.extendCount()
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for h.extendCount() <= before {
+		if time.Now().After(deadline) {
+			t.Fatal("heartbeat never extended the lease during drain")
+		}
+		clock.Advance(4 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("clean shutdown must return nil, got %v", err)
+			}
+			return
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Run never returned after drain")
+		}
+		clock.Advance(5 * time.Second)
 		time.Sleep(2 * time.Millisecond)
 	}
 }
