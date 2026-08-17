@@ -47,6 +47,12 @@ func TestTokenBucketZeroRateIsUnlimited(t *testing.T) {
 	if b := newTokenBucket(converge.Rate{}, convergetest.NewClock(wqStart)); b != nil {
 		t.Fatal("zero rate must mean no bucket")
 	}
+	if b := newTokenBucket(converge.Rate{Events: 5}, convergetest.NewClock(wqStart)); b != nil {
+		t.Fatal("zero per must mean no bucket")
+	}
+	if b := newTokenBucket(converge.Rate{Per: time.Second}, convergetest.NewClock(wqStart)); b != nil {
+		t.Fatal("zero events must mean no bucket")
+	}
 	var b *tokenBucket
 	if err := b.wait(context.Background()); err != nil {
 		t.Fatal("nil bucket must never block")
@@ -98,5 +104,31 @@ func TestTokenBucketWaitHonorsContext(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("wait ignored cancellation")
+	}
+}
+
+func TestTokenBucketDoesNotSpinOnFractionalState(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	b := newTokenBucket(converge.Rate{Events: 1, Per: time.Hour}, clock)
+	ctx := context.Background()
+	if err := b.wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(30 * time.Minute)
+	done := make(chan error, 1)
+	go func() { done <- b.wait(ctx) }()
+	select {
+	case <-done:
+		t.Fatal("wait must block and not spin within 20ms")
+	case <-time.After(20 * time.Millisecond):
+	}
+	clock.Advance(time.Hour)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("bucket never refilled")
 	}
 }

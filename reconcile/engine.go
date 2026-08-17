@@ -47,7 +47,7 @@ type tokenBucket struct {
 }
 
 func newTokenBucket(r converge.Rate, clock converge.Clock) *tokenBucket {
-	if r.IsZero() {
+	if r.Events <= 0 || r.Per <= 0 {
 		return nil
 	}
 	return &tokenBucket{rate: r, clock: clock, tokens: float64(r.Events), last: clock.Now()}
@@ -71,6 +71,9 @@ func (b *tokenBucket) wait(ctx context.Context) error {
 			return nil
 		}
 		need := time.Duration((1 - b.tokens) / float64(b.rate.Events) * float64(b.rate.Per))
+		if need < time.Millisecond {
+			need = time.Millisecond
+		}
 		b.mu.Unlock()
 		select {
 		case <-ctx.Done():
