@@ -67,6 +67,22 @@ func KV(t *testing.T, open func(t *testing.T) converge.KV, o KVOptions) {
 		}
 	})
 
+	t.Run("cas clears ttl", func(t *testing.T) {
+		if o.Advance == nil {
+			t.Skip("no clock control")
+		}
+		kv := open(t)
+		kv.Set(ctx, "k", []byte("a"), time.Second)
+		if ok, err := kv.SetCAS(ctx, "k", []byte("a"), []byte("b")); err != nil || !ok {
+			t.Fatalf("swap = %v, %v", ok, err)
+		}
+		o.Advance(2 * time.Second)
+		val, ok, _ := kv.Get(ctx, "k")
+		if !ok || string(val) != "b" {
+			t.Fatalf("SetCAS must clear TTL; got %q, %v", val, ok)
+		}
+	})
+
 	t.Run("delete", func(t *testing.T) {
 		kv := open(t)
 		if err := kv.Delete(ctx, "absent"); err != nil {
