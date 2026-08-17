@@ -14,7 +14,7 @@ import (
 // modules from injecting foreign jobs.
 type job interface {
 	Name() string
-	// Run blocks until ctx is canceled, drains in flight-work within
+	// Run blocks until ctx is canceled, drains in-flight work within
 	// JobDeps.DrainTimeout, and returns nil on a clean stop.
 	Run(ctx context.Context, d JobDeps) error
 	Ready() <-chan struct{}
@@ -137,7 +137,8 @@ func (rt *Runtime) Run(ctx context.Context) error {
 }
 
 // Ready closes when every registered job's consumers and triggers are live.
-// With no jobs it closes as soon as Run starts.
+// With no jobs it closes as soon as Run starts. Select against your own context
+// as well: if shutdown wins before every job becomes ready, this channel never closes.
 func (rt *Runtime) Ready() <-chan struct{} { return rt.ready }
 
 // Poke wakes one ID of one job: bypasses backoff and revives parked IDs
