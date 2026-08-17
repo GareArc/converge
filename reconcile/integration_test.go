@@ -42,6 +42,7 @@ type world struct {
 	rt    *converge.Runtime
 	clock *convergetest.Clock
 	mq    *inmem.MQ
+	kv    converge.KV
 	rec   *recorder
 	done  chan error
 }
@@ -50,19 +51,20 @@ func newWorld(t *testing.T) *world {
 	t.Helper()
 	clock := convergetest.NewClock(start)
 	mq := inmem.NewMQWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
 	rec := &recorder{}
 	rt, err := converge.New(converge.Options{
 		Namespace: "it",
 		MQ:        mq,
 		Lease:     inmem.NewLeaseWithClock(clock),
-		KV:        inmem.NewKVWithClock(clock),
+		KV:        kv,
 		Observer:  rec,
 		Clock:     clock,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &world{rt: rt, clock: clock, mq: mq, rec: rec, done: make(chan error, 1)}
+	return &world{rt: rt, clock: clock, mq: mq, kv: kv, rec: rec, done: make(chan error, 1)}
 }
 
 func (w *world) run(t *testing.T) context.CancelFunc {
@@ -109,6 +111,14 @@ func awaitTrue(t *testing.T, cond func() bool) {
 			t.Fatal("condition never became true")
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func stableTrue(t *testing.T, cond func() bool) {
+	t.Helper()
+	time.Sleep(20 * time.Millisecond)
+	if !cond() {
+		t.Fatal("state changed while it must hold")
 	}
 }
 
@@ -441,4 +451,122 @@ func TestUnknownJobPokeFails(t *testing.T) {
 	if err := w.rt.Poke("no-such-job", "x"); err == nil {
 		t.Fatal("poke on an unknown job must error")
 	}
+}
+
+func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
+	w := newWorld(t)
+	tr := reconcile.NewTracker(w.kv, "deploy")
+	ctx := context.Background()
+	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var applied []reconcile.Version
+	raceOnce := true
+	err := reconcile.Register(w.rt, reconcile.Spec{
+		Name:     "deploy",
+		Versions: tr,
+		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
+			v, err := tr.Latest(ctx, id)
+			if err != nil {
+				return err
+			}
+			mu.Lock()
+			race := raceOnce
+			raceOnce = false
+			mu.Unlock()
+			if race {
+				if _, err := tr.MarkChanged(ctx, id); err != nil {
+					return err
+				}
+			}
+			res := tr.MarkApplied(ctx, id, v)
+			if res == nil {
+				mu.Lock()
+				applied = append(applied, v)
+				mu.Unlock()
+			}
+			return res
+		}),
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
+				return []string{"app-1"}, nil
+			}), reconcile.Every(time.Hour)),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	w.advanceUntil(t, 100*time.Millisecond, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(applied) == 1
+	})
+	mu.Lock()
+	got := applied[0]
+	mu.Unlock()
+	if got != 2 {
+		t.Fatalf("converged at version %d; want 2", got)
+	}
+	if n := w.rec.count(func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Err != nil
+	}); n != 0 {
+		t.Fatalf("ErrOutdated must not count as failure: %d failed RunCompleted events", n)
+	}
+}
+
+func TestScenarioBParkedRevivesOnMarkChanged(t *testing.T) {
+	w := newWorld(t)
+	tr := reconcile.NewTracker(w.kv, "deploy")
+	ctx := context.Background()
+	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	broken := true
+	converged := false
+	err := reconcile.Register(w.rt, reconcile.Spec{
+		Name:            "deploy",
+		Versions:        tr,
+		DeadLetterAfter: 2,
+		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if broken {
+				return errors.New("runner rejects config")
+			}
+			converged = true
+			return nil
+		}),
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
+				return []string{"app-1"}, nil
+			}), reconcile.Every(time.Minute)),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	w.advanceUntil(t, time.Second, func() bool {
+		return w.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.IDParked)
+			return ok
+		}) == 1
+	})
+	mu.Lock()
+	broken = false
+	mu.Unlock()
+	w.clock.Advance(time.Minute)
+	stableTrue(t, func() bool { mu.Lock(); defer mu.Unlock(); return !converged })
+	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
+		t.Fatal(err)
+	}
+	w.advanceUntil(t, time.Minute, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return converged
+	})
 }
