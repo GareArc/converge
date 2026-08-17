@@ -63,3 +63,16 @@ func TestAdvanceFiresAllDueWaiters(t *testing.T) {
 		t.Fatalf("Now() = %v", got)
 	}
 }
+
+func TestAdvanceDeliversWaiterDueTime(t *testing.T) {
+	c := convergetest.NewClock(start)
+	a := c.After(5 * time.Second)
+	b := c.After(7 * time.Second)
+	c.Advance(10 * time.Second)
+	if got := <-a; !got.Equal(start.Add(5 * time.Second)) {
+		t.Fatalf("a fired with %v, want its due time", got)
+	}
+	if got := <-b; !got.Equal(start.Add(7 * time.Second)) {
+		t.Fatalf("b fired with %v, want its due time", got)
+	}
+}
