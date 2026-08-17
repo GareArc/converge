@@ -53,3 +53,13 @@ type wrapSignal struct {
 }
 
 func (w wrapSignal) Unwrap() error { return w.wrapped }
+
+func TestFromErrorOutermostSignalWinsBehindPlainWrapper(t *testing.T) {
+	inner := fakeSignal{converge.SurfaceWorker}
+	mid := wrapSignal{fakeSignal{converge.SurfaceReconcile}, inner}
+	err := fmt.Errorf("context: %w", mid)
+	s, ok := sig.FromError(err)
+	if !ok || s.ControlSurface() != converge.SurfaceReconcile {
+		t.Fatalf("outermost signal behind a plain wrapper must win, got %v, %v", s, ok)
+	}
+}
