@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/convergetest"
+	"github.com/GareArc/converge/inmem"
 )
 
 func startSchedule(t *testing.T, te *testEngine, src IDSource, cad Cadence) {
@@ -94,6 +96,107 @@ func TestMissedTickCatchupReplaysEachBoundary(t *testing.T) {
 	})
 	if got := runCount(te); got < 1 {
 		t.Fatalf("expected at least one run from the replayed boundaries, got %d", got)
+	}
+}
+
+func TestRunOnceBacklogBeyondCapIsOneMakeupPass(t *testing.T) {
+	var mu sync.Mutex
+	pageCalls := 0
+	src := IDs(func(context.Context) ([]ID, error) {
+		mu.Lock()
+		pageCalls++
+		mu.Unlock()
+		return []ID{""}, nil
+	})
+	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
+	seedLastFire(t, te, wqStart.Add(-2500*time.Second))
+	startSchedule(t, te, src, Every(time.Second))
+	calls := func() int { mu.Lock(); defer mu.Unlock(); return pageCalls }
+	await(t, func() bool { return calls() == 1 })
+	assertStable(t, func() bool { return calls() == 1 })
+	if n := te.rec.count(func(e converge.Event) bool {
+		_, ok := e.(converge.PassOverrun)
+		return ok
+	}); n != 0 {
+		t.Fatalf("missed boundaries must not be reported as overruns: got %d PassOverrun events", n)
+	}
+	advanceUntil(t, te, time.Second, func() bool { return calls() == 2 })
+}
+
+func TestOverrunBeyondCapIsConsumedNotMadeUp(t *testing.T) {
+	var mu sync.Mutex
+	pageCalls := 0
+	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
+	src := IDs(func(context.Context) ([]ID, error) {
+		mu.Lock()
+		pageCalls++
+		n := pageCalls
+		mu.Unlock()
+		if n == 1 {
+			te.clock.Advance(2500 * time.Second)
+		}
+		return []ID{""}, nil
+	})
+	startSchedule(t, te, src, Every(time.Second))
+	calls := func() int { mu.Lock(); defer mu.Unlock(); return pageCalls }
+	await(t, func() bool { return calls() == 1 })
+	assertStable(t, func() bool { return calls() == 1 })
+	advanceUntil(t, te, time.Second, func() bool { return calls() == 2 })
+}
+
+func TestLatestBoundary(t *testing.T) {
+	anchor := time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
+	if got := latestBoundary(Every(time.Second), anchor, anchor.Add(2500*time.Second+300*time.Millisecond)); !got.Equal(anchor.Add(2500 * time.Second)) {
+		t.Fatalf("Every: got %v", got)
+	}
+	hourly := Cron("0 * * * *", CronOpts{})
+	if got := latestBoundary(hourly, anchor, anchor.Add(3*time.Hour+30*time.Minute)); !got.Equal(anchor.Add(3 * time.Hour)) {
+		t.Fatalf("Cron: got %v", got)
+	}
+	if got := latestBoundary(hourly, anchor.Add(time.Hour), anchor); !got.Equal(anchor.Add(time.Hour)) {
+		t.Fatalf("future anchor must be returned unchanged: got %v", got)
+	}
+}
+
+func TestAllReplicasScheduleIsReplicaLocal(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	kv := inmem.NewKVWithClock(clock)
+	var mu sync.Mutex
+	calls := map[int]int{}
+	boot := func(replica int) *engine {
+		e := &engine{cfg: config{
+			name:        "job",
+			concurrency: 1,
+			single:      true,
+			runMode:     converge.OnAllReplicas,
+			rec:         Func(func(ctx context.Context, id ID) error { return nil }),
+		}, ready: make(chan struct{})}
+		if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &eventRecorder{}, Clock: clock}); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		var wg sync.WaitGroup
+		go e.dispatch(ctx, ctx, &wg)
+		src := IDs(func(context.Context) ([]ID, error) {
+			mu.Lock()
+			calls[replica]++
+			mu.Unlock()
+			return []ID{""}, nil
+		})
+		st := Schedule(src, Every(time.Hour)).(*scheduleTrigger)
+		go e.runSchedule(ctx, 0, st)
+		return e
+	}
+	e1 := boot(1)
+	boot(2)
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls[1] == 1 && calls[2] == 1
+	})
+	if _, ok, err := kv.Get(context.Background(), e1.key("sched", "0", "last")); err != nil || ok {
+		t.Fatalf("OnAllReplicas must keep schedule state replica-local: ok=%v err=%v", ok, err)
 	}
 }
 

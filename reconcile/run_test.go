@@ -564,9 +564,9 @@ func TestHeartbeatExtendErrorStepsDownAndReacquires(t *testing.T) {
 	}
 }
 
-func TestHeartbeatExtendsThroughDrain(t *testing.T) {
+func startDrainingLeader(t *testing.T) (*convergetest.Clock, *flakyLease, context.CancelFunc, chan error) {
+	t.Helper()
 	clock := convergetest.NewClock(wqStart)
-	rec := &eventRecorder{}
 	lease := &flakyLease{}
 	started := make(chan struct{})
 	var once sync.Once
@@ -583,7 +583,7 @@ func TestHeartbeatExtendsThroughDrain(t *testing.T) {
 	deps := converge.JobDeps{
 		Lease:        lease,
 		KV:           inmem.NewKVWithClock(clock),
-		Observer:     rec,
+		Observer:     &eventRecorder{},
 		Clock:        clock,
 		LeaseTTL:     30 * time.Second,
 		DrainTimeout: 30 * time.Second,
@@ -602,21 +602,12 @@ func TestHeartbeatExtendsThroughDrain(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler never started")
 	}
-	h := lease.currentHandle()
-	if h == nil {
-		t.Fatal("lease was never acquired")
-	}
-	before := h.extendCount()
-	cancel()
+	return clock, lease, cancel, done
+}
+
+func awaitCleanReturn(t *testing.T, clock *convergetest.Clock, done chan error) {
+	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
-	for h.extendCount() <= before {
-		if time.Now().After(deadline) {
-			t.Fatal("heartbeat never extended the lease during drain")
-		}
-		clock.Advance(4 * time.Second)
-		time.Sleep(2 * time.Millisecond)
-	}
-	deadline = time.Now().Add(2 * time.Second)
 	for {
 		select {
 		case err := <-done:
@@ -632,4 +623,43 @@ func TestHeartbeatExtendsThroughDrain(t *testing.T) {
 		clock.Advance(5 * time.Second)
 		time.Sleep(2 * time.Millisecond)
 	}
+}
+
+func TestHeartbeatExtendsThroughDrain(t *testing.T) {
+	clock, lease, cancel, done := startDrainingLeader(t)
+	h := lease.currentHandle()
+	if h == nil {
+		t.Fatal("lease was never acquired")
+	}
+	before := h.extendCount()
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for h.extendCount() <= before {
+		if time.Now().After(deadline) {
+			t.Fatal("heartbeat never extended the lease during drain")
+		}
+		clock.Advance(4 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+	awaitCleanReturn(t, clock, done)
+}
+
+func TestHeartbeatSurvivesTransientExtendFailureDuringDrain(t *testing.T) {
+	clock, lease, cancel, done := startDrainingLeader(t)
+	h := lease.currentHandle()
+	if h == nil {
+		t.Fatal("lease was never acquired")
+	}
+	before := h.extendCount()
+	lease.armExtendErr()
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for h.extendCount() < before+2 {
+		if time.Now().After(deadline) {
+			t.Fatal("heartbeat died after a transient extend failure during drain")
+		}
+		clock.Advance(4 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+	awaitCleanReturn(t, clock, done)
 }

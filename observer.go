@@ -81,14 +81,14 @@ type PassOverrun struct {
 
 func (PassOverrun) event() {}
 
-type IDDeadLettered struct {
+type IDParked struct {
 	Job      string
 	ID       string
 	Failures int
 	Err      error
 }
 
-func (IDDeadLettered) event() {}
+func (IDParked) event() {}
 
 type WrongSurfaceSignal struct {
 	Job     string

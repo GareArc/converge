@@ -249,7 +249,7 @@ func TestForeignSignalParksImmediatelyEndToEnd(t *testing.T) {
 	})
 	awaitTrue(t, func() bool {
 		return w.rec.count(func(e converge.Event) bool {
-			_, ok := e.(converge.IDDeadLettered)
+			_, ok := e.(converge.IDParked)
 			return ok
 		}) == 1
 	})
@@ -419,7 +419,7 @@ func TestPokeRevivesParkedID(t *testing.T) {
 	w.run(t)
 	awaitTrue(t, func() bool {
 		return w.rec.count(func(e converge.Event) bool {
-			dl, ok := e.(converge.IDDeadLettered)
+			dl, ok := e.(converge.IDParked)
 			return ok && dl.Job == "flaky" && dl.ID == "app_13"
 		}) == 1
 	})

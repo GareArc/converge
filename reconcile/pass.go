@@ -26,21 +26,44 @@ func boundaries(c Cadence, last, now time.Time) []time.Time {
 	return out
 }
 
+func latestBoundary(c Cadence, from, now time.Time) time.Time {
+	if now.Before(from) {
+		return from
+	}
+	if c.every > 0 {
+		return from.Add(now.Sub(from) / c.every * c.every)
+	}
+	for {
+		n := c.sched.Next(from.In(c.loc))
+		if n.After(now) {
+			return from
+		}
+		from = n
+	}
+}
+
 func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) {
 	if st.cad.err != nil {
 		return
 	}
 	lastKey := e.key("sched", strconv.Itoa(idx), "last")
 	cursorKey := e.key("sched", strconv.Itoa(idx), "cursor")
+	readLast := func(ctx context.Context) (time.Time, bool) { return e.readTime(ctx, lastKey) }
+	writeLast := func(ctx context.Context, t time.Time) { e.writeTime(ctx, lastKey, t) }
+	if e.cfg.runMode == converge.OnAllReplicas {
+		var local time.Time
+		readLast = func(context.Context) (time.Time, bool) { return local, !local.IsZero() }
+		writeLast = func(_ context.Context, t time.Time) { local = t }
+	}
 	for ctx.Err() == nil {
-		last, ok := e.readTime(ctx, lastKey)
+		last, ok := readLast(ctx)
 		now := e.deps.Clock.Now()
 		if !ok {
 			if !e.runPass(ctx, st, cursorKey) {
 				return
 			}
-			e.writeTime(ctx, lastKey, now)
-			e.checkOverrun(ctx, st, lastKey, now)
+			writeLast(ctx, now)
+			e.checkOverrun(ctx, st, writeLast, now)
 			continue
 		}
 		pending := boundaries(st.cad, last, now)
@@ -66,20 +89,24 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 			}
 		}
 		latest := pending[len(pending)-1]
-		e.writeTime(ctx, lastKey, latest)
-		e.checkOverrun(ctx, st, lastKey, latest)
+		if st.cad.missedTick() != Catchup {
+			latest = latestBoundary(st.cad, latest, now)
+		}
+		writeLast(ctx, latest)
+		e.checkOverrun(ctx, st, writeLast, latest)
 	}
 }
 
-func (e *engine) checkOverrun(ctx context.Context, st *scheduleTrigger, lastKey string, anchor time.Time) {
-	over := boundaries(st.cad, anchor, e.deps.Clock.Now())
+func (e *engine) checkOverrun(ctx context.Context, st *scheduleTrigger, writeLast func(context.Context, time.Time), anchor time.Time) {
+	now := e.deps.Clock.Now()
+	over := boundaries(st.cad, anchor, now)
 	if len(over) == 0 {
 		return
 	}
 	for _, due := range over {
 		e.deps.Observer.Observe(converge.PassOverrun{Job: e.cfg.name, Due: due})
 	}
-	e.writeTime(ctx, lastKey, over[len(over)-1])
+	writeLast(ctx, latestBoundary(st.cad, over[len(over)-1], now))
 }
 
 func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey string) bool {

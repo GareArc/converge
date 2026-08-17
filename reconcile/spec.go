@@ -85,6 +85,9 @@ func newEngine(s Spec) (*engine, error) {
 			return nil, fail("OnAllReplicas cannot use RateLimit")
 		}
 	}
+	if s.Versions != nil {
+		return nil, fail("Versions is not supported yet")
+	}
 	periodic := false
 	for _, t := range cfg.triggers {
 		if t == nil {
@@ -100,6 +103,9 @@ func newEngine(s Spec) (*engine, error) {
 			}
 			if tr.cad.err != nil {
 				return nil, fmt.Errorf("reconcile: job %q: %w", s.Name, tr.cad.err)
+			}
+			if tr.cad.every == 0 && tr.cad.sched == nil {
+				return nil, fail("Schedule needs a Cadence; use Every or Cron")
 			}
 			if tr.source.paged && cfg.runMode == converge.OnAllReplicas {
 				return nil, fail("OnAllReplicas cannot use IDsByPage")

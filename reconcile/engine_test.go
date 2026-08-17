@@ -226,7 +226,7 @@ func TestForeignSignalParksImmediately(t *testing.T) {
 	})
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
-			_, ok := e.(converge.IDDeadLettered)
+			_, ok := e.(converge.IDParked)
 			return ok
 		}) == 1
 	})
@@ -243,7 +243,7 @@ func TestDeadLetterAfterParksAndEvents(t *testing.T) {
 	await(t, func() bool { return te.e.Stats().ConsecutiveFails >= 1 })
 	advanceUntil(t, te, time.Second, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
-			dl, ok := e.(converge.IDDeadLettered)
+			dl, ok := e.(converge.IDParked)
 			return ok && dl.ID == "a" && dl.Failures == 2
 		}) == 1
 	})
@@ -450,7 +450,7 @@ func TestDroppedHintOnForcedParkEmitsDiscard(t *testing.T) {
 	close(release)
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
-			_, ok := e.(converge.IDDeadLettered)
+			_, ok := e.(converge.IDParked)
 			return ok
 		}) == 1
 	})
@@ -487,7 +487,7 @@ func TestRevivedPokeDuringParkingRunsAgain(t *testing.T) {
 	close(release)
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
-			_, ok := e.(converge.IDDeadLettered)
+			_, ok := e.(converge.IDParked)
 			return ok
 		}) == 1
 	})

@@ -74,7 +74,7 @@ func TestRateZeroIsUnlimited(t *testing.T) {
 var _ = []Event{
 	WakeDiscarded{},
 	PassOverrun{},
-	IDDeadLettered{},
+	IDParked{},
 	WrongSurfaceSignal{},
 	BackoffFallback{},
 }

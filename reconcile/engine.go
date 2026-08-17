@@ -336,7 +336,7 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.name, ID: string(id), Consecutive: noBackoffLimit + 1})
 	}
 	if res.parked {
-		e.deps.Observer.Observe(converge.IDDeadLettered{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})
+		e.deps.Observer.Observe(converge.IDParked{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})
 	}
 	if res.droppedHint {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardParked})
@@ -524,7 +524,7 @@ func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stop <-c
 			cancel()
 			if err != nil {
 				if ctx.Err() != nil {
-					return
+					continue
 				}
 				stopHandlers()
 				stopIntake()
