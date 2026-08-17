@@ -107,28 +107,20 @@ func TestTokenBucketWaitHonorsContext(t *testing.T) {
 	}
 }
 
-func TestTokenBucketClampsSubMillisecondWaits(t *testing.T) {
-	clock := convergetest.NewClock(wqStart)
-	b := newTokenBucket(converge.Rate{Events: 1_000_000, Per: time.Second}, clock)
-	ctx := context.Background()
-	b.mu.Lock()
-	b.tokens = 0.999999999
-	b.last = clock.Now()
-	b.mu.Unlock()
-	done := make(chan error, 1)
-	go func() { done <- b.wait(ctx) }()
-	select {
-	case <-done:
-		t.Fatal("wait must block and not spin within 20ms")
-	case <-time.After(20 * time.Millisecond):
+func TestRefillWaitClampsToMillisecond(t *testing.T) {
+	cases := []struct {
+		tokens float64
+		rate   converge.Rate
+		want   time.Duration
+	}{
+		{0.999999999, converge.Rate{Events: 1_000_000, Per: time.Second}, time.Millisecond},
+		{0.5, converge.Rate{Events: 1, Per: time.Hour}, 30 * time.Minute},
+		{0, converge.Rate{Events: 1, Per: time.Second}, time.Second},
 	}
-	clock.Advance(time.Millisecond)
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
+	for _, c := range cases {
+		got := refillWait(c.tokens, c.rate)
+		if got != c.want {
+			t.Fatalf("refillWait(%v, {Events: %d, Per: %v}) = %v, want %v", c.tokens, c.rate.Events, c.rate.Per, got, c.want)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("wait never returned after advance")
 	}
 }

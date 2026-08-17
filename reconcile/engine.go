@@ -37,6 +37,14 @@ func jitter(d time.Duration) time.Duration {
 	return d/2 + time.Duration(rand.Int63n(int64(d/2)+1))
 }
 
+func refillWait(tokens float64, r converge.Rate) time.Duration {
+	need := time.Duration((1 - tokens) / float64(r.Events) * float64(r.Per))
+	if need < time.Millisecond {
+		need = time.Millisecond
+	}
+	return need
+}
+
 type tokenBucket struct {
 	rate  converge.Rate
 	clock converge.Clock
@@ -70,10 +78,7 @@ func (b *tokenBucket) wait(ctx context.Context) error {
 			b.mu.Unlock()
 			return nil
 		}
-		need := time.Duration((1 - b.tokens) / float64(b.rate.Events) * float64(b.rate.Per))
-		if need < time.Millisecond {
-			need = time.Millisecond
-		}
+		need := refillWait(b.tokens, b.rate)
 		b.mu.Unlock()
 		select {
 		case <-ctx.Done():
