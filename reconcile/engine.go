@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -167,7 +168,11 @@ func (e *engine) Poke(id string) error {
 	if e.cfg.single {
 		id = ""
 	}
-	e.report(ID(id), q.wake(ID(id), wakePoke))
+	res := q.wake(ID(id), wakePoke)
+	if res == wakeRevived && e.durableParks() {
+		e.deps.KV.Delete(context.Background(), e.parkKey(ID(id)))
+	}
+	e.report(ID(id), res)
 	return nil
 }
 
@@ -189,12 +194,41 @@ func (e *engine) Stats() converge.JobStats {
 	return s
 }
 
-func (e *engine) hint(id ID) {
+func (e *engine) hint(ctx context.Context, id ID) {
 	if id == "" && !e.cfg.single {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
 		return
 	}
-	e.report(id, e.queue.wake(id, wakeHint))
+	res := e.queue.wake(id, wakeHint)
+	if res == wakeDroppedParked && e.tryRevive(ctx, id) {
+		return
+	}
+	e.report(id, res)
+}
+
+func (e *engine) tryRevive(ctx context.Context, id ID) bool {
+	if e.cfg.versions == nil {
+		return false
+	}
+	marked, ok := e.parkedVersion(ctx, id)
+	if !ok {
+		return false
+	}
+	latest, err := e.cfg.versions.Latest(ctx, id)
+	if err != nil || latest <= marked {
+		return false
+	}
+	e.deleteKey(ctx, e.parkKey(id))
+	return e.queue.wake(id, wakeVersion) == wakeRevived
+}
+
+func (e *engine) parkedVersion(ctx context.Context, id ID) (Version, bool) {
+	raw := e.readString(ctx, e.parkKey(id))
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return Version(n), true
 }
 
 func (e *engine) report(id ID, res wakeResult) {
@@ -257,11 +291,28 @@ func (e *engine) awaitDue(ctx context.Context) (ID, bool) {
 	}
 }
 
+type versionSnapshot struct {
+	v     Version
+	known bool
+}
+
+func (e *engine) preRunVersion(ctx context.Context, id ID) versionSnapshot {
+	if e.cfg.versions == nil {
+		return versionSnapshot{}
+	}
+	v, err := e.cfg.versions.Latest(ctx, id)
+	if err != nil {
+		return versionSnapshot{}
+	}
+	return versionSnapshot{v: v, known: true}
+}
+
 func (e *engine) runOne(hctx context.Context, id ID) {
 	start := e.deps.Clock.Now()
+	snap := e.preRunVersion(hctx, id)
 	run := converge.Run{Job: e.cfg.name, Surface: converge.SurfaceReconcile, ID: string(id)}
 	err := e.invokeChain(hctx, run)
-	e.settle(hctx, id, err, e.deps.Clock.Now().Sub(start))
+	e.settle(hctx, id, err, e.deps.Clock.Now().Sub(start), snap)
 }
 
 func (e *engine) invokeChain(ctx context.Context, run converge.Run) (err error) {
@@ -286,7 +337,7 @@ func (e *engine) invoke(ctx context.Context, id ID) (err error) {
 	return e.cfg.rec.Reconcile(ctx, id)
 }
 
-func (e *engine) settle(hctx context.Context, id ID, err error, took time.Duration) {
+func (e *engine) settle(hctx context.Context, id ID, err error, took time.Duration, snap versionSnapshot) {
 	var (
 		kind  finishKind
 		delay time.Duration
@@ -337,6 +388,9 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 	}
 	if res.parked {
 		e.deps.Observer.Observe(converge.IDParked{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})
+		if !res.revived {
+			e.parkOrRevive(hctx, id, snap)
+		}
 	}
 	if res.droppedHint {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardParked})
@@ -383,6 +437,59 @@ func (e *engine) key(parts ...string) string {
 	return strings.Join(elems, "/")
 }
 
+func (e *engine) parkKey(id ID) string { return e.key("parked", string(id)) }
+
+func (e *engine) durableParks() bool {
+	return e.deps.KV != nil && e.cfg.runMode != converge.OnAllReplicas
+}
+
+func (e *engine) parkOrRevive(ctx context.Context, id ID, snap versionSnapshot) {
+	if !e.durableParks() {
+		return
+	}
+	if e.cfg.versions != nil && snap.known {
+		latest, err := e.cfg.versions.Latest(ctx, id)
+		if err == nil && latest > snap.v {
+			e.queue.wake(id, wakeVersion)
+			return
+		}
+	}
+	if e.cfg.versions != nil && snap.known && snap.v == 0 {
+		e.deps.Observer.Observe(converge.VersionZero{Job: e.cfg.name, ID: string(id)})
+	}
+	e.writeString(ctx, e.parkKey(id), strconv.FormatUint(uint64(snap.v), 10))
+}
+
+func (e *engine) loadParked(ctx context.Context) {
+	if !e.durableParks() {
+		return
+	}
+	prefix := e.parkKey("")
+	cursor := ""
+	for {
+		keys, next, err := e.deps.KV.Scan(ctx, prefix, cursor)
+		if err != nil {
+			if !e.pauseOnInfraError(ctx) {
+				return
+			}
+			continue
+		}
+		for _, k := range keys {
+			id := ID(strings.TrimPrefix(k, prefix))
+			switch e.queue.restorePark(id) {
+			case restoreBusy:
+				e.deleteKey(ctx, k)
+			case restoreOverflow:
+				e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
+			}
+		}
+		if next == "" {
+			return
+		}
+		cursor = next
+	}
+}
+
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	if err := e.bind(deps); err != nil {
 		return err
@@ -403,6 +510,9 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	e.deps = deps
 	if e.cfg.runMode == converge.OnOneReplica && deps.Lease == nil {
 		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.name)
+	}
+	if e.cfg.versions != nil && deps.KV == nil {
+		return fmt.Errorf("reconcile: job %q: Versions needs Options.KV", e.cfg.name)
 	}
 	for _, t := range e.cfg.triggers {
 		switch tr := t.(type) {
@@ -462,6 +572,8 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 			e.heartbeat(ctx, h, hbStop, stopIntake, stopHandlers)
 		}()
 	}
+
+	e.loadParked(intake)
 
 	var aux sync.WaitGroup
 	for i, t := range e.cfg.triggers {

@@ -403,6 +403,30 @@ func (q *wakeQueue) counts() queueCounts {
 	return c
 }
 
+type restoreResult int
+
+const (
+	restoredParked restoreResult = iota
+	restoreBusy
+	restoreOverflow
+)
+
+func (q *wakeQueue) restorePark(id ID) restoreResult {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if st := q.ids[id]; st != nil {
+		if st.phase == phaseParked {
+			return restoredParked
+		}
+		return restoreBusy
+	}
+	if len(q.ids) >= wakeQueueBound {
+		return restoreOverflow
+	}
+	q.ids[id] = &idState{phase: phaseParked}
+	return restoredParked
+}
+
 func (q *wakeQueue) reset() {
 	q.mu.Lock()
 	defer q.mu.Unlock()

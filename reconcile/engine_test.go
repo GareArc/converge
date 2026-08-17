@@ -77,7 +77,7 @@ type testEngine struct {
 	wg     *sync.WaitGroup
 }
 
-func startEngine(t *testing.T, cfg config, fn Func) *testEngine {
+func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn Func) *testEngine {
 	t.Helper()
 	clock := convergetest.NewClock(wqStart)
 	rec := &eventRecorder{}
@@ -90,7 +90,7 @@ func startEngine(t *testing.T, cfg config, fn Func) *testEngine {
 	cfg.rec = fn
 	e := &engine{cfg: cfg, ready: make(chan struct{})}
 	deps := converge.JobDeps{
-		KV:       inmem.NewKVWithClock(clock),
+		KV:       kv,
 		Observer: rec,
 		Clock:    clock,
 	}
@@ -108,6 +108,11 @@ func startEngine(t *testing.T, cfg config, fn Func) *testEngine {
 	return &testEngine{e: e, clock: clock, rec: rec, cancel: cancel, hctx: hctx, hstop: hstop, wg: &wg}
 }
 
+func startEngine(t *testing.T, cfg config, fn Func) *testEngine {
+	t.Helper()
+	return startEngineKV(t, cfg, inmem.NewKV(), fn)
+}
+
 func TestSuccessRunsOnceAndStampsStats(t *testing.T) {
 	var runs sync.Map
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
@@ -115,7 +120,7 @@ func TestSuccessRunsOnceAndStampsStats(t *testing.T) {
 		*(n.(*int))++
 		return nil
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
@@ -143,7 +148,7 @@ func TestFailureBacksOffThenRecovers(t *testing.T) {
 		}
 		return nil
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 1 {
 		t.Fatalf("ConsecutiveFails = %d", s.ConsecutiveFails)
@@ -164,7 +169,7 @@ func TestCheckAgainSchedulesRevisitWithoutFailure(t *testing.T) {
 		}
 		return nil
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 0 || s.LastSuccess.IsZero() {
 		t.Fatalf("CheckAgain must not count as failure: %+v", s)
@@ -184,7 +189,7 @@ func TestErrOutdatedRequeuesImmediately(t *testing.T) {
 		}
 		return nil
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	advanceUntil(t, te, 100*time.Millisecond, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 0 {
@@ -196,7 +201,7 @@ func TestPanicIsAFailure(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
 		panic("kaboom")
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
@@ -217,7 +222,7 @@ func TestForeignSignalParksImmediately(t *testing.T) {
 	te := startEngine(t, config{deadLetterAfter: 100}, func(ctx context.Context, id ID) error {
 		return fakeWorkerSignal{}
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
 			ws, ok := e.(converge.WrongSurfaceSignal)
@@ -239,7 +244,7 @@ func TestDeadLetterAfterParksAndEvents(t *testing.T) {
 	te := startEngine(t, config{deadLetterAfter: 2}, func(ctx context.Context, id ID) error {
 		return errors.New("always")
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	await(t, func() bool { return te.e.Stats().ConsecutiveFails >= 1 })
 	advanceUntil(t, te, time.Second, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
@@ -259,7 +264,7 @@ func TestNeutralOnCanceledContext(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	<-started
 	te.hstop()
 	await(t, func() bool {
@@ -295,8 +300,8 @@ func TestSingleFlightPerID(t *testing.T) {
 		return nil
 	})
 	for i := 0; i < 50; i++ {
-		te.e.hint("a")
-		te.e.hint("b")
+		te.e.hint(context.Background(), "a")
+		te.e.hint(context.Background(), "b")
 	}
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
@@ -340,7 +345,7 @@ func TestMiddlewareWrapsEveryRunOutermostFirst(t *testing.T) {
 	defer cancel()
 	var wg sync.WaitGroup
 	go e.dispatch(ctx, ctx, &wg)
-	e.hint("x")
+	e.hint(context.Background(), "x")
 	await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -362,8 +367,8 @@ func TestRateLimitThrottlesRuns(t *testing.T) {
 		calls++
 		return nil
 	})
-	te.e.hint("a")
-	te.e.hint("b")
+	te.e.hint(context.Background(), "a")
+	te.e.hint(context.Background(), "b")
 	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	advanceUntil(t, te, 10*time.Minute, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
@@ -371,7 +376,7 @@ func TestRateLimitThrottlesRuns(t *testing.T) {
 
 func TestEmptyIDHintRejectedUnlessSingle(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
-	te.e.hint("")
+	te.e.hint(context.Background(), "")
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
@@ -379,7 +384,7 @@ func TestEmptyIDHintRejectedUnlessSingle(t *testing.T) {
 		}) == 1
 	})
 	single := startEngine(t, config{name: "single", single: true}, func(ctx context.Context, id ID) error { return nil })
-	single.e.hint("")
+	single.e.hint(context.Background(), "")
 	await(t, func() bool {
 		return single.rec.count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
@@ -444,9 +449,9 @@ func TestDroppedHintOnForcedParkEmitsDiscard(t *testing.T) {
 		<-release
 		return errors.New("boom")
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	<-started
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	close(release)
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
@@ -479,7 +484,7 @@ func TestRevivedPokeDuringParkingRunsAgain(t *testing.T) {
 		}
 		return nil
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	<-started
 	if err := te.e.Poke("a"); err != nil {
 		t.Fatal(err)
@@ -502,7 +507,7 @@ func TestRevivedPokeDuringParkingRunsAgain(t *testing.T) {
 func TestSettleOnUnknownIDIsUnsettled(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	before := te.e.Stats()
-	te.e.settle(context.Background(), "ghost", nil, 0)
+	te.e.settle(context.Background(), "ghost", nil, 0, versionSnapshot{})
 	after := te.e.Stats()
 	if before != after {
 		t.Fatalf("stats changed on unsettled finish: before=%+v after=%+v", before, after)
@@ -516,7 +521,7 @@ func TestBackoffFallbackReportsTrueTripCount(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
 		return CheckAgain{}
 	})
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	advanceUntil(t, te, 300*time.Millisecond, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
 			_, ok := e.(converge.BackoffFallback)
@@ -534,4 +539,222 @@ func TestBackoffFallbackReportsTrueTripCount(t *testing.T) {
 		}
 	}
 	t.Fatal("no BackoffFallback event found")
+}
+
+func TestVersionZeroEventOnPark(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
+		return errors.New("boom")
+	})
+	te.e.hint(context.Background(), "a")
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.VersionZero)
+			return ok
+		}) == 1
+	})
+}
+
+func TestNoVersionZeroWhenProducerMarked(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	if _, err := tr.MarkChanged(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
+		return errors.New("boom")
+	})
+	te.e.hint(context.Background(), "a")
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.IDParked)
+			return ok
+		}) == 1
+	})
+	assertStable(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.VersionZero)
+			return ok
+		}) == 0
+	})
+	raw, ok, err := kv.Get(context.Background(), te.e.parkKey("a"))
+	if err != nil || !ok || string(raw) != "1" {
+		t.Fatalf("mark = %q, %v, %v; want \"1\"", raw, ok, err)
+	}
+}
+
+type erroringVersions struct{}
+
+func (erroringVersions) Latest(context.Context, ID) (Version, error) {
+	return 0, errors.New("version source down")
+}
+
+func TestVersionAdvanceRevivesParked(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	ctx := context.Background()
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	fail := true
+	runs := 0
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		runs++
+		if fail {
+			return errors.New("boom")
+		}
+		return nil
+	})
+	te.e.hint(ctx, "a")
+	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+
+	te.e.hint(ctx, "a")
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	te.e.hint(ctx, "a")
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	await(t, func() bool { return te.e.Stats().Parked == 0 })
+	await(t, func() bool {
+		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		return err == nil && !ok
+	})
+}
+
+func TestVersionSourceErrorKeepsParked(t *testing.T) {
+	kv := inmem.NewKV()
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: erroringVersions{}}, kv, func(context.Context, ID) error {
+		return errors.New("boom")
+	})
+	ctx := context.Background()
+	te.e.hint(ctx, "a")
+	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	te.e.hint(ctx, "a")
+	assertStable(t, func() bool { return te.e.Stats().Parked == 1 })
+	if n := te.rec.count(func(e converge.Event) bool {
+		w, ok := e.(converge.WakeDiscarded)
+		return ok && w.Reason == converge.DiscardParked
+	}); n == 0 {
+		t.Fatal("undecidable revival must still event the dropped hint")
+	}
+}
+
+func TestMidRunVersionBumpStillRevives(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	ctx := context.Background()
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	runs := 0
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(hctx context.Context, id ID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		runs++
+		if runs == 1 {
+			if _, err := tr.MarkChanged(hctx, id); err != nil {
+				return err
+			}
+			return errors.New("boom")
+		}
+		return nil
+	})
+	te.e.hint(ctx, "a")
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	await(t, func() bool { return te.e.Stats().Parked == 0 })
+	await(t, func() bool {
+		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		return err == nil && !ok
+	})
+	if n := te.rec.count(func(e converge.Event) bool {
+		_, ok := e.(converge.IDParked)
+		return ok
+	}); n != 1 {
+		t.Fatalf("park-then-revive must still event the park: got %d IDParked", n)
+	}
+}
+
+func TestInvalidMarkBlocksVersionRevival(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	ctx := context.Background()
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	runs := 0
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
+		mu.Lock()
+		runs++
+		mu.Unlock()
+		return errors.New("boom")
+	})
+	te.e.hint(ctx, "a")
+	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	await(t, func() bool {
+		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		return err == nil && ok
+	})
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := kv.Delete(ctx, te.e.parkKey("a")); err != nil {
+		t.Fatal(err)
+	}
+	te.e.hint(ctx, "a")
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	if err := kv.Set(ctx, te.e.parkKey("a"), []byte("junk"), 0); err != nil {
+		t.Fatal(err)
+	}
+	te.e.hint(ctx, "a")
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	assertStable(t, func() bool { return te.e.Stats().Parked == 1 })
+}
+
+func TestActivationClearsMarkForActiveID(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	kv := inmem.NewKVWithClock(clock)
+	e := &engine{cfg: config{name: "job", concurrency: 1, rec: Func(func(context.Context, ID) error { return nil })}, ready: make(chan struct{})}
+	if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &eventRecorder{}, Clock: clock}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := kv.Set(ctx, e.parkKey("a"), []byte("0"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Poke("a"); err != nil {
+		t.Fatal(err)
+	}
+	e.loadParked(ctx)
+	if _, ok, err := kv.Get(ctx, e.parkKey("a")); err != nil || ok {
+		t.Fatalf("mark for an already-queued id must be cleared at activation: ok=%v err=%v", ok, err)
+	}
+	if c := e.queue.counts(); c.parked != 0 || c.depth != 1 {
+		t.Fatalf("queued id must stay queued, not re-park: %+v", c)
+	}
+}
+
+func TestOnAllReplicasParksInMemoryOnly(t *testing.T) {
+	te := startEngine(t, config{runMode: converge.OnAllReplicas}, func(context.Context, ID) error {
+		return fakeWorkerSignal{}
+	})
+	te.e.hint(context.Background(), "a")
+	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	keys, _, err := te.e.deps.KV.Scan(context.Background(), te.e.parkKey(""), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("OnAllReplicas must not write shared park marks: %v", keys)
+	}
 }

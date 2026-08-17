@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/inmem"
 )
 
 func okSpec() Spec {
@@ -25,6 +26,7 @@ func TestSpecValidationMatrix(t *testing.T) {
 	}{
 		{"valid", func(s *Spec) {}, ""},
 		{"empty name", func(s *Spec) { s.Name = "" }, "Name"},
+		{"slash in name", func(s *Spec) { s.Name = "a/b" }, "must not contain"},
 		{"nil reconciler", func(s *Spec) { s.Reconciler = nil }, "Reconciler"},
 		{"negative concurrency", func(s *Spec) { s.Concurrency = -1 }, "Concurrency"},
 		{"negative dead letter", func(s *Spec) { s.DeadLetterAfter = -1 }, "DeadLetterAfter"},
@@ -58,7 +60,9 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"zero id source", func(s *Spec) { s.Triggers = []Trigger{Schedule(IDSource{}, Every(time.Hour))} }, "IDSource"},
 		{"bad cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Every(-time.Second))} }, "positive"},
 		{"zero cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cadence{})} }, "Cadence"},
-		{"versions not wired", func(s *Spec) { s.Versions = fakeVersions{} }, "not supported"},
+		{"tracker namespace mismatch", func(s *Spec) { s.Versions = NewTracker(inmem.NewKV(), "other-job") }, "must equal Spec.Name"},
+		{"misconstructed tracker", func(s *Spec) { s.Versions = NewTracker(nil, "job") }, "needs a KV"},
+		{"typed-nil tracker", func(s *Spec) { var tr *Tracker; s.Versions = tr }, "nil *Tracker"},
 		{"bad cron", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cron("@daily", CronOpts{}))} }, "descriptors"},
 		{"message trigger without queue", func(s *Spec) {
 			s.AllowUnscheduled = true
@@ -99,6 +103,18 @@ type fakeVersions struct{}
 
 func (fakeVersions) Latest(context.Context, ID) (Version, error) { return 0, nil }
 
+func TestVersionsAccepted(t *testing.T) {
+	base := okSpec()
+	base.Versions = NewTracker(inmem.NewKV(), base.Name)
+	if _, err := newEngine(base); err != nil {
+		t.Fatalf("matching Tracker namespace rejected: %v", err)
+	}
+	base.Versions = fakeVersions{}
+	if _, err := newEngine(base); err != nil {
+		t.Fatalf("non-Tracker VersionSource rejected: %v", err)
+	}
+}
+
 func TestNewEngineAppliesDefaults(t *testing.T) {
 	e, err := newEngine(okSpec())
 	if err != nil {
@@ -137,7 +153,7 @@ func TestCustomPeriodicTriggerSatisfiesScheduleRequirement(t *testing.T) {
 
 func TestPausedSpecDropsWakes(t *testing.T) {
 	te := startEngine(t, config{paused: true}, func(ctx context.Context, id ID) error { return nil })
-	te.e.hint("a")
+	te.e.hint(context.Background(), "a")
 	await(t, func() bool {
 		return te.rec.count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)

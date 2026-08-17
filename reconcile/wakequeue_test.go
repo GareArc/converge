@@ -290,6 +290,27 @@ func TestOverflowDropsNewIDs(t *testing.T) {
 	}
 }
 
+func TestRestoreParkReportsOverflow(t *testing.T) {
+	q, _ := newTestQueue(0, false)
+	for i := 0; i < wakeQueueBound; i++ {
+		if got := q.restorePark(ID(strconv.Itoa(i))); got != restoredParked {
+			t.Fatalf("restorePark %d = %d, want restoredParked while under bound", i, got)
+		}
+	}
+	if got := q.restorePark("new"); got != restoreOverflow {
+		t.Fatalf("restorePark beyond bound = %d, want restoreOverflow", got)
+	}
+	if got := q.restorePark(ID(strconv.Itoa(0))); got != restoredParked {
+		t.Fatalf("restorePark of an already-parked id at the bound = %d, want restoredParked", got)
+	}
+	if got := q.wake(ID(strconv.Itoa(1)), wakePoke); got != wakeRevived {
+		t.Fatalf("poke on a parked id = %d, want wakeRevived", got)
+	}
+	if got := q.restorePark(ID(strconv.Itoa(1))); got != restoreBusy {
+		t.Fatalf("restorePark of a queued id = %d, want restoreBusy", got)
+	}
+}
+
 func TestCountsAndReset(t *testing.T) {
 	q, clock := newTestQueue(1, false)
 	q.wake("a", wakeHint)

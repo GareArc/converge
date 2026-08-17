@@ -83,7 +83,7 @@ func (e *engine) runTrigger(ctx context.Context, idx int, t Trigger) {
 		e.runMessages(ctx, tr)
 		return
 	}
-	e.supervise(ctx, func() { t.Run(ctx, e.hint) })
+	e.supervise(ctx, func() { t.Run(ctx, func(id ID) { e.hint(ctx, id) }) })
 }
 
 func (e *engine) runMessages(ctx context.Context, t *messageTrigger) {
@@ -124,7 +124,7 @@ func (e *engine) deliverHint(ctx context.Context, t *messageTrigger, d converge.
 	if err != nil {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardUndecodable})
 	} else {
-		e.hint(id)
+		e.hint(ctx, id)
 	}
 	d.Ack(ctx)
 }

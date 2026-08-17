@@ -128,7 +128,7 @@ func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey str
 		}
 		retry = triggerRestartMin
 		for _, id := range ids {
-			e.hint(id)
+			e.hint(ctx, id)
 		}
 		if next == "" {
 			e.deleteKey(ctx, cursorKey)

@@ -90,6 +90,13 @@ type IDParked struct {
 
 func (IDParked) event() {}
 
+type VersionZero struct {
+	Job string
+	ID  string
+}
+
+func (VersionZero) event() {}
+
 type WrongSurfaceSignal struct {
 	Job     string
 	ID      string

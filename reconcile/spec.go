@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
@@ -37,6 +38,9 @@ func newEngine(s Spec) (*engine, error) {
 		return nil, errors.New("reconcile: Spec.Name is required")
 	}
 	fail := func(msg string) error { return fmt.Errorf("reconcile: job %q: %s", s.Name, msg) }
+	if strings.Contains(s.Name, "/") {
+		return nil, fail(`Name must not contain "/"`)
+	}
 	if s.Reconciler == nil {
 		return nil, fail("Spec.Reconciler is required")
 	}
@@ -85,8 +89,16 @@ func newEngine(s Spec) (*engine, error) {
 			return nil, fail("OnAllReplicas cannot use RateLimit")
 		}
 	}
-	if s.Versions != nil {
-		return nil, fail("Versions is not supported yet")
+	if t, ok := s.Versions.(*Tracker); ok {
+		if t == nil {
+			return nil, fail("Versions must not be a nil *Tracker")
+		}
+		if t.err != nil {
+			return nil, fmt.Errorf("reconcile: job %q: %w", s.Name, t.err)
+		}
+		if t.namespace != s.Name {
+			return nil, fail(fmt.Sprintf("Tracker namespace %q must equal Spec.Name", t.namespace))
+		}
 	}
 	periodic := false
 	for _, t := range cfg.triggers {
