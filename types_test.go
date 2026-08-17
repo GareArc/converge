@@ -75,6 +75,7 @@ var _ = []Event{
 	WakeDiscarded{},
 	PassOverrun{},
 	IDParked{},
+	VersionZero{},
 	WrongSurfaceSignal{},
 	BackoffFallback{},
 }

@@ -662,6 +662,78 @@ func TestHeartbeatExtendsThroughDrain(t *testing.T) {
 	awaitCleanReturn(t, clock, done)
 }
 
+func bootPersistent(t *testing.T, clock *convergetest.Clock, kv converge.KV, fn Func, dla int) (*testEngine, chan error, context.CancelFunc) {
+	t.Helper()
+	rec := &eventRecorder{}
+	e := &engine{cfg: config{name: "job", concurrency: 1, deadLetterAfter: dla, allowUnscheduled: true, rec: fn}, ready: make(chan struct{})}
+	deps := converge.JobDeps{
+		KV:           kv,
+		Lease:        inmem.NewLeaseWithClock(clock),
+		Observer:     rec,
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: 30 * time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, deps) }()
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("engine never ready")
+	}
+	return &testEngine{e: e, clock: clock, rec: rec, cancel: cancel}, done, cancel
+}
+
+func TestParkedMarksSurviveRestart(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	kv := inmem.NewKVWithClock(clock)
+	te1, done1, cancel1 := bootPersistent(t, clock, kv, func(context.Context, ID) error {
+		return errors.New("boom")
+	}, 1)
+	te1.e.hint(context.Background(), "a")
+	await(t, func() bool {
+		return te1.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.IDParked)
+			return ok
+		}) == 1
+	})
+	await(t, func() bool {
+		_, ok, err := kv.Get(context.Background(), te1.e.parkKey("a"))
+		return err == nil && ok
+	})
+	cancel1()
+	awaitCleanReturn(t, clock, done1)
+
+	var mu sync.Mutex
+	runs := 0
+	te2, done2, cancel2 := bootPersistent(t, clock, kv, func(context.Context, ID) error {
+		mu.Lock()
+		runs++
+		mu.Unlock()
+		return nil
+	}, 1)
+	await(t, func() bool { return te2.e.Stats().Parked == 1 })
+	te2.e.hint(context.Background(), "a")
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 0 })
+	if n := te2.rec.count(func(e converge.Event) bool {
+		w, ok := e.(converge.WakeDiscarded)
+		return ok && w.Reason == converge.DiscardParked
+	}); n != 1 {
+		t.Fatalf("restored parked ID must drop hints with DiscardParked, got %d events", n)
+	}
+	if err := te2.e.Poke("a"); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	await(t, func() bool {
+		_, ok, err := kv.Get(context.Background(), te2.e.parkKey("a"))
+		return err == nil && !ok
+	})
+	cancel2()
+	awaitCleanReturn(t, clock, done2)
+}
+
 func TestHeartbeatSurvivesTransientExtendFailureDuringDrain(t *testing.T) {
 	clock, lease, cancel, done := startDrainingLeader(t)
 	h := lease.currentHandle()

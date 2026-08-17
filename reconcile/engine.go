@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -167,7 +168,11 @@ func (e *engine) Poke(id string) error {
 	if e.cfg.single {
 		id = ""
 	}
-	e.report(ID(id), q.wake(ID(id), wakePoke))
+	res := q.wake(ID(id), wakePoke)
+	if res == wakeRevived && e.durableParks() {
+		e.deps.KV.Delete(context.Background(), e.parkKey(ID(id)))
+	}
+	e.report(ID(id), res)
 	return nil
 }
 
@@ -189,7 +194,7 @@ func (e *engine) Stats() converge.JobStats {
 	return s
 }
 
-func (e *engine) hint(id ID) {
+func (e *engine) hint(ctx context.Context, id ID) {
 	if id == "" && !e.cfg.single {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
 		return
@@ -337,6 +342,9 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 	}
 	if res.parked {
 		e.deps.Observer.Observe(converge.IDParked{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})
+		if !res.revived {
+			e.markParked(hctx, id)
+		}
 	}
 	if res.droppedHint {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardParked})
@@ -381,6 +389,53 @@ func (e *engine) key(parts ...string) string {
 	elems = append(elems, "converge", "reconcile", e.cfg.name)
 	elems = append(elems, parts...)
 	return strings.Join(elems, "/")
+}
+
+func (e *engine) parkKey(id ID) string { return e.key("parked", string(id)) }
+
+func (e *engine) durableParks() bool {
+	return e.deps.KV != nil && e.cfg.runMode != converge.OnAllReplicas
+}
+
+func (e *engine) markParked(ctx context.Context, id ID) {
+	if !e.durableParks() {
+		return
+	}
+	var v Version
+	if e.cfg.versions != nil {
+		latest, err := e.cfg.versions.Latest(ctx, id)
+		if err == nil {
+			v = latest
+			if v == 0 {
+				e.deps.Observer.Observe(converge.VersionZero{Job: e.cfg.name, ID: string(id)})
+			}
+		}
+	}
+	e.writeString(ctx, e.parkKey(id), strconv.FormatUint(uint64(v), 10))
+}
+
+func (e *engine) loadParked(ctx context.Context) {
+	if !e.durableParks() {
+		return
+	}
+	prefix := e.parkKey("")
+	cursor := ""
+	for {
+		keys, next, err := e.deps.KV.Scan(ctx, prefix, cursor)
+		if err != nil {
+			if !e.pauseOnInfraError(ctx) {
+				return
+			}
+			continue
+		}
+		for _, k := range keys {
+			e.queue.restorePark(ID(strings.TrimPrefix(k, prefix)))
+		}
+		if next == "" {
+			return
+		}
+		cursor = next
+	}
 }
 
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
@@ -465,6 +520,8 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 			e.heartbeat(ctx, h, hbStop, stopIntake, stopHandlers)
 		}()
 	}
+
+	e.loadParked(intake)
 
 	var aux sync.WaitGroup
 	for i, t := range e.cfg.triggers {
