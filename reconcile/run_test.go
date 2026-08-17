@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -141,8 +142,9 @@ func TestLeaseLossStepsDownAndReelects(t *testing.T) {
 
 func TestLeaseLossCancelsInFlightNeutrally(t *testing.T) {
 	started := make(chan struct{})
+	var once sync.Once
 	blocked := Func(func(ctx context.Context, id ID) error {
-		close(started)
+		once.Do(func() { close(started) })
 		<-ctx.Done()
 		return ctx.Err()
 	})
@@ -373,22 +375,178 @@ func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
 	}
 }
 
-func TestPausedSpecThroughRegisterDropsWakes(t *testing.T) {
-	spec := specWithSchedule()
-	spec.Paused = true
+func TestPausedSpecDropsPokes(t *testing.T) {
+	spec := Spec{
+		Name:       "job",
+		Paused:     true,
+		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Triggers:   []Trigger{Schedule(IDs(func(context.Context) ([]ID, error) { return nil, nil }), Every(time.Hour))},
+	}
 	le, _ := startRun(t, spec, nil)
 	select {
 	case <-le.e.Ready():
 	case <-time.After(2 * time.Second):
 		t.Fatal("never ready")
 	}
-	if err := le.e.Poke(""); err != nil {
+	if err := le.e.Poke("x"); err != nil {
 		t.Fatal(err)
 	}
 	await(t, func() bool {
 		return le.rec.count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.Reason == converge.DiscardPaused
+			return ok && wd.ID == "x" && wd.Reason == converge.DiscardPaused
 		}) >= 1
 	})
+}
+
+type flakyLease struct {
+	mu          sync.Mutex
+	acquireErrs int
+	held        bool
+	handle      *flakyHandle
+}
+
+type flakyHandle struct {
+	l          *flakyLease
+	extendErrs int
+	done       chan struct{}
+}
+
+func (l *flakyLease) TryAcquire(context.Context, string, time.Duration) (converge.LeaseHandle, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.acquireErrs > 0 {
+		l.acquireErrs--
+		return nil, false, errors.New("flaky: acquire failed")
+	}
+	if l.held {
+		return nil, false, nil
+	}
+	h := &flakyHandle{l: l, done: make(chan struct{})}
+	l.held = true
+	l.handle = h
+	return h, true, nil
+}
+
+func (l *flakyLease) armExtendErr() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.handle != nil {
+		l.handle.extendErrs++
+	}
+}
+
+func (h *flakyHandle) Extend(context.Context, time.Duration) error {
+	h.l.mu.Lock()
+	defer h.l.mu.Unlock()
+	if h.extendErrs > 0 {
+		h.extendErrs--
+		return errors.New("flaky: extend failed")
+	}
+	return nil
+}
+
+func (h *flakyHandle) Release(context.Context) error {
+	h.l.mu.Lock()
+	defer h.l.mu.Unlock()
+	if h.l.handle == h {
+		h.l.held = false
+		h.l.handle = nil
+	}
+	select {
+	case <-h.done:
+	default:
+		close(h.done)
+	}
+	return nil
+}
+
+func (h *flakyHandle) Done() <-chan struct{} { return h.done }
+
+func TestLeaseAcquireRetriesTransientErrors(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	rec := &eventRecorder{}
+	lease := &flakyLease{acquireErrs: 2}
+	e, err := newEngine(specWithSchedule())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := converge.JobDeps{
+		Lease:        lease,
+		KV:           inmem.NewKVWithClock(clock),
+		Observer:     rec,
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, deps) }()
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for acquired(rec) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("lease never acquired after transient errors")
+		}
+		clock.Advance(10 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run must not return error on transient acquire failures: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
+func TestHeartbeatExtendErrorStepsDownAndReacquires(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	rec := &eventRecorder{}
+	lease := &flakyLease{}
+	e, err := newEngine(specWithSchedule())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := converge.JobDeps{
+		Lease:        lease,
+		KV:           inmem.NewKVWithClock(clock),
+		Observer:     rec,
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.Run(ctx, deps)
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	await(t, func() bool { return acquired(rec) == 1 })
+	lease.armExtendErr()
+	deadline := time.Now().Add(2 * time.Second)
+	for released(rec) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("heartbeat never stepped down after an Extend error")
+		}
+		clock.Advance(10 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for acquired(rec) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("engine never re-acquired after step-down")
+		}
+		clock.Advance(10 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
 }

@@ -414,9 +414,13 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	return e.bindCore(deps)
 }
 
+func (e *engine) leaseInterval() time.Duration {
+	return e.deps.LeaseTTL / 3
+}
+
 func (e *engine) leaseLoop(ctx context.Context) error {
 	name := e.key("lease")
-	retry := e.deps.LeaseTTL / 3
+	retry := e.leaseInterval()
 	for {
 		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)
 		e.markReady()
@@ -444,14 +448,17 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 	hctx, stopHandlers := context.WithCancel(context.WithoutCancel(ctx))
 	defer stopHandlers()
 
-	var aux sync.WaitGroup
+	hbStop := make(chan struct{})
+	var hb sync.WaitGroup
 	if h != nil {
-		aux.Add(1)
+		hb.Add(1)
 		go func() {
-			defer aux.Done()
-			e.heartbeat(intake, h, stopIntake, stopHandlers)
+			defer hb.Done()
+			e.heartbeat(ctx, h, hbStop, stopIntake, stopHandlers)
 		}()
 	}
+
+	var aux sync.WaitGroup
 	for i, t := range e.cfg.triggers {
 		aux.Add(1)
 		go func(i int, t Trigger) {
@@ -485,23 +492,33 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 		stopHandlers()
 		runs.Wait()
 	}
+	close(hbStop)
+	hb.Wait()
 	if h != nil {
-		h.Release(context.WithoutCancel(ctx))
+		select {
+		case <-h.Done():
+		default:
+			h.Release(context.WithoutCancel(ctx))
+		}
 	}
 }
 
-func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stopIntake, stopHandlers func()) {
-	interval := e.deps.LeaseTTL / 3
+func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stop <-chan struct{}, stopIntake, stopHandlers func()) {
+	interval := e.leaseInterval()
+	extendCtx := context.WithoutCancel(ctx)
 	for {
 		select {
-		case <-ctx.Done():
+		case <-stop:
 			return
 		case <-h.Done():
 			stopHandlers()
 			stopIntake()
 			return
 		case <-e.deps.Clock.After(interval):
-			if err := h.Extend(ctx, e.deps.LeaseTTL); err != nil {
+			if err := h.Extend(extendCtx, e.deps.LeaseTTL); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				stopHandlers()
 				stopIntake()
 				return
