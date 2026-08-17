@@ -131,6 +131,9 @@ func (e *engine) markReady() { e.readyOnce.Do(func() { close(e.ready) }) }
 
 func (e *engine) bindCore(deps converge.JobDeps) error {
 	e.deps = deps
+	if e.cfg.concurrency <= 0 {
+		e.cfg.concurrency = 1
+	}
 	mws := append(slices.Clone(deps.Middleware), e.cfg.middleware...)
 	final := func(ctx context.Context, r converge.Run) error {
 		return e.invoke(ctx, ID(r.ID))
@@ -213,6 +216,8 @@ func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.Wa
 		case slots <- struct{}{}:
 		case <-ctx.Done():
 			return
+		case <-hctx.Done():
+			return
 		}
 		if err := e.limit.wait(ctx); err != nil {
 			return
@@ -251,14 +256,27 @@ func (e *engine) awaitDue(ctx context.Context) (ID, bool) {
 func (e *engine) runOne(hctx context.Context, id ID) {
 	start := e.deps.Clock.Now()
 	run := converge.Run{Job: e.cfg.name, Surface: converge.SurfaceReconcile, ID: string(id)}
-	err := e.handler(hctx, run)
+	err := e.invokeChain(hctx, run)
 	e.settle(hctx, id, err, e.deps.Clock.Now().Sub(start))
+}
+
+func (e *engine) invokeChain(ctx context.Context, run converge.Run) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = panicErr(e.cfg.name, r)
+		}
+	}()
+	return e.handler(ctx, run)
+}
+
+func panicErr(name string, r any) error {
+	return fmt.Errorf("reconcile: %s: panic: %v", name, r)
 }
 
 func (e *engine) invoke(ctx context.Context, id ID) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("reconcile: %s: panic: %v", e.cfg.name, r)
+			err = panicErr(e.cfg.name, r)
 		}
 	}()
 	return e.cfg.rec.Reconcile(ctx, id)
@@ -295,10 +313,10 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 	if !res.settled {
 		return
 	}
-	e.record(kind)
 	if kind == finishNeutral {
 		return
 	}
+	e.record(kind)
 	e.deps.Observer.Observe(converge.RunCompleted{
 		Job:      e.cfg.name,
 		Surface:  converge.SurfaceReconcile,
@@ -307,11 +325,11 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 		Duration: took,
 		Err:      runErr(kind, err),
 	})
-	if wrong != 0 {
+	if kind == finishForcePark {
 		e.deps.Observer.Observe(converge.WrongSurfaceSignal{Job: e.cfg.name, ID: string(id), Surface: wrong})
 	}
 	if res.fallback {
-		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.name, ID: string(id), Consecutive: noBackoffLimit})
+		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.name, ID: string(id), Consecutive: noBackoffLimit + 1})
 	}
 	if res.parked {
 		e.deps.Observer.Observe(converge.IDDeadLettered{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})

@@ -414,3 +414,103 @@ func TestKeyNamespacing(t *testing.T) {
 		t.Fatalf("key = %q", got)
 	}
 }
+
+func TestDroppedHintOnForcedParkEmitsDiscard(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	te := startEngine(t, config{deadLetterAfter: 1}, func(ctx context.Context, id ID) error {
+		close(started)
+		<-release
+		return errors.New("boom")
+	})
+	te.e.hint("a")
+	<-started
+	te.e.hint("a")
+	close(release)
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.IDDeadLettered)
+			return ok
+		}) == 1
+	})
+	if n := te.rec.count(func(e converge.Event) bool {
+		wd, ok := e.(converge.WakeDiscarded)
+		return ok && wd.Reason == converge.DiscardParked
+	}); n != 1 {
+		t.Fatalf("droppedHint WakeDiscarded count = %d, want 1", n)
+	}
+}
+
+func TestRevivedPokeDuringParkingRunsAgain(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var mu sync.Mutex
+	calls := 0
+	te := startEngine(t, config{deadLetterAfter: 1}, func(ctx context.Context, id ID) error {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			close(started)
+			<-release
+			return errors.New("boom")
+		}
+		return nil
+	})
+	te.e.hint("a")
+	<-started
+	if err := te.e.Poke("a"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.IDDeadLettered)
+			return ok
+		}) == 1
+	})
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.RunCompleted)
+			return ok
+		}) == 2
+	})
+}
+
+func TestSettleOnUnknownIDIsUnsettled(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	before := te.e.Stats()
+	te.e.settle(context.Background(), "ghost", nil, 0)
+	after := te.e.Stats()
+	if before != after {
+		t.Fatalf("stats changed on unsettled finish: before=%+v after=%+v", before, after)
+	}
+	if n := te.rec.count(func(converge.Event) bool { return true }); n != 0 {
+		t.Fatalf("unsettled finish must emit no events, got %d", n)
+	}
+}
+
+func TestBackoffFallbackReportsTrueTripCount(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
+		return CheckAgain{}
+	})
+	te.e.hint("a")
+	advanceUntil(t, te, 300*time.Millisecond, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.BackoffFallback)
+			return ok
+		}) >= 1
+	})
+	te.rec.mu.Lock()
+	defer te.rec.mu.Unlock()
+	for _, e := range te.rec.events {
+		if bf, ok := e.(converge.BackoffFallback); ok {
+			if bf.Consecutive != noBackoffLimit+1 {
+				t.Fatalf("BackoffFallback.Consecutive = %d, want %d", bf.Consecutive, noBackoffLimit+1)
+			}
+			return
+		}
+	}
+	t.Fatal("no BackoffFallback event found")
+}
