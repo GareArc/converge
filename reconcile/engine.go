@@ -199,7 +199,36 @@ func (e *engine) hint(ctx context.Context, id ID) {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
 		return
 	}
-	e.report(id, e.queue.wake(id, wakeHint))
+	res := e.queue.wake(id, wakeHint)
+	if res == wakeDroppedParked && e.tryRevive(ctx, id) {
+		return
+	}
+	e.report(id, res)
+}
+
+func (e *engine) tryRevive(ctx context.Context, id ID) bool {
+	if e.cfg.versions == nil {
+		return false
+	}
+	marked := e.parkedVersion(ctx, id)
+	latest, err := e.cfg.versions.Latest(ctx, id)
+	if err != nil || latest <= marked {
+		return false
+	}
+	if e.queue.wake(id, wakeVersion) != wakeRevived {
+		return false
+	}
+	e.deleteKey(ctx, e.parkKey(id))
+	return true
+}
+
+func (e *engine) parkedVersion(ctx context.Context, id ID) Version {
+	raw := e.readString(ctx, e.parkKey(id))
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return Version(n)
 }
 
 func (e *engine) report(id ID, res wakeResult) {

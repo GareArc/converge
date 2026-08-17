@@ -584,6 +584,70 @@ func TestNoVersionZeroWhenProducerMarked(t *testing.T) {
 	}
 }
 
+type erroringVersions struct{}
+
+func (erroringVersions) Latest(context.Context, ID) (Version, error) {
+	return 0, errors.New("version source down")
+}
+
+func TestVersionAdvanceRevivesParked(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	ctx := context.Background()
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	fail := true
+	runs := 0
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		runs++
+		if fail {
+			return errors.New("boom")
+		}
+		return nil
+	})
+	te.e.hint(ctx, "a")
+	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+
+	te.e.hint(ctx, "a")
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	te.e.hint(ctx, "a")
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	await(t, func() bool { return te.e.Stats().Parked == 0 })
+	await(t, func() bool {
+		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		return err == nil && !ok
+	})
+}
+
+func TestVersionSourceErrorKeepsParked(t *testing.T) {
+	kv := inmem.NewKV()
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: erroringVersions{}}, kv, func(context.Context, ID) error {
+		return errors.New("boom")
+	})
+	ctx := context.Background()
+	te.e.hint(ctx, "a")
+	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	te.e.hint(ctx, "a")
+	assertStable(t, func() bool { return te.e.Stats().Parked == 1 })
+	if n := te.rec.count(func(e converge.Event) bool {
+		w, ok := e.(converge.WakeDiscarded)
+		return ok && w.Reason == converge.DiscardParked
+	}); n == 0 {
+		t.Fatal("undecidable revival must still event the dropped hint")
+	}
+}
+
 func TestOnAllReplicasParksInMemoryOnly(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnAllReplicas}, func(context.Context, ID) error {
 		return fakeWorkerSignal{}
