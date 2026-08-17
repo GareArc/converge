@@ -72,3 +72,82 @@ func (rt *Runtime) Stats() []JobStats {
 	}
 	return out
 }
+
+// Run freezes the registry, starts every job, and blocks. Cancel ctx to
+// stop: intake stops, in-flight work drains within Options.DrainTimeout,
+// leases release. Returns nil on a clean shutdown; a non-nil return is
+// always a real failure (and one job's failure stops the runtime).
+func (rt *Runtime) Run(ctx context.Context) error {
+	rt.mu.Lock()
+	if rt.frozen {
+		rt.mu.Unlock()
+		return errors.New("converge: Run called twice")
+	}
+	rt.frozen = true
+	jobs := make([]job, 0, len(rt.order))
+	for _, name := range rt.order {
+		jobs = append(jobs, rt.jobs[name])
+	}
+	rt.mu.Unlock()
+
+	deps := JobDeps{
+		MQ:           rt.opts.MQ,
+		Lease:        rt.opts.Lease,
+		KV:           rt.opts.KV,
+		Observer:     rt.opts.Observer,
+		Clock:        rt.opts.Clock,
+		Namespace:    rt.opts.Namespace,
+		LeaseTTL:     rt.opts.LeaseTTL,
+		DrainTimeout: rt.opts.DrainTimeout,
+		Middleware:   rt.opts.Middleware,
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	go func() {
+		for _, j := range jobs {
+			select {
+			case <-j.Ready():
+			case <-runCtx.Done():
+				return
+			}
+		}
+		close(rt.ready)
+	}()
+
+	if len(jobs) == 0 {
+		<-runCtx.Done()
+		return nil
+	}
+
+	results := make(chan error, len(jobs))
+	for _, j := range jobs {
+		go func(j job) { results <- j.Run(runCtx, deps) }(j)
+	}
+
+	var failures []error
+	for range jobs {
+		if err := <-results; err != nil && !errors.Is(err, context.Canceled) {
+			failures = append(failures, err)
+			cancel()
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// Ready closes when every registered job's consumers and triggers are live.
+// With no jobs it closes as soon as Run starts.
+func (rt *Runtime) Ready() <-chan struct{} { return rt.ready }
+
+// Poke wakes one ID of one job: bypasses backoff and revives parked IDs
+// (guide §3.1). Routing beyond this process arrives with plan 05.
+func (rt *Runtime) Poke(jobName, id string) error {
+	rt.mu.Lock()
+	j, ok := rt.jobs[jobName]
+	rt.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("converge: unknown job %q", jobName)
+	}
+	return j.Poke(id)
+}
