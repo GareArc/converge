@@ -68,16 +68,16 @@ func newWorld(t *testing.T) *world {
 func (w *world) run(t *testing.T) context.CancelFunc {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		w.stop(t)
+	})
 	go func() { w.done <- w.rt.Run(ctx) }()
 	select {
 	case <-w.rt.Ready():
 	case <-time.After(2 * time.Second):
 		t.Fatal("runtime never ready")
 	}
-	t.Cleanup(func() {
-		cancel()
-		w.stop(t)
-	})
 	return cancel
 }
 
@@ -121,6 +121,14 @@ func (w *world) advanceUntil(t *testing.T, step time.Duration, cond func() bool)
 		}
 		w.clock.Advance(step)
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func assertStable(t *testing.T, cond func() bool) {
+	t.Helper()
+	time.Sleep(20 * time.Millisecond)
+	if !cond() {
+		t.Fatal("state changed while it must hold")
 	}
 }
 
@@ -316,6 +324,7 @@ func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
 		done := make(chan error, 1)
 		go func() { done <- rt.Run(ctx) }()
 		select {
@@ -351,19 +360,16 @@ func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 	}
 	clock.Advance(5 * time.Hour)
 	_, done2, cancel2 := boot()
-	defer cancel2()
 	awaitTrue(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return calls == 2
 	})
-	time.Sleep(20 * time.Millisecond)
-	mu.Lock()
-	got := calls
-	mu.Unlock()
-	if got != 2 {
-		t.Fatalf("RunOnce must run exactly one makeup pass, got %d total", got)
-	}
+	assertStable(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls == 2
+	})
 	cancel2()
 	deadline = time.Now().Add(2 * time.Second)
 	for {
