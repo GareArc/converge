@@ -291,11 +291,28 @@ func (e *engine) awaitDue(ctx context.Context) (ID, bool) {
 	}
 }
 
+type versionSnapshot struct {
+	v     Version
+	known bool
+}
+
+func (e *engine) preRunVersion(ctx context.Context, id ID) versionSnapshot {
+	if e.cfg.versions == nil {
+		return versionSnapshot{}
+	}
+	v, err := e.cfg.versions.Latest(ctx, id)
+	if err != nil {
+		return versionSnapshot{}
+	}
+	return versionSnapshot{v: v, known: true}
+}
+
 func (e *engine) runOne(hctx context.Context, id ID) {
 	start := e.deps.Clock.Now()
+	snap := e.preRunVersion(hctx, id)
 	run := converge.Run{Job: e.cfg.name, Surface: converge.SurfaceReconcile, ID: string(id)}
 	err := e.invokeChain(hctx, run)
-	e.settle(hctx, id, err, e.deps.Clock.Now().Sub(start))
+	e.settle(hctx, id, err, e.deps.Clock.Now().Sub(start), snap)
 }
 
 func (e *engine) invokeChain(ctx context.Context, run converge.Run) (err error) {
@@ -320,7 +337,7 @@ func (e *engine) invoke(ctx context.Context, id ID) (err error) {
 	return e.cfg.rec.Reconcile(ctx, id)
 }
 
-func (e *engine) settle(hctx context.Context, id ID, err error, took time.Duration) {
+func (e *engine) settle(hctx context.Context, id ID, err error, took time.Duration, snap versionSnapshot) {
 	var (
 		kind  finishKind
 		delay time.Duration
@@ -372,7 +389,7 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 	if res.parked {
 		e.deps.Observer.Observe(converge.IDParked{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})
 		if !res.revived {
-			e.markParked(hctx, id)
+			e.markParked(hctx, id, snap)
 		}
 	}
 	if res.droppedHint {
@@ -426,21 +443,14 @@ func (e *engine) durableParks() bool {
 	return e.deps.KV != nil && e.cfg.runMode != converge.OnAllReplicas
 }
 
-func (e *engine) markParked(ctx context.Context, id ID) {
+func (e *engine) markParked(ctx context.Context, id ID, snap versionSnapshot) {
 	if !e.durableParks() {
 		return
 	}
-	var v Version
-	if e.cfg.versions != nil {
-		latest, err := e.cfg.versions.Latest(ctx, id)
-		if err == nil {
-			v = latest
-			if v == 0 {
-				e.deps.Observer.Observe(converge.VersionZero{Job: e.cfg.name, ID: string(id)})
-			}
-		}
+	if e.cfg.versions != nil && snap.known && snap.v == 0 {
+		e.deps.Observer.Observe(converge.VersionZero{Job: e.cfg.name, ID: string(id)})
 	}
-	e.writeString(ctx, e.parkKey(id), strconv.FormatUint(uint64(v), 10))
+	e.writeString(ctx, e.parkKey(id), strconv.FormatUint(uint64(snap.v), 10))
 }
 
 func (e *engine) loadParked(ctx context.Context) {

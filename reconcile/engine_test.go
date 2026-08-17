@@ -507,7 +507,7 @@ func TestRevivedPokeDuringParkingRunsAgain(t *testing.T) {
 func TestSettleOnUnknownIDIsUnsettled(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	before := te.e.Stats()
-	te.e.settle(context.Background(), "ghost", nil, 0)
+	te.e.settle(context.Background(), "ghost", nil, 0, versionSnapshot{})
 	after := te.e.Stats()
 	if before != after {
 		t.Fatalf("stats changed on unsettled finish: before=%+v after=%+v", before, after)
@@ -646,6 +646,38 @@ func TestVersionSourceErrorKeepsParked(t *testing.T) {
 	}); n == 0 {
 		t.Fatal("undecidable revival must still event the dropped hint")
 	}
+}
+
+func TestMidRunVersionBumpStillRevives(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	ctx := context.Background()
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	fail := true
+	runs := 0
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(hctx context.Context, id ID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		runs++
+		if fail {
+			if _, err := tr.MarkChanged(hctx, id); err != nil {
+				return err
+			}
+			return errors.New("boom")
+		}
+		return nil
+	})
+	te.e.hint(ctx, "a")
+	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	te.e.hint(ctx, "a")
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	await(t, func() bool { return te.e.Stats().Parked == 0 })
 }
 
 func TestOnAllReplicasParksInMemoryOnly(t *testing.T) {
