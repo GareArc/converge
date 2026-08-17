@@ -85,10 +85,25 @@ func TestMissedTickSkipSkipsAll(t *testing.T) {
 }
 
 func TestMissedTickCatchupReplaysEachBoundary(t *testing.T) {
+	var mu sync.Mutex
+	pageCalls := 0
+	src := IDs(func(context.Context) ([]ID, error) {
+		mu.Lock()
+		pageCalls++
+		mu.Unlock()
+		return []ID{""}, nil
+	})
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	seedLastFire(t, te, wqStart.Add(-3*time.Hour))
-	startSchedule(t, te, SingleID(), Cron("0 * * * *", CronOpts{MissedTick: Catchup}))
-	await(t, func() bool { return runCount(te) == 3 })
+	startSchedule(t, te, src, Cron("0 * * * *", CronOpts{MissedTick: Catchup}))
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return pageCalls == 3
+	})
+	if got := runCount(te); got < 1 {
+		t.Fatalf("expected at least one run from the replayed boundaries, got %d", got)
+	}
 }
 
 func TestPassResumesFromPersistedCursor(t *testing.T) {
@@ -137,6 +152,34 @@ func TestPassOverrunSkipsAndEvents(t *testing.T) {
 			return ok
 		}) >= 1
 	})
+}
+
+func TestFirstPassOverrunSkipsWithoutMakeup(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	slow := IDs(func(ctx context.Context) ([]ID, error) {
+		te.clock.Advance(150 * time.Minute)
+		return []ID{"a"}, nil
+	})
+	startSchedule(t, te, slow, Every(time.Hour))
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.PassOverrun)
+			return ok
+		}) >= 1
+	})
+	time.Sleep(20 * time.Millisecond)
+	if got := runCount(te); got != 1 {
+		t.Fatalf("boundaries consumed by an overrunning first pass must not trigger makeup passes, got %d", got)
+	}
+}
+
+func TestErroredCadenceDoesNotPanic(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	startSchedule(t, te, SingleID(), Every(0))
+	time.Sleep(20 * time.Millisecond)
+	if got := runCount(te); got != 0 {
+		t.Fatalf("errored cadence must not run, got %d", got)
+	}
 }
 
 func TestCursorClearedAfterPassCompletes(t *testing.T) {

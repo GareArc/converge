@@ -27,6 +27,9 @@ func boundaries(c Cadence, last, now time.Time) []time.Time {
 }
 
 func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) {
+	if st.cad.err != nil {
+		return
+	}
 	lastKey := e.key("sched", strconv.Itoa(idx), "last")
 	cursorKey := e.key("sched", strconv.Itoa(idx), "cursor")
 	for ctx.Err() == nil {
@@ -37,6 +40,7 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 				return
 			}
 			e.writeTime(ctx, lastKey, now)
+			e.checkOverrun(ctx, st, lastKey, now)
 			continue
 		}
 		pending := boundaries(st.cad, last, now)
@@ -63,13 +67,19 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 		}
 		latest := pending[len(pending)-1]
 		e.writeTime(ctx, lastKey, latest)
-		if over := boundaries(st.cad, latest, e.deps.Clock.Now()); len(over) > 0 {
-			for _, due := range over {
-				e.deps.Observer.Observe(converge.PassOverrun{Job: e.cfg.name, Due: due})
-			}
-			e.writeTime(ctx, lastKey, over[len(over)-1])
-		}
+		e.checkOverrun(ctx, st, lastKey, latest)
 	}
+}
+
+func (e *engine) checkOverrun(ctx context.Context, st *scheduleTrigger, lastKey string, anchor time.Time) {
+	over := boundaries(st.cad, anchor, e.deps.Clock.Now())
+	if len(over) == 0 {
+		return
+	}
+	for _, due := range over {
+		e.deps.Observer.Observe(converge.PassOverrun{Job: e.cfg.name, Due: due})
+	}
+	e.writeTime(ctx, lastKey, over[len(over)-1])
 }
 
 func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey string) bool {
@@ -93,13 +103,8 @@ func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey str
 		for _, id := range ids {
 			e.hint(id)
 		}
-		for _, id := range ids {
-			if !e.queue.awaitSettle(ctx, id) {
-				return false
-			}
-		}
 		if next == "" {
-			e.deps.KV.Delete(ctx, cursorKey)
+			e.deleteKey(ctx, cursorKey)
 			return true
 		}
 		cursor = next
@@ -157,6 +162,17 @@ func (e *engine) readString(ctx context.Context, key string) string {
 func (e *engine) writeString(ctx context.Context, key, val string) {
 	for {
 		if err := e.deps.KV.Set(ctx, key, []byte(val), 0); err == nil {
+			return
+		}
+		if !e.pauseOnInfraError(ctx) {
+			return
+		}
+	}
+}
+
+func (e *engine) deleteKey(ctx context.Context, key string) {
+	for {
+		if err := e.deps.KV.Delete(ctx, key); err == nil {
 			return
 		}
 		if !e.pauseOnInfraError(ctx) {

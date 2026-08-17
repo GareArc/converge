@@ -46,9 +46,30 @@ func TestCronHonorsLocation(t *testing.T) {
 		t.Fatal(c.err)
 	}
 	after := time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
-	want := time.Date(2026, 8, 16, 3, 0, 0, 0, loc)
+	want := time.Date(2026, 8, 17, 3, 0, 0, 0, loc)
 	if got := c.next(time.Time{}, after); !got.Equal(want) {
 		t.Fatalf("next = %v, want %v", got, want)
+	}
+}
+
+func TestCronNextIsAlwaysInTheFuture(t *testing.T) {
+	zones := []*time.Location{
+		time.UTC,
+		time.FixedZone("UTC+9", 9*3600),
+		time.FixedZone("UTC-8", -8*3600),
+	}
+	offsets := []time.Duration{0, 5 * time.Hour, 13 * time.Hour, 22 * time.Hour, 36 * time.Hour}
+	for _, zone := range zones {
+		c := Cron("0 3 * * *", CronOpts{Location: zone})
+		if c.err != nil {
+			t.Fatal(c.err)
+		}
+		for _, off := range offsets {
+			after := wqStart.Add(off)
+			if got := c.next(time.Time{}, after); !got.After(after) {
+				t.Fatalf("zone %v after %v: next = %v, want strictly after %v", zone, after, got, after)
+			}
+		}
 	}
 }
 

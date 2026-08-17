@@ -92,8 +92,7 @@ func (c Cadence) next(anchor, after time.Time) time.Time {
 		n := after.Sub(anchor)/c.every + 1
 		return anchor.Add(n * c.every)
 	}
-	local := time.Date(after.Year(), after.Month(), after.Day(), after.Hour(), after.Minute(), after.Second(), after.Nanosecond(), c.loc)
-	return c.sched.Next(local)
+	return c.sched.Next(after.In(c.loc))
 }
 
 type scheduleTrigger struct {
