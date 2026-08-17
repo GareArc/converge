@@ -42,8 +42,6 @@ func (l *Lease) TryAcquire(_ context.Context, name string, ttl time.Duration) (c
 	return h, true, nil
 }
 
-// Expire forcibly ends the named lease, as if its TTL lapsed. Used by
-// convergetest failure injection.
 func (l *Lease) Expire(name string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

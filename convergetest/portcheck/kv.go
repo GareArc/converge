@@ -1,5 +1,3 @@
-// Package portcheck holds exported contract test suites for converge's
-// ports. inmem and every adapter must pass the same suites.
 package portcheck
 
 import (
@@ -12,7 +10,6 @@ import (
 )
 
 type KVOptions struct {
-	// Advance moves the implementation's clock; nil skips TTL subtests.
 	Advance func(d time.Duration)
 }
 

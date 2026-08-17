@@ -1,5 +1,3 @@
-// Package inmem provides stdlib-only implementations of converge's ports
-// for development and tests: single process, no persistence.
 package inmem
 
 import (
@@ -21,12 +19,11 @@ type KV struct {
 
 type kvItem struct {
 	val []byte
-	exp time.Time // zero = no expiry
+	exp time.Time
 }
 
 func NewKV() *KV { return NewKVWithClock(nil) }
 
-// NewKVWithClock: nil clock = wall clock.
 func NewKVWithClock(c converge.Clock) *KV {
 	if c == nil {
 		c = wallClock{}

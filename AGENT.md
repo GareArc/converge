@@ -1,8 +1,14 @@
 # AGENT.md
 
 Guidance for coding agents and new contributors. `CONTEXT.md` (canonical
-terminology) and the port doc comments are part of the contract — read them
-before changing behavior.
+terminology) is part of the contract — read it before changing behavior.
+
+## Rules
+
+1. **No comments in Go source.** The library is small and comments drift as
+   versions move. Semantics live in the documentation, `CONTEXT.md`, and the
+   contract suites — never in the code. If code seems to need explanation,
+   simplify the code or extend the documentation instead.
 
 ## What this is
 
@@ -46,11 +52,10 @@ without external services.
 - **Absence is not an error.** `KV.Get` returns `(val, ok, err)`; deleting
   an absent key succeeds; `Lease.TryAcquire` returns `(nil, false, nil)`
   when held elsewhere. Errors mean the operation itself failed.
-- **Port doc comments are contracts.** They state what implementations must
-  do (backlog retention, CAS clears TTL, visibility semantics). Any promised
-  semantic should be pinned by a `convergetest/portcheck` subtest — adapters
-  run the identical exported suites. If you change a port comment, you are
-  changing the contract: update the suite in the same commit.
+- **Ports are contracts.** What implementations must do (backlog retention,
+  CAS clears TTL, visibility semantics) is pinned by the
+  `convergetest/portcheck` subtests, which every adapter runs identically.
+  If you change port behavior, update the suite in the same commit.
 - **Sealed seams stay sealed.** The engine `job` interface is unexported;
   surfaces register through `internal/hook`. Control-flow outcomes embed the
   sealed `internal/sig.Signal`. Only `JobDeps` is exported from the seam. Do
@@ -77,9 +82,8 @@ without external services.
 - **gofmt is authoritative for Go files** (tabs; run it, don't argue with
   it). Non-Go files use 2-space indentation per `.editorconfig`; Makefile
   recipes are hard tabs.
-- **Comments pin contracts, nothing else.** A comment states an invariant or
-  semantic the code cannot express (port semantics, locking rules, why a
-  field exists). Never restate what the code says; never narrate changes.
+- **No comments (Rule 1).** Names and structure carry intent; documentation
+  and the contract suites carry semantics.
 - **Terminology follows `CONTEXT.md`.** ID (not key), poke vs hint, parked
   (reconcile) vs dead-lettered (worker), lease (not lock), queue (not
   topic/stream). The _Avoid_ lists there are binding for identifiers, docs,

@@ -1,5 +1,3 @@
-// Package convergetest drives the real engine over in-memory ports with a
-// fake clock. This file ships the clock; the harness arrives with plan 05.
 package convergetest
 
 import (
@@ -7,7 +5,6 @@ import (
 	"time"
 )
 
-// Clock is a converge.Clock that only moves when Advance is called.
 type Clock struct {
 	mu      sync.Mutex
 	now     time.Time

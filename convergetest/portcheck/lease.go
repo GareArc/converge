@@ -9,7 +9,7 @@ import (
 )
 
 type LeaseOptions struct {
-	Advance func(d time.Duration) // nil skips expiry subtests
+	Advance func(d time.Duration)
 }
 
 func Lease(t *testing.T, open func(t *testing.T) converge.Lease, o LeaseOptions) {

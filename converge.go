@@ -1,8 +1,3 @@
-// Package converge gives services one model for all background work: a
-// level-triggered reconcile surface and an edge-triggered worker surface on
-// one kernel. This package is the kernel: the runtime, its ports, and the
-// shared value types. See github.com/GareArc/converge/reconcile and
-// github.com/GareArc/converge/worker for the two surfaces.
 package converge
 
 import (
@@ -12,15 +7,15 @@ import (
 )
 
 type Options struct {
-	Namespace    string        // prefixes all leases, KV keys, engine queues
-	MQ           MQ            // default transport (optional until a job needs it)
-	Lease        Lease         // required by OnOneReplica (validated at registration)
-	KV           KV            // engine state: last-fire, dead-letter marks, cursors
-	Observer     Observer      // nil = no-op
-	Middleware   []Middleware  // wraps every run, both surfaces, outermost first
-	Clock        Clock         // nil = wall clock
-	LeaseTTL     time.Duration // default 30s; heartbeat at TTL/3
-	DrainTimeout time.Duration // default 30s
+	Namespace    string
+	MQ           MQ
+	Lease        Lease
+	KV           KV
+	Observer     Observer
+	Middleware   []Middleware
+	Clock        Clock
+	LeaseTTL     time.Duration
+	DrainTimeout time.Duration
 }
 
 const (

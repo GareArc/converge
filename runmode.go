@@ -9,9 +9,6 @@ const (
 	runModeAllReplicas
 )
 
-// RunMode selects who runs a job across replicas. The zero value means
-// "surface default": OnOneReplica for reconcilers, SplitAcrossReplicas for
-// workers.
 type RunMode struct{ kind runModeKind }
 
 var (
@@ -61,8 +58,6 @@ const (
 	deliveryBroadcast
 )
 
-// DeliveryMode selects how hint-queue messages reach replicas (guide §3.3).
-// The zero value follows the job's run mode.
 type DeliveryMode struct{ kind deliveryModeKind }
 
 var (

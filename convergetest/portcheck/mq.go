@@ -9,8 +9,8 @@ import (
 )
 
 type MQOptions struct {
-	Advance    func(d time.Duration) // nil skips subtests that need time control
-	Visibility time.Duration         // the impl's initial visibility window; 0 skips reclaim
+	Advance    func(d time.Duration)
+	Visibility time.Duration
 }
 
 func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
@@ -103,7 +103,7 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		}
 		mq, got, ctx := startConsumer(t, open)
 		mustPublish(t, mq, "q", converge.Message{Payload: []byte("a")})
-		recvDelivery(t, got) // taken, never acked
+		recvDelivery(t, got)
 		o.Advance(o.Visibility + time.Second)
 		d2 := recvDelivery(t, got)
 		if d2.Attempt() != 2 {
@@ -175,7 +175,7 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		gotB := make(chan converge.Delivery, 16)
 		go bc.ConsumeBroadcast(ctx, "q", func(d converge.Delivery) { gotA <- d })
 		go bc.ConsumeBroadcast(ctx, "q", func(d converge.Delivery) { gotB <- d })
-		time.Sleep(20 * time.Millisecond) // let subscriptions attach
+		time.Sleep(20 * time.Millisecond)
 		mustPublish(t, base, "q", converge.Message{Payload: []byte("after")})
 		for _, ch := range []chan converge.Delivery{gotA, gotB} {
 			d := recvDelivery(t, ch)

@@ -35,7 +35,7 @@ type storedMsg struct {
 }
 
 type mqGroup struct {
-	pending  []*mqMsg // kept ordered by id
+	pending  []*mqMsg
 	inflight map[int]*mqMsg
 }
 
@@ -113,8 +113,6 @@ func (q *MQ) ensureQueue(name string) *mqQueue {
 	return qu
 }
 
-// New groups start from the beginning of the backlog: messages published
-// before any consumer existed are kept for it.
 func (q *MQ) ensureGroup(queue, group string) *mqGroup {
 	qu := q.ensureQueue(queue)
 	g := qu.groups[group]
@@ -154,7 +152,7 @@ type mqDelivery struct {
 	q       *MQ
 	g       *mqGroup
 	msg     *mqMsg
-	attempt int // snapshot at delivery; fences stale Ack/Nack/Extend after reclaim
+	attempt int
 }
 
 func (d *mqDelivery) Message() converge.Message { return d.msg.m }
@@ -204,8 +202,6 @@ func (q *MQ) PublishDelayed(_ context.Context, queue string, m converge.Message,
 	return q.publish(queue, m, delay)
 }
 
-// Broadcast subscribers only see messages published after they subscribe;
-// their deliveries are fire-and-forget (Attempt always 1, Ack/Nack no-ops).
 func (q *MQ) ConsumeBroadcast(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
 	sub := &mqSub{}
 	q.mu.Lock()

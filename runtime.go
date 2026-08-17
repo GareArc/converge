@@ -9,13 +9,8 @@ import (
 	"github.com/GareArc/converge/internal/hook"
 )
 
-// job is the engine contract. It stays unexported: surface packages satisfy
-// it structurally and register through internal/hook, which keeps outside
-// modules from injecting foreign jobs.
 type job interface {
 	Name() string
-	// Run blocks until ctx is canceled, drains in-flight work within
-	// JobDeps.DrainTimeout, and returns nil on a clean stop.
 	Run(ctx context.Context, d JobDeps) error
 	Ready() <-chan struct{}
 	Poke(id string) error
@@ -73,10 +68,6 @@ func (rt *Runtime) Stats() []JobStats {
 	return out
 }
 
-// Run freezes the registry, starts every job, and blocks. Cancel ctx to
-// stop: intake stops, in-flight work drains within Options.DrainTimeout,
-// leases release. Returns nil on a clean shutdown; a non-nil return is
-// always a real failure (and one job's failure stops the runtime).
 func (rt *Runtime) Run(ctx context.Context) error {
 	rt.mu.Lock()
 	if rt.frozen {
@@ -136,13 +127,8 @@ func (rt *Runtime) Run(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-// Ready closes when every registered job's consumers and triggers are live.
-// With no jobs it closes as soon as Run starts. Select against your own context
-// and Run's return as well: if shutdown or a startup failure wins before every job becomes ready, this channel never closes.
 func (rt *Runtime) Ready() <-chan struct{} { return rt.ready }
 
-// Poke wakes one ID of one job: bypasses backoff and revives parked IDs
-// (guide §3.1). Routing beyond this process arrives with plan 05.
 func (rt *Runtime) Poke(jobName, id string) error {
 	rt.mu.Lock()
 	j, ok := rt.jobs[jobName]

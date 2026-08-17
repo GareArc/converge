@@ -2,8 +2,6 @@ package converge
 
 import "time"
 
-// Rate is a process-local token bucket: Events per Per, with Events also
-// serving as the burst size. The zero value means unlimited.
 type Rate struct {
 	Events int
 	Per    time.Duration
