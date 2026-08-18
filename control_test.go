@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,6 +30,9 @@ type errStubJob struct {
 	pokeErr    error
 	hintErr    error
 	runPassErr error
+
+	pokeGate  chan struct{}
+	pauseGate chan struct{}
 }
 
 func newErrStubJob(name string) *errStubJob {
@@ -46,6 +50,9 @@ func (s *errStubJob) Run(ctx context.Context, d converge.JobDeps) error {
 func (s *errStubJob) Ready() <-chan struct{} { return s.ready }
 
 func (s *errStubJob) Poke(id string) error {
+	if s.pokeGate != nil {
+		<-s.pokeGate
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.poked = append(s.poked, id)
@@ -69,6 +76,9 @@ func (s *errStubJob) RunPassNow(ctx context.Context) error {
 }
 
 func (s *errStubJob) SetPaused(paused bool) {
+	if paused && s.pauseGate != nil {
+		<-s.pauseGate
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.paused = append(s.paused, paused)
@@ -94,6 +104,19 @@ func (k errKV) Set(context.Context, string, []byte, time.Duration) error { retur
 func (k errKV) Delete(context.Context, string) error                     { return nil }
 func (k errKV) Scan(context.Context, string, string) ([]string, string, error) {
 	return nil, "", nil
+}
+
+type selectiveFailKV struct {
+	converge.KV
+	failPrefix string
+	failErr    error
+}
+
+func (k selectiveFailKV) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+	if strings.HasPrefix(key, k.failPrefix) {
+		return k.failErr
+	}
+	return k.KV.Set(ctx, key, val, ttl)
 }
 
 func stubLastPaused(s *stubJob) (bool, bool) {
@@ -129,28 +152,87 @@ type ctlDispatchResult struct {
 	err  error
 }
 
-func awaitControlDispatch(t *testing.T, clock *convergetest.Clock, rt *converge.Runtime, req ctl.Request) ([]ctl.Response, time.Duration, error) {
-	t.Helper()
-	start := clock.Now()
+const controlTestPollStep = 60 * time.Millisecond
+
+func startControlDispatch(rt *converge.Runtime, req ctl.Request) <-chan ctlDispatchResult {
 	done := make(chan ctlDispatchResult, 1)
 	go func() {
 		resp, err := hook.ControlDispatch(rt, context.Background(), req)
 		done <- ctlDispatchResult{resp, err}
 	}()
-	realDeadline := time.Now().Add(5 * time.Second)
-	for {
+	return done
+}
+
+func awaitControlDispatchDone(t *testing.T, clock *convergetest.Clock, done <-chan ctlDispatchResult) ctlDispatchResult {
+	t.Helper()
+	var result ctlDispatchResult
+	convergetest.AdvanceUntil(t, clock, controlTestPollStep, func() bool {
+		select {
+		case result = <-done:
+			return true
+		default:
+			return false
+		}
+	})
+	return result
+}
+
+func assertControlDispatchPending(t *testing.T, clock *convergetest.Clock, done <-chan ctlDispatchResult, ticks int) {
+	t.Helper()
+	for i := 0; i < ticks; i++ {
 		select {
 		case r := <-done:
-			return r.resp, clock.Now().Sub(start), r.err
+			t.Fatalf("control dispatch returned early: %+v", r)
 		default:
 		}
-		if time.Now().After(realDeadline) {
-			t.Fatal("convergetest: control dispatch did not complete")
-			return nil, 0, nil
-		}
-		clock.Advance(60 * time.Millisecond)
+		clock.Advance(controlTestPollStep)
 		time.Sleep(2 * time.Millisecond)
 	}
+}
+
+func awaitControlDispatch(t *testing.T, clock *convergetest.Clock, rt *converge.Runtime, req ctl.Request) ([]ctl.Response, time.Duration, error) {
+	t.Helper()
+	start := clock.Now()
+	result := awaitControlDispatchDone(t, clock, startControlDispatch(rt, req))
+	return result.resp, clock.Now().Sub(start), result.err
+}
+
+func collectAllControlResponses(t *testing.T, kv converge.KV, ns string) []ctl.Response {
+	t.Helper()
+	prefix := ctl.ResPrefix(ns, "")
+	var out []ctl.Response
+	cursor := ""
+	for {
+		keys, next, err := kv.Scan(context.Background(), prefix, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range keys {
+			raw, ok, err := kv.Get(context.Background(), key)
+			if err != nil || !ok {
+				continue
+			}
+			var resp ctl.Response
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				continue
+			}
+			out = append(out, resp)
+		}
+		if next == "" {
+			return out
+		}
+		cursor = next
+	}
+}
+
+func controlResponseFor(t *testing.T, kv converge.KV, ns, replica string) *ctl.Response {
+	t.Helper()
+	for _, r := range collectAllControlResponses(t, kv, ns) {
+		if r.Replica == replica {
+			return &r
+		}
+	}
+	return nil
 }
 
 func TestControlDispatchLocalFallbackPoke(t *testing.T) {
@@ -564,5 +646,247 @@ func TestRunStartupPausedFlagReadErrorAbortsRun(t *testing.T) {
 
 	if err := rt.Run(context.Background()); !errors.Is(err, boom) {
 		t.Fatalf("Run() = %v, want %v", err, boom)
+	}
+}
+
+func TestControlDispatchEarlyReturnRequiresActedTrue(t *testing.T) {
+	clock := convergetest.NewClock(time.Unix(0, 0))
+	mq := inmem.NewMQWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	ns := "svc"
+
+	rtBad := newCtlRuntime(t, ns, mq, kv, clock)
+	bad := newErrStubJob("worker")
+	bad.pokeErr = errors.New("poke boom")
+	if err := hook.RegisterJob(rtBad, bad); err != nil {
+		t.Fatal(err)
+	}
+
+	rtGood := newCtlRuntime(t, ns, mq, kv, clock)
+	good := newErrStubJob("worker")
+	release := make(chan struct{})
+	good.pokeGate = release
+	if err := hook.RegisterJob(rtGood, good); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startAndAwaitReady(t, rtBad, ctx)
+	startAndAwaitReady(t, rtGood, ctx)
+
+	wiringBad, err := hook.OpsDeps(rtBad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wiringGood, err := hook.OpsDeps(rtGood)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := startControlDispatch(rtBad, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x"})
+
+	convergetest.AdvanceUntil(t, clock, controlTestPollStep, func() bool {
+		return controlResponseFor(t, kv, ns, wiringBad.Replica) != nil
+	})
+	if r := controlResponseFor(t, kv, ns, wiringBad.Replica); r == nil || r.Acted {
+		t.Fatalf("bad replica response = %+v, want a written acted=false response", r)
+	}
+
+	assertControlDispatchPending(t, clock, done, 10)
+	if controlResponseFor(t, kv, ns, wiringGood.Replica) != nil {
+		t.Fatal("good replica responded before its gate was released")
+	}
+
+	close(release)
+
+	result := awaitControlDispatchDone(t, clock, done)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	var sawGoodActed bool
+	for _, r := range result.resp {
+		if r.Replica == wiringGood.Replica && r.Acted {
+			sawGoodActed = true
+		}
+	}
+	if !sawGoodActed {
+		t.Fatalf("resp = %+v, want the healthy replica's acted response", result.resp)
+	}
+}
+
+func TestControlDispatchPauseWaitsForAllReplicas(t *testing.T) {
+	clock := convergetest.NewClock(time.Unix(0, 0))
+	mq := inmem.NewMQWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	ns := "svc"
+
+	rtFast := newCtlRuntime(t, ns, mq, kv, clock)
+	fast := newErrStubJob("worker")
+	if err := hook.RegisterJob(rtFast, fast); err != nil {
+		t.Fatal(err)
+	}
+
+	rtSlow := newCtlRuntime(t, ns, mq, kv, clock)
+	slow := newErrStubJob("worker")
+	release := make(chan struct{})
+	slow.pauseGate = release
+	if err := hook.RegisterJob(rtSlow, slow); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startAndAwaitReady(t, rtFast, ctx)
+	startAndAwaitReady(t, rtSlow, ctx)
+
+	wiringFast, err := hook.OpsDeps(rtFast)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wiringSlow, err := hook.OpsDeps(rtSlow)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := startControlDispatch(rtFast, ctl.Request{Op: ctl.OpPause, Job: "worker", Timeout: 5 * time.Second})
+
+	convergetest.AdvanceUntil(t, clock, controlTestPollStep, func() bool {
+		return controlResponseFor(t, kv, ns, wiringFast.Replica) != nil
+	})
+
+	assertControlDispatchPending(t, clock, done, 10)
+	if controlResponseFor(t, kv, ns, wiringSlow.Replica) != nil {
+		t.Fatal("slow replica responded before its gate was released")
+	}
+
+	close(release)
+
+	result := awaitControlDispatchDone(t, clock, done)
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.resp) != 2 {
+		t.Fatalf("resp = %+v, want both replicas once the slow one unblocks", result.resp)
+	}
+}
+
+func TestControlDispatchRejectsForeignRuntime(t *testing.T) {
+	if _, err := hook.ControlDispatch("not a runtime", context.Background(), ctl.Request{Op: ctl.OpPoke, Job: "a"}); err == nil {
+		t.Fatal("non-runtime must be rejected")
+	}
+	var nilRt *converge.Runtime
+	if _, err := hook.ControlDispatch(nilRt, context.Background(), ctl.Request{Op: ctl.OpPoke, Job: "a"}); err == nil {
+		t.Fatal("typed-nil runtime must be rejected")
+	}
+}
+
+func TestControlListenerUnknownJobRespondsVisibly(t *testing.T) {
+	clock := convergetest.NewClock(time.Unix(0, 0))
+	mq := inmem.NewMQWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	ns := "svc"
+
+	rt := newCtlRuntime(t, ns, mq, kv, clock)
+	if err := hook.RegisterJob(rt, newStubJob("worker")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startAndAwaitReady(t, rt, ctx)
+
+	wiring, err := hook.OpsDeps(rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opID := "fedcba0987654321"
+	payload, err := json.Marshal(ctl.Command{Op: ctl.OpPoke, Job: "does-not-exist", ID: "x", OpID: opID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mq.Publish(context.Background(), ctl.Queue(ns), converge.Message{Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+
+	key := ctl.ResKey(ns, opID, wiring.Replica)
+	var resp ctl.Response
+	convergetest.Await(t, func() bool {
+		raw, ok, err := kv.Get(context.Background(), key)
+		if err != nil || !ok {
+			return false
+		}
+		return json.Unmarshal(raw, &resp) == nil
+	})
+	if resp.Acted || !strings.Contains(resp.Err, "unknown") {
+		t.Fatalf("resp = %+v, want an unacted response mentioning unknown", resp)
+	}
+}
+
+func TestControlDispatchBroadcastResponsesSortedByReplica(t *testing.T) {
+	const replicas = 6
+
+	clock := convergetest.NewClock(time.Unix(0, 0))
+	mq := inmem.NewMQWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	ns := "svc"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var rts []*converge.Runtime
+	for i := 0; i < replicas; i++ {
+		rt := newCtlRuntime(t, ns, mq, kv, clock)
+		if err := hook.RegisterJob(rt, newStubJob("worker")); err != nil {
+			t.Fatal(err)
+		}
+		startAndAwaitReady(t, rt, ctx)
+		rts = append(rts, rt)
+	}
+
+	resp, _, err := awaitControlDispatch(t, clock, rts[0], ctl.Request{Op: ctl.OpPause, Job: "worker", Timeout: 500 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp) != replicas {
+		t.Fatalf("resp = %+v, want %d responses", resp, replicas)
+	}
+	if !slices.IsSortedFunc(resp, func(a, b ctl.Response) int { return strings.Compare(a.Replica, b.Replica) }) {
+		t.Fatalf("resp = %+v, want responses sorted by replica", resp)
+	}
+}
+
+func TestControlListenerSurvivesResponseWriteFailure(t *testing.T) {
+	clock := convergetest.NewClock(time.Unix(0, 0))
+	mq := inmem.NewMQWithClock(clock)
+	realKV := inmem.NewKVWithClock(clock)
+	ns := "svc"
+	kv := selectiveFailKV{KV: realKV, failPrefix: ctl.ResPrefix(ns, ""), failErr: errors.New("kv set boom")}
+
+	rt := newCtlRuntime(t, ns, mq, kv, clock)
+	if err := hook.RegisterJob(rt, newStubJob("worker")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startAndAwaitReady(t, rt, ctx)
+
+	resp, _, err := awaitControlDispatch(t, clock, rt, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x", Timeout: 150 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp) != 0 {
+		t.Fatalf("resp = %+v, want no responses when the KV write fails", resp)
+	}
+
+	if _, _, err := awaitControlDispatch(t, clock, rt, ctl.Request{Op: ctl.OpPause, Job: "worker", Timeout: 150 * time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	raw, ok, err := realKV.Get(context.Background(), ctl.PausedKey(ns, "worker"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || string(raw) != "1" {
+		t.Fatalf("paused flag = (%q, %v), want (1, true): a response-write failure must not affect unrelated KV writes", raw, ok)
 	}
 }
