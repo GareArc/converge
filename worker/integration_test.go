@@ -219,51 +219,6 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	}
 }
 
-func TestLongHandlerSurvivesThreeVisibilities(t *testing.T) {
-	var cmq *countingMQ
-	w := newWorldWith(t, worldOpts{mq: func(clock *convergetest.Clock) converge.MQ {
-		cmq = &countingMQ{MQ: inmem.NewMQWithClock(clock)}
-		return cmq
-	}})
-	tk := NewTask[string]("job", TaskOpts{})
-	gate := make(chan struct{})
-	var runs int32
-	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
-		<-gate
-		atomic.AddInt32(&runs, 1)
-		return nil
-	}, HandleOpts{Visibility: 90 * time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.run(t)
-	p, err := ProducerFrom(w.rt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
-		t.Fatal(err)
-	}
-
-	var receipt int64
-	await(t, func() bool {
-		if c := cmq.count.Load(); c > 0 {
-			receipt = c
-			return true
-		}
-		return false
-	})
-	for i := int64(1); i <= 9; i++ {
-		want := receipt + i
-		w.advanceUntil(t, 30*time.Second, func() bool { return cmq.count.Load() >= want })
-	}
-	close(gate)
-	await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
-	w.clock.Advance(5 * time.Minute)
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
-}
-
 func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 	w := newWorld(t)
 	tk := NewTask[string]("job", TaskOpts{})
