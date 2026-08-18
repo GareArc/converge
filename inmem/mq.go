@@ -93,6 +93,9 @@ func (q *MQ) consumeGroup(ctx context.Context, queue, group string, deliver func
 	g := q.ensureGroup(queue, group)
 	q.mu.Unlock()
 	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		q.mu.Lock()
 		msg := g.next(q.clock.Now())
 		var d *mqDelivery
@@ -227,6 +230,9 @@ func (q *MQ) ConsumeBroadcast(ctx context.Context, queue string, deliver func(co
 		q.mu.Unlock()
 	}()
 	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		q.mu.Lock()
 		var msg *storedMsg
 		if len(sub.pending) > 0 {

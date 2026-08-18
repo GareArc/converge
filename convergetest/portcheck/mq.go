@@ -2,6 +2,9 @@ package portcheck
 
 import (
 	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -209,6 +212,129 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		o.Advance(time.Hour + time.Second)
 		recvDelivery(t, got).Ack(ctx)
 	})
+
+	t.Run("cancel stops consuming even with deliverable messages pending", func(t *testing.T) {
+		t.Run("Consume", func(t *testing.T) {
+			mq := open(t)
+			assertConsumeStopsOnCancel(t, "q", func(ctx context.Context, deliver func(converge.Delivery)) error {
+				return mq.Consume(ctx, "q", deliver)
+			}, func(m converge.Message) { mustPublish(t, mq, "q", m) })
+		})
+		t.Run("ConsumeGroup", func(t *testing.T) {
+			base := open(t)
+			gc, ok := base.(converge.GroupConsumer)
+			if !ok {
+				t.Skip("no GroupConsumer capability")
+			}
+			assertConsumeStopsOnCancel(t, "q", func(ctx context.Context, deliver func(converge.Delivery)) error {
+				return gc.ConsumeGroup(ctx, "q", "g", deliver)
+			}, func(m converge.Message) { mustPublish(t, base, "q", m) })
+		})
+		t.Run("ConsumeBroadcast", func(t *testing.T) {
+			base := open(t)
+			bc, ok := base.(converge.BroadcastConsumer)
+			if !ok {
+				t.Skip("no BroadcastConsumer capability")
+			}
+			assertBroadcastStopsOnCancel(t, base, bc)
+		})
+	})
+}
+
+func assertConsumeStopsOnCancel(t *testing.T, queue string, run func(ctx context.Context, deliver func(converge.Delivery)) error, publish func(converge.Message)) {
+	t.Helper()
+	for i := range 5 {
+		publish(converge.Message{Payload: []byte{byte(i)}})
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var delivered atomic.Int64
+	var cancelOnce sync.Once
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- run(ctx, func(d converge.Delivery) {
+			delivered.Add(1)
+			cancelOnce.Do(cancel)
+		})
+	}()
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Consume returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Consume did not return after cancel while messages were still deliverable")
+	}
+	if n := delivered.Load(); n != 1 {
+		t.Fatalf("deliver invoked %d times; want exactly 1 (none after Consume returned)", n)
+	}
+	assertNoFurtherDelivery(t, &delivered, 1)
+}
+
+func assertBroadcastStopsOnCancel(t *testing.T, mq converge.MQ, bc converge.BroadcastConsumer) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	attached := make(chan struct{})
+	var attachOnce sync.Once
+	var delivered atomic.Int64
+	var cancelOnce sync.Once
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- bc.ConsumeBroadcast(ctx, "q", func(d converge.Delivery) {
+			if d.Message().Kind == probeKind {
+				attachOnce.Do(func() { close(attached) })
+				return
+			}
+			delivered.Add(1)
+			cancelOnce.Do(cancel)
+		})
+	}()
+	awaitAttach := func() {
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			select {
+			case <-attached:
+				return
+			default:
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("broadcast subscriber never attached")
+			}
+			mustPublish(t, mq, "q", converge.Message{Kind: probeKind})
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	awaitAttach()
+	for i := range 3 {
+		mustPublish(t, mq, "q", converge.Message{Payload: []byte{byte(i)}})
+	}
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("ConsumeBroadcast returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ConsumeBroadcast did not return after cancel while messages were still deliverable")
+	}
+	if n := delivered.Load(); n != 1 {
+		t.Fatalf("deliver invoked %d times; want exactly 1 (none after ConsumeBroadcast returned)", n)
+	}
+	assertNoFurtherDelivery(t, &delivered, 1)
+}
+
+func assertNoFurtherDelivery(t *testing.T, delivered *atomic.Int64, before int64) {
+	t.Helper()
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for {
+		if n := delivered.Load(); n != before {
+			t.Fatalf("deliver invoked after return: count went from %d to %d", before, n)
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 func startConsumer(t *testing.T, open func(t *testing.T) converge.MQ) (converge.MQ, chan converge.Delivery, context.Context) {

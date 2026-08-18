@@ -113,6 +113,78 @@ type BackoffFallback struct {
 
 func (BackoffFallback) event() {}
 
+type MessageDiscarded struct {
+	Job       string
+	Queue     string
+	MessageID string
+	Reason    string
+}
+
+func (MessageDiscarded) event() {}
+
+type deadLetterReasonKind int
+
+const (
+	deadLetterReasonUnset deadLetterReasonKind = iota
+	deadLetterMaxAttempts
+	deadLetterMaxAge
+	deadLetterWrongKind
+	deadLetterSchemaVersion
+	deadLetterUndecodable
+	deadLetterWrongSurface
+)
+
+type DeadLetterReason struct{ kind deadLetterReasonKind }
+
+var (
+	DeadLetterMaxAttempts   = DeadLetterReason{deadLetterMaxAttempts}
+	DeadLetterMaxAge        = DeadLetterReason{deadLetterMaxAge}
+	DeadLetterWrongKind     = DeadLetterReason{deadLetterWrongKind}
+	DeadLetterSchemaVersion = DeadLetterReason{deadLetterSchemaVersion}
+	DeadLetterUndecodable   = DeadLetterReason{deadLetterUndecodable}
+	DeadLetterWrongSurface  = DeadLetterReason{deadLetterWrongSurface}
+)
+
+func (r DeadLetterReason) IsZero() bool { return r.kind == deadLetterReasonUnset }
+
+func (r DeadLetterReason) String() string {
+	switch r.kind {
+	case deadLetterMaxAttempts:
+		return "max-attempts"
+	case deadLetterMaxAge:
+		return "max-age"
+	case deadLetterWrongKind:
+		return "wrong-kind"
+	case deadLetterSchemaVersion:
+		return "schema-version"
+	case deadLetterUndecodable:
+		return "undecodable"
+	case deadLetterWrongSurface:
+		return "wrong-surface"
+	default:
+		return "unknown"
+	}
+}
+
+type MessageDeadLettered struct {
+	Job       string
+	Queue     string
+	MessageID string
+	Attempt   int
+	Reason    DeadLetterReason
+	Err       error
+}
+
+func (MessageDeadLettered) event() {}
+
+type QueueDepth struct {
+	Job   string
+	Queue string
+	Depth int
+}
+
+func (QueueDepth) event() {}
+
 type noopObserver struct{}
 
 func (noopObserver) Observe(Event) {}

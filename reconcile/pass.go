@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/internal/backoff"
 )
 
 const (
@@ -121,7 +122,7 @@ func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey str
 			select {
 			case <-ctx.Done():
 				return false
-			case <-e.deps.Clock.After(jitter(retry)):
+			case <-e.deps.Clock.After(backoff.Jitter(retry)):
 			}
 			retry = min(retry*2, pageRetryMax)
 			continue
@@ -143,7 +144,7 @@ func (e *engine) pauseOnInfraError(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case <-e.deps.Clock.After(jitter(triggerRestartMin)):
+	case <-e.deps.Clock.After(backoff.Jitter(triggerRestartMin)):
 		return true
 	}
 }

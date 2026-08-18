@@ -55,9 +55,22 @@ func TestSurfaceString(t *testing.T) {
 }
 
 func TestReservedHeaderNames(t *testing.T) {
-	for _, h := range []string{HeaderSchemaVersion, HeaderEnqueuedAt} {
+	for _, h := range []string{HeaderSchemaVersion, HeaderEnqueuedAt, HeaderMessageID, HeaderAttempt, HeaderSnoozes} {
 		if !strings.HasPrefix(h, HeaderPrefix) {
 			t.Errorf("%q must carry the reserved prefix", h)
+		}
+	}
+}
+
+func TestWorkerHeaderValues(t *testing.T) {
+	cases := map[string]string{
+		HeaderMessageID: "converge.message-id",
+		HeaderAttempt:   "converge.attempt",
+		HeaderSnoozes:   "converge.snoozes",
+	}
+	for got, want := range cases {
+		if got != want {
+			t.Errorf("header = %q, want %q", got, want)
 		}
 	}
 }
@@ -78,6 +91,9 @@ var _ = []Event{
 	VersionZero{},
 	WrongSurfaceSignal{},
 	BackoffFallback{},
+	MessageDiscarded{},
+	MessageDeadLettered{},
+	QueueDepth{},
 }
 
 func TestWakeDiscardReasonZeroIsHonest(t *testing.T) {
@@ -86,5 +102,30 @@ func TestWakeDiscardReasonZeroIsHonest(t *testing.T) {
 	}
 	if !(WakeDiscardReason{}).IsZero() || DiscardParked.IsZero() {
 		t.Fatal("IsZero semantics broken")
+	}
+}
+
+func TestDeadLetterReasonZeroIsHonest(t *testing.T) {
+	if got := (DeadLetterReason{}).String(); got != "unknown" {
+		t.Fatalf("zero reason = %q, want unknown, never a fabricated name", got)
+	}
+	if !(DeadLetterReason{}).IsZero() || DeadLetterMaxAttempts.IsZero() {
+		t.Fatal("IsZero semantics broken")
+	}
+}
+
+func TestDeadLetterReasonString(t *testing.T) {
+	cases := map[string]DeadLetterReason{
+		"max-attempts":   DeadLetterMaxAttempts,
+		"max-age":        DeadLetterMaxAge,
+		"wrong-kind":     DeadLetterWrongKind,
+		"schema-version": DeadLetterSchemaVersion,
+		"undecodable":    DeadLetterUndecodable,
+		"wrong-surface":  DeadLetterWrongSurface,
+	}
+	for want, reason := range cases {
+		if got := reason.String(); got != want {
+			t.Errorf("String() = %q, want %q", got, want)
+		}
 	}
 }
