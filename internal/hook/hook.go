@@ -1,6 +1,10 @@
 package hook
 
-import "context"
+import (
+	"context"
+
+	"github.com/GareArc/converge/internal/ctl"
+)
 
 var RegisterJob func(rt any, job any) error
 
@@ -32,3 +36,5 @@ var Hint func(rt any, job, id string) error
 var RunPassNow func(rt any, ctx context.Context, job string) error
 
 var Quiet func(rt any) bool
+
+var ControlDispatch func(rt any, ctx context.Context, req ctl.Request) ([]ctl.Response, error)
