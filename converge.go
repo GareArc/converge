@@ -41,8 +41,9 @@ func New(o Options) (*Runtime, error) {
 	}
 	o.Middleware = slices.Clone(o.Middleware)
 	return &Runtime{
-		opts:  o,
-		jobs:  map[string]job{},
-		ready: make(chan struct{}),
+		opts:   o,
+		jobs:   map[string]job{},
+		queues: map[string]queueBinding{},
+		ready:  make(chan struct{}),
 	}, nil
 }
