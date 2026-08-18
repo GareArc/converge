@@ -332,6 +332,41 @@ func TestCountsAndReset(t *testing.T) {
 	}
 }
 
+func TestQuietReportsQueueState(t *testing.T) {
+	q, clock := newTestQueue(2, false)
+	if !q.quiet(clock.Now()) {
+		t.Fatal("empty queue must be quiet")
+	}
+	q.wake("a", wakeHint)
+	if q.quiet(clock.Now()) {
+		t.Fatal("a due queued id must not be quiet")
+	}
+	mustPop(t, q, clock, "a")
+	if q.quiet(clock.Now()) {
+		t.Fatal("a running id must not be quiet")
+	}
+	q.finish("a", finishFailure, 0)
+	if !q.quiet(clock.Now()) {
+		t.Fatal("a future-due backoff id must be quiet")
+	}
+	due, ok := q.nextDue()
+	if !ok {
+		t.Fatal("backoff id must have a due time")
+	}
+	if q.quiet(due) {
+		t.Fatal("an id due now must not be quiet")
+	}
+	clock.Advance(time.Minute)
+	mustPop(t, q, clock, "a")
+	q.finish("a", finishFailure, 0)
+	if q.counts().parked != 1 {
+		t.Fatal("a must be parked")
+	}
+	if !q.quiet(clock.Now()) {
+		t.Fatal("a parked id must be quiet")
+	}
+}
+
 func heapLen(q *wakeQueue) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()

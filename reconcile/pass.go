@@ -111,6 +111,14 @@ func (e *engine) checkOverrun(ctx context.Context, st *scheduleTrigger, writeLas
 }
 
 func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey string) bool {
+	e.mu.Lock()
+	e.passes++
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.passes--
+		e.mu.Unlock()
+	}()
 	cursor := e.readString(ctx, cursorKey)
 	retry := triggerRestartMin
 	for {

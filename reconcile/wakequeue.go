@@ -384,6 +384,20 @@ func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishRe
 	}
 }
 
+func (q *wakeQueue) quiet(now time.Time) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, st := range q.ids {
+		if st.phase == phaseParked {
+			continue
+		}
+		if st.phase == phaseRunning || !st.due.After(now) {
+			return false
+		}
+	}
+	return true
+}
+
 func (q *wakeQueue) counts() queueCounts {
 	q.mu.Lock()
 	defer q.mu.Unlock()

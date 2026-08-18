@@ -72,6 +72,20 @@ func (e *engine) Poke(string) error {
 	return fmt.Errorf("worker: job %q: poke is a reconcile verb; requeue dead letters via ops instead", e.cfg.info.name)
 }
 
+func (e *engine) Quiet() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.depth == 0
+}
+
+func (e *engine) Hint(string) error {
+	return fmt.Errorf("worker: job %q: hint is a reconcile verb; workers react to deliveries instead", e.cfg.info.name)
+}
+
+func (e *engine) RunPassNow(context.Context) error {
+	return fmt.Errorf("worker: job %q: passes are a reconcile verb; workers have no schedule to run", e.cfg.info.name)
+}
+
 func (e *engine) durable() bool { return e.cfg.runMode != converge.OnAllReplicas }
 
 func (e *engine) key(parts ...string) string {

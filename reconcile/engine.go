@@ -60,6 +60,8 @@ type engine struct {
 	queue       *wakeQueue
 	lastSuccess time.Time
 	consecFails int
+	passes      int
+	active      bool
 }
 
 func (e *engine) Name() string { return e.cfg.name }
@@ -111,6 +113,61 @@ func (e *engine) Poke(id string) error {
 		e.deps.KV.Delete(context.Background(), e.parkKey(ID(id)))
 	}
 	e.report(ID(id), res)
+	return nil
+}
+
+func (e *engine) Quiet() bool {
+	e.mu.Lock()
+	q := e.queue
+	inFlight := e.passes > 0
+	e.mu.Unlock()
+	if q == nil {
+		return true
+	}
+	if inFlight {
+		return false
+	}
+	return q.quiet(e.deps.Clock.Now())
+}
+
+func (e *engine) Hint(id string) error {
+	q := e.wakeQueueRef()
+	if q == nil {
+		return fmt.Errorf("reconcile: job %q is not running", e.cfg.name)
+	}
+	if id == "" && !e.cfg.single {
+		return fmt.Errorf("reconcile: job %q: hint needs an id", e.cfg.name)
+	}
+	if e.cfg.single {
+		id = ""
+	}
+	e.hint(context.Background(), ID(id))
+	return nil
+}
+
+func (e *engine) RunPassNow(ctx context.Context) error {
+	e.mu.Lock()
+	active := e.active
+	e.mu.Unlock()
+	if !active {
+		return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)
+	}
+	found := false
+	for idx, t := range e.cfg.triggers {
+		st, ok := t.(*scheduleTrigger)
+		if !ok {
+			continue
+		}
+		found = true
+		cursorKey := e.key("opspass", strconv.Itoa(idx))
+		e.deleteKey(ctx, cursorKey)
+		if !e.runPass(ctx, st, cursorKey) {
+			return ctx.Err()
+		}
+	}
+	if !found {
+		return fmt.Errorf("reconcile: job %q: run-pass-now needs a Schedule trigger", e.cfg.name)
+	}
 	return nil
 }
 
@@ -566,6 +623,15 @@ func (e *engine) leaseLoop(ctx context.Context) error {
 }
 
 func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
+	e.mu.Lock()
+	e.active = true
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.active = false
+		e.mu.Unlock()
+	}()
+
 	intake, stopIntake := context.WithCancel(ctx)
 	defer stopIntake()
 	hctx, stopHandlers := context.WithCancel(context.WithoutCancel(ctx))

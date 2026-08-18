@@ -270,3 +270,197 @@ func TestCursorClearedAfterPassCompletes(t *testing.T) {
 		return err == nil && !ok
 	})
 }
+
+func TestQuietFalseWhilePassEnumerates(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	src := IDs(func(context.Context) ([]ID, error) {
+		close(entered)
+		<-release
+		return []ID{"a"}, nil
+	})
+	startSchedule(t, te, src, Every(time.Hour))
+	<-entered
+	if te.e.Quiet() {
+		t.Fatal("must not be quiet while a pass enumerates")
+	}
+	close(release)
+	await(t, te.e.Quiet)
+}
+
+func TestRunPassNowInactiveErrors(t *testing.T) {
+	e, err := newEngine(specWithSchedule())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RunPassNow(context.Background()); err == nil {
+		t.Fatal("run-pass-now before Run must error")
+	}
+}
+
+func TestRunPassNowWithoutScheduleTriggerErrors(t *testing.T) {
+	spec := Spec{
+		Name:             "job",
+		Reconciler:       Func(func(context.Context, ID) error { return nil }),
+		AllowUnscheduled: true,
+		RunMode:          converge.OnAllReplicas,
+	}
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := convergetest.NewClock(wqStart)
+	deps := converge.JobDeps{
+		Observer:     &eventRecorder{},
+		Clock:        clock,
+		DrainTimeout: time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.Run(ctx, deps)
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	if err := e.RunPassNow(context.Background()); err == nil {
+		t.Fatal("run-pass-now without a Schedule trigger must error")
+	}
+}
+
+func TestRunPassNowEnumeratesFullIDSource(t *testing.T) {
+	var mu sync.Mutex
+	counts := map[ID]int{}
+	spec := Spec{
+		Name: "job",
+		Reconciler: Func(func(_ context.Context, id ID) error {
+			mu.Lock()
+			counts[id]++
+			mu.Unlock()
+			return nil
+		}),
+		Triggers: []Trigger{Schedule(StringIDs(func(context.Context) ([]string, error) {
+			return []string{"a", "b", "c"}, nil
+		}), Every(time.Hour))},
+	}
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-le.e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(counts) == 3
+	})
+	if err := le.e.RunPassNow(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, id := range []ID{"a", "b", "c"} {
+			if counts[id] < 2 {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func TestRunPassNowDoesNotDisturbScheduledLastFireOrCursor(t *testing.T) {
+	var mu sync.Mutex
+	scheduledRuns := 0
+	spec := Spec{
+		Name: "job",
+		Reconciler: Func(func(context.Context, ID) error {
+			mu.Lock()
+			scheduledRuns++
+			mu.Unlock()
+			return nil
+		}),
+		Triggers: []Trigger{Schedule(SingleID(), Every(time.Hour))},
+	}
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-le.e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return scheduledRuns == 1 })
+
+	lastKey := le.e.key("sched", "0", "last")
+	rawBefore, ok, err := le.kv.Get(context.Background(), lastKey)
+	if err != nil || !ok {
+		t.Fatal("scheduled last-fire not persisted")
+	}
+
+	if err := le.e.RunPassNow(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return scheduledRuns == 2 })
+
+	rawAfter, ok, err := le.kv.Get(context.Background(), lastKey)
+	if err != nil || !ok || string(rawAfter) != string(rawBefore) {
+		t.Fatalf("ops pass must not touch scheduled last-fire: before=%q after=%q", rawBefore, rawAfter)
+	}
+	if _, ok, _ := le.kv.Get(context.Background(), le.e.key("sched", "0", "cursor")); ok {
+		t.Fatal("scheduled cursor must not persist after completion")
+	}
+	if _, ok, _ := le.kv.Get(context.Background(), le.e.key("opspass", "0")); ok {
+		t.Fatal("ops cursor must be cleared after completion")
+	}
+
+	advanceUntil(t, &testEngine{clock: le.clock, rec: le.rec}, time.Minute, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return scheduledRuns == 3
+	})
+}
+
+func TestRunPassNowCtxCancellationAbortsAndReturnsCtxErr(t *testing.T) {
+	first := true
+	src := IDs(func(context.Context) ([]ID, error) {
+		if first {
+			first = false
+			return []ID{""}, nil
+		}
+		return nil, errors.New("db hiccup")
+	})
+	spec := Spec{
+		Name:       "job",
+		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Triggers:   []Trigger{Schedule(src, Every(time.Hour))},
+	}
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-le.e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	lastKey := le.e.key("sched", "0", "last")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok, err := le.kv.Get(context.Background(), lastKey); err == nil && ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scheduled boot pass never completed")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	opsCtx, opsCancel := context.WithCancel(context.Background())
+	resultCh := make(chan error, 1)
+	go func() { resultCh <- le.e.RunPassNow(opsCtx) }()
+	opsCancel()
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunPassNow error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunPassNow never returned after ctx cancellation")
+	}
+}

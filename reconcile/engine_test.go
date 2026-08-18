@@ -400,6 +400,129 @@ func TestPokeBeforeBindFails(t *testing.T) {
 	}
 }
 
+func TestQuietUnboundEngineIsQuiet(t *testing.T) {
+	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
+	if !e.Quiet() {
+		t.Fatal("unbound engine must be quiet")
+	}
+}
+
+func TestQuietFalseWhileHandlerBlocks(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
+		close(started)
+		<-release
+		return nil
+	})
+	if !te.e.Quiet() {
+		t.Fatal("engine must start quiet")
+	}
+	te.e.hint(context.Background(), "a")
+	<-started
+	if te.e.Quiet() {
+		t.Fatal("must not be quiet while a handler runs")
+	}
+	close(release)
+	await(t, te.e.Quiet)
+}
+
+func TestQuietTrueWithOnlyFutureBackoffItems(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
+		return errors.New("boom")
+	})
+	te.e.hint(context.Background(), "a")
+	await(t, func() bool { return te.e.Stats().ConsecutiveFails == 1 })
+	if !te.e.Quiet() {
+		t.Fatal("a future-due backoff item must be quiet")
+	}
+}
+
+func TestHintBeforeBindFails(t *testing.T) {
+	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
+	if err := e.Hint("x"); err == nil {
+		t.Fatal("hint before Run must error")
+	}
+}
+
+func TestHintEmptyIDOnMultiIDJobFails(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	if err := te.e.Hint(""); err == nil {
+		t.Fatal("empty hint on a multi-ID job must error")
+	}
+}
+
+func TestHintOnSingleJobCoercesIDToEmpty(t *testing.T) {
+	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
+	if err := te.e.Hint("whatever"); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.ID == ""
+		}) == 1
+	})
+}
+
+func TestHintRespectsBackoffUnlikePoke(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls == 1 {
+			return errors.New("boom")
+		}
+		return nil
+	})
+	te.e.hint(context.Background(), "a")
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	if err := te.e.Hint("a"); err != nil {
+		t.Fatal(err)
+	}
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	if err := te.e.Poke("a"); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
+}
+
+func TestHintRevivesParkedID(t *testing.T) {
+	kv := inmem.NewKV()
+	tr := NewTracker(kv, "job")
+	ctx := context.Background()
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	fail := true
+	runs := 0
+	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		runs++
+		if fail {
+			return errors.New("boom")
+		}
+		return nil
+	})
+	te.e.hint(ctx, "a")
+	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	mu.Lock()
+	fail = false
+	mu.Unlock()
+	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := te.e.Hint("a"); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	await(t, func() bool { return te.e.Stats().Parked == 0 })
+}
+
 func TestPokeEmptyIDOnMultiIDJobFails(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	if err := te.e.Poke(""); err == nil {

@@ -14,11 +14,13 @@ import (
 )
 
 type stubJob struct {
-	name  string
-	ready chan struct{}
-	run   func(ctx context.Context, d converge.JobDeps) error
-	poked []string
-	mu    sync.Mutex
+	name    string
+	ready   chan struct{}
+	run     func(ctx context.Context, d converge.JobDeps) error
+	poked   []string
+	hinted  []string
+	ranPass int
+	mu      sync.Mutex
 }
 
 func newStubJob(name string) *stubJob {
@@ -42,6 +44,22 @@ func (s *stubJob) Poke(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.poked = append(s.poked, id)
+	return nil
+}
+
+func (s *stubJob) Quiet() bool { return true }
+
+func (s *stubJob) Hint(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hinted = append(s.hinted, id)
+	return nil
+}
+
+func (s *stubJob) RunPassNow(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ranPass++
 	return nil
 }
 
@@ -78,6 +96,12 @@ func (s *stubQueueJob) Run(ctx context.Context, d converge.JobDeps) error {
 func (s *stubQueueJob) Ready() <-chan struct{} { return s.ready }
 
 func (s *stubQueueJob) Poke(id string) error { return nil }
+
+func (s *stubQueueJob) Quiet() bool { return true }
+
+func (s *stubQueueJob) Hint(id string) error { return nil }
+
+func (s *stubQueueJob) RunPassNow(ctx context.Context) error { return nil }
 
 func (s *stubQueueJob) Stats() converge.JobStats { return converge.JobStats{Job: s.name} }
 
@@ -261,6 +285,87 @@ func TestReplicaIDsAreDistinctPerRuntime(t *testing.T) {
 	}
 	if len(w1.Replica) != 32 || len(w2.Replica) != 32 {
 		t.Fatalf("replica ids must be 32 chars, got %q and %q", w1.Replica, w2.Replica)
+	}
+}
+
+func TestHintReachesStubJob(t *testing.T) {
+	rt := mustRuntime(t)
+	s := newStubJob("a")
+	if err := hook.RegisterJob(rt, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.Hint(rt, "a", "x"); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.hinted) != 1 || s.hinted[0] != "x" {
+		t.Fatalf("hinted = %v, want [x]", s.hinted)
+	}
+}
+
+func TestHintUnknownJobErrors(t *testing.T) {
+	rt := mustRuntime(t)
+	if err := hook.Hint(rt, "no-such-job", "x"); err == nil {
+		t.Fatal("hint on unknown job must error")
+	}
+}
+
+func TestHintRejectsForeignRuntime(t *testing.T) {
+	if err := hook.Hint("not a runtime", "a", "x"); err == nil {
+		t.Fatal("non-runtime must be rejected")
+	}
+}
+
+func TestRunPassNowReachesStubJob(t *testing.T) {
+	rt := mustRuntime(t)
+	s := newStubJob("a")
+	if err := hook.RegisterJob(rt, s); err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RunPassNow(rt, context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ranPass != 1 {
+		t.Fatalf("ranPass = %d, want 1", s.ranPass)
+	}
+}
+
+func TestRunPassNowUnknownJobErrors(t *testing.T) {
+	rt := mustRuntime(t)
+	if err := hook.RunPassNow(rt, context.Background(), "no-such-job"); err == nil {
+		t.Fatal("run-pass-now on unknown job must error")
+	}
+}
+
+func TestRunPassNowRejectsForeignRuntime(t *testing.T) {
+	if err := hook.RunPassNow("not a runtime", context.Background(), "a"); err == nil {
+		t.Fatal("non-runtime must be rejected")
+	}
+}
+
+func TestQuietTrueWithQuietStubs(t *testing.T) {
+	rt := mustRuntime(t)
+	if err := hook.RegisterJob(rt, newStubJob("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(rt, newStubJob("b")); err != nil {
+		t.Fatal(err)
+	}
+	if !hook.Quiet(rt) {
+		t.Fatal("quiet stubs must report quiet")
+	}
+}
+
+func TestQuietRejectsForeignRuntime(t *testing.T) {
+	if hook.Quiet("not a runtime") {
+		t.Fatal("foreign rt must not report quiet")
+	}
+	var nilRt *converge.Runtime
+	if hook.Quiet(nilRt) {
+		t.Fatal("typed-nil runtime must not report quiet")
 	}
 }
 

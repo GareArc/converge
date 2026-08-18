@@ -16,6 +16,9 @@ type job interface {
 	Poke(id string) error
 	Stats() JobStats
 	Info() JobInfo
+	Quiet() bool
+	Hint(id string) error
+	RunPassNow(ctx context.Context) error
 }
 
 type queueBound interface {
@@ -92,6 +95,50 @@ func init() {
 			Replica:   r.replica,
 			QueueMQ:   r.queueMQ,
 		}, nil
+	}
+	hook.Hint = func(rt any, jobName, id string) error {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return fmt.Errorf("converge: hint: %T is not a usable *converge.Runtime", rt)
+		}
+		r.mu.Lock()
+		j, ok := r.jobs[jobName]
+		r.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("converge: unknown job %q", jobName)
+		}
+		return j.Hint(id)
+	}
+	hook.RunPassNow = func(rt any, ctx context.Context, jobName string) error {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return fmt.Errorf("converge: run-pass-now: %T is not a usable *converge.Runtime", rt)
+		}
+		r.mu.Lock()
+		j, ok := r.jobs[jobName]
+		r.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("converge: unknown job %q", jobName)
+		}
+		return j.RunPassNow(ctx)
+	}
+	hook.Quiet = func(rt any) bool {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return false
+		}
+		r.mu.Lock()
+		jobs := make([]job, 0, len(r.order))
+		for _, name := range r.order {
+			jobs = append(jobs, r.jobs[name])
+		}
+		r.mu.Unlock()
+		for _, j := range jobs {
+			if !j.Quiet() {
+				return false
+			}
+		}
+		return true
 	}
 	hook.AttachOptions = func(o any, attach func(rt any)) any {
 		opts, ok := o.(Options)

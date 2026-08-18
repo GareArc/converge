@@ -17,6 +17,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/internal/hook"
 	"github.com/GareArc/converge/reconcile"
 )
 
@@ -1955,4 +1956,63 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 			return ok && !lt.Acquired
 		}) >= 1
 	})
+}
+
+func TestQuietFlipsFalseWhileHandlerInFlight(t *testing.T) {
+	w := newWorld(t)
+	gate := make(chan struct{})
+	entered := make(chan struct{})
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(ctx context.Context, payload []byte) error {
+		close(entered)
+		<-gate
+		return nil
+	}, HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(w.rt, e); err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	if !e.Quiet() {
+		t.Fatal("engine must start quiet")
+	}
+	tk := NewTask[string]("job", TaskOpts{})
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+	if e.Quiet() {
+		t.Fatal("must not be quiet while a handler is in flight")
+	}
+	close(gate)
+	await(t, e.Quiet)
+}
+
+func TestHintIsAReconcileVerb(t *testing.T) {
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(context.Context, []byte) error { return nil }, HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Hint("x"); err == nil || !strings.Contains(err.Error(), "reconcile verb") {
+		t.Fatalf("Hint error = %v, want mention of the reconcile surface", err)
+	}
+}
+
+func TestRunPassNowIsAReconcileVerb(t *testing.T) {
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(context.Context, []byte) error { return nil }, HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RunPassNow(context.Background()); err == nil || !strings.Contains(err.Error(), "reconcile verb") {
+		t.Fatalf("RunPassNow error = %v, want mention of the reconcile surface", err)
+	}
 }

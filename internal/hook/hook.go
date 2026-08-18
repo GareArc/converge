@@ -1,5 +1,7 @@
 package hook
 
+import "context"
+
 var RegisterJob func(rt any, job any) error
 
 type ProducerWiring struct {
@@ -24,3 +26,9 @@ type OpsWiring struct {
 }
 
 var OpsDeps func(rt any) (OpsWiring, error)
+
+var Hint func(rt any, job, id string) error
+
+var RunPassNow func(rt any, ctx context.Context, job string) error
+
+var Quiet func(rt any) bool
