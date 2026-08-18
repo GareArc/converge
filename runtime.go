@@ -19,6 +19,7 @@ type job interface {
 	Quiet() bool
 	Hint(id string) error
 	RunPassNow(ctx context.Context) error
+	SetPaused(paused bool)
 }
 
 type queueBound interface {

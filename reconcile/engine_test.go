@@ -920,3 +920,97 @@ func TestOnAllReplicasParksInMemoryOnly(t *testing.T) {
 		t.Fatalf("OnAllReplicas must not write shared park marks: %v", keys)
 	}
 }
+
+func TestSetPausedDropsHintWakes(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	te.e.SetPaused(true)
+	te.e.hint(context.Background(), "a")
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			wd, ok := e.(converge.WakeDiscarded)
+			return ok && wd.ID == "a" && wd.Reason == converge.DiscardPaused
+		}) == 1
+	})
+	if n := te.rec.count(func(e converge.Event) bool {
+		_, ok := e.(converge.RunCompleted)
+		return ok
+	}); n != 0 {
+		t.Fatalf("paused engine must not run, got %d RunCompleted", n)
+	}
+}
+
+func TestSetPausedDropsPokes(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	te.e.SetPaused(true)
+	if err := te.e.Poke("a"); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			wd, ok := e.(converge.WakeDiscarded)
+			return ok && wd.ID == "a" && wd.Reason == converge.DiscardPaused
+		}) == 1
+	})
+}
+
+func TestSetPausedResumeAllowsHintsAgain(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	te.e.SetPaused(true)
+	te.e.hint(context.Background(), "a")
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			wd, ok := e.(converge.WakeDiscarded)
+			return ok && wd.Reason == converge.DiscardPaused
+		}) == 1
+	})
+	te.e.SetPaused(false)
+	te.e.hint(context.Background(), "a")
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.RunCompleted)
+			return ok
+		}) == 1
+	})
+}
+
+func TestSetPausedSameValueIsNoOp(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	te.e.SetPaused(false)
+	if te.e.Info().Paused {
+		t.Fatal("same-value SetPaused(false) must not pause an unpaused engine")
+	}
+	te.e.hint(context.Background(), "a")
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.RunCompleted)
+			return ok
+		}) == 1
+	})
+	te.e.SetPaused(true)
+	te.e.SetPaused(true)
+	if !te.e.Info().Paused {
+		t.Fatal("engine must be paused")
+	}
+	te.e.hint(context.Background(), "b")
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			wd, ok := e.(converge.WakeDiscarded)
+			return ok && wd.ID == "b" && wd.Reason == converge.DiscardPaused
+		}) == 1
+	})
+}
+
+func TestInfoPausedReflectsLiveState(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	if te.e.Info().Paused {
+		t.Fatal("Info().Paused must start false for an unpaused config")
+	}
+	te.e.SetPaused(true)
+	if !te.e.Info().Paused {
+		t.Fatal("Info().Paused must reflect a live SetPaused(true)")
+	}
+	te.e.SetPaused(false)
+	if te.e.Info().Paused {
+		t.Fatal("Info().Paused must reflect a live SetPaused(false)")
+	}
+}

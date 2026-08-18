@@ -1,7 +1,9 @@
 package reconcile
 
 import (
+	"context"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -524,5 +526,65 @@ func TestStaleDuplicateHeapEntryDiscardedAfterDispatch(t *testing.T) {
 	mustPop(t, q, clock, "x")
 	if _, ok := q.next(clock.Now()); ok {
 		t.Fatal("duplicate stale heap entry must be discarded, not redispatched")
+	}
+}
+
+func TestSetPausedSameValueDoesNotChurnResumeChannel(t *testing.T) {
+	q, _ := newTestQueue(0, true)
+	q.mu.Lock()
+	before := q.resumeCh
+	q.mu.Unlock()
+	if before == nil {
+		t.Fatal("a queue constructed paused must have a resume channel")
+	}
+	q.setPaused(true)
+	q.mu.Lock()
+	after := q.resumeCh
+	q.mu.Unlock()
+	if before != after {
+		t.Fatal("same-value setPaused must not replace the resume channel")
+	}
+}
+
+func TestAwaitUnpausedBlocksUntilResumed(t *testing.T) {
+	q, _ := newTestQueue(0, true)
+	var mu sync.Mutex
+	returned := false
+	go func() {
+		q.awaitUnpaused(context.Background())
+		mu.Lock()
+		returned = true
+		mu.Unlock()
+	}()
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
+	q.setPaused(false)
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
+}
+
+func TestAwaitUnpausedReturnsFalseOnCtxDone(t *testing.T) {
+	q, _ := newTestQueue(0, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	var ok, returned bool
+	go func() {
+		result := q.awaitUnpaused(ctx)
+		mu.Lock()
+		ok, returned = result, true
+		mu.Unlock()
+	}()
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
+	cancel()
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
+	mu.Lock()
+	defer mu.Unlock()
+	if ok {
+		t.Fatal("awaitUnpaused must return false when ctx is done before resume")
+	}
+}
+
+func TestAwaitUnpausedReturnsImmediatelyWhenNotPaused(t *testing.T) {
+	q, _ := newTestQueue(0, false)
+	if !q.awaitUnpaused(context.Background()) {
+		t.Fatal("awaitUnpaused on an unpaused queue must return true immediately")
 	}
 }

@@ -47,6 +47,7 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 	if st.cad.err != nil {
 		return
 	}
+	q := e.queue
 	lastKey := e.key("sched", strconv.Itoa(idx), "last")
 	cursorKey := e.key("sched", strconv.Itoa(idx), "cursor")
 	readLast := func(ctx context.Context) (time.Time, bool) { return e.readTime(ctx, lastKey) }
@@ -57,10 +58,13 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 		writeLast = func(_ context.Context, t time.Time) { local = t }
 	}
 	for ctx.Err() == nil {
+		if !q.awaitUnpaused(ctx) {
+			return
+		}
 		last, ok := readLast(ctx)
 		now := e.deps.Clock.Now()
 		if !ok {
-			if !e.runPass(ctx, e.queue, st, cursorKey) {
+			if !e.runPass(ctx, q, st, cursorKey) {
 				return
 			}
 			writeLast(ctx, now)
@@ -79,12 +83,12 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 		}
 		switch {
 		case len(pending) == 1 || st.cad.missedTick() == RunOnce:
-			if !e.runPass(ctx, e.queue, st, cursorKey) {
+			if !e.runPass(ctx, q, st, cursorKey) {
 				return
 			}
 		case st.cad.missedTick() == Catchup:
 			for range pending {
-				if !e.runPass(ctx, e.queue, st, cursorKey) {
+				if !e.runPass(ctx, q, st, cursorKey) {
 					return
 				}
 			}

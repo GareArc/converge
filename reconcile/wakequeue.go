@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"container/heap"
+	"context"
 	"sync"
 	"time"
 
@@ -125,22 +126,64 @@ func (h *dueHeap) Pop() any {
 }
 
 type wakeQueue struct {
-	mu     sync.Mutex
-	clock  converge.Clock
-	policy wakePolicy
-	paused bool
-	ids    map[ID]*idState
-	heap   dueHeap
-	notify chan struct{}
+	mu       sync.Mutex
+	clock    converge.Clock
+	policy   wakePolicy
+	paused   bool
+	resumeCh chan struct{}
+	ids      map[ID]*idState
+	heap     dueHeap
+	notify   chan struct{}
 }
 
 func newWakeQueue(clock converge.Clock, policy wakePolicy, paused bool) *wakeQueue {
-	return &wakeQueue{
+	q := &wakeQueue{
 		clock:  clock,
 		policy: policy,
 		paused: paused,
 		ids:    map[ID]*idState{},
 		notify: make(chan struct{}, 1),
+	}
+	if paused {
+		q.resumeCh = make(chan struct{})
+	}
+	return q
+}
+
+func (q *wakeQueue) setPaused(paused bool) {
+	q.mu.Lock()
+	if q.paused == paused {
+		q.mu.Unlock()
+		return
+	}
+	q.paused = paused
+	var closeCh chan struct{}
+	if paused {
+		q.resumeCh = make(chan struct{})
+	} else {
+		closeCh = q.resumeCh
+		q.resumeCh = nil
+	}
+	q.mu.Unlock()
+	if closeCh != nil {
+		close(closeCh)
+	}
+}
+
+func (q *wakeQueue) awaitUnpaused(ctx context.Context) bool {
+	for {
+		q.mu.Lock()
+		if !q.paused {
+			q.mu.Unlock()
+			return true
+		}
+		ch := q.resumeCh
+		q.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ch:
+		}
 	}
 }
 

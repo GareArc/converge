@@ -271,6 +271,86 @@ func TestCursorClearedAfterPassCompletes(t *testing.T) {
 	})
 }
 
+func TestScheduleBoundarySkippedWhilePausedLastFireUntouched(t *testing.T) {
+	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
+	startSchedule(t, te, SingleID(), Every(time.Hour))
+	await(t, func() bool { return runCount(te) == 1 })
+	lastKey := te.e.key("sched", "0", "last")
+	before, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
+	if err != nil || !ok {
+		t.Fatal("last-fire not persisted")
+	}
+
+	te.e.SetPaused(true)
+	te.clock.Advance(3 * time.Hour)
+	assertStable(t, func() bool { return runCount(te) == 1 })
+
+	after, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
+	if err != nil || !ok || string(after) != string(before) {
+		t.Fatalf("last-fire changed while paused: before=%q after=%q", before, after)
+	}
+}
+
+func TestResumeAfterMissedBoundaryRunsOneCatchupPass(t *testing.T) {
+	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
+	startSchedule(t, te, SingleID(), Every(time.Hour))
+	await(t, func() bool { return runCount(te) == 1 })
+
+	te.e.SetPaused(true)
+	te.clock.Advance(3 * time.Hour)
+	assertStable(t, func() bool { return runCount(te) == 1 })
+
+	te.e.SetPaused(false)
+	await(t, func() bool { return runCount(te) == 2 })
+	assertStable(t, func() bool { return runCount(te) == 2 })
+}
+
+func TestPauseMidPassCompletesThenSkipsNextBoundary(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src := IDs(func(context.Context) ([]ID, error) {
+		once.Do(func() { close(entered) })
+		<-release
+		return []ID{"a"}, nil
+	})
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	startSchedule(t, te, src, Every(time.Hour))
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pass never entered the slow source")
+	}
+
+	te.e.SetPaused(true)
+	close(release)
+
+	lastKey := te.e.key("sched", "0", "last")
+	await(t, func() bool {
+		_, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
+		return err == nil && ok
+	})
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			wd, ok := e.(converge.WakeDiscarded)
+			return ok && wd.ID == "a" && wd.Reason == converge.DiscardPaused
+		}) == 1
+	})
+	assertStable(t, func() bool { return runCount(te) == 0 })
+
+	before, _, err := te.e.deps.KV.Get(context.Background(), lastKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	te.clock.Advance(3 * time.Hour)
+	assertStable(t, func() bool { return runCount(te) == 0 })
+
+	after, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
+	if err != nil || !ok || string(after) != string(before) {
+		t.Fatalf("next boundary must be skipped while paused: before=%q after=%q", before, after)
+	}
+}
+
 func TestQuietFalseWhilePassEnumerates(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	entered := make(chan struct{})

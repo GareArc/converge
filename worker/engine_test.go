@@ -1741,6 +1741,261 @@ func TestPausedConsumesNothing(t *testing.T) {
 	await(t, func() bool { return atomic.LoadInt32(&runs2) == 1 })
 }
 
+func TestInitialPausedResumesAndStartsConsuming(t *testing.T) {
+	w := newWorld(t)
+	var runs int32
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(ctx context.Context, payload []byte) error {
+		atomic.AddInt32(&runs, 1)
+		return nil
+	}, HandleOpts{Paused: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(w.rt, e); err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 0 })
+
+	e.SetPaused(false)
+	await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+}
+
+func TestPauseMidStreamStopsDeliveryThenResumeDeliversBacklog(t *testing.T) {
+	w := newWorld(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var mu sync.Mutex
+	var runs int
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(ctx context.Context, payload []byte) error {
+		mu.Lock()
+		first := runs == 0
+		mu.Unlock()
+		if first {
+			once.Do(func() { close(entered) })
+			<-release
+		}
+		mu.Lock()
+		runs++
+		mu.Unlock()
+		return nil
+	}, HandleOpts{Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(w.rt, e); err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "one", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first handler never started")
+	}
+
+	e.SetPaused(true)
+	close(release)
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+
+	if err := tk.Enqueue(context.Background(), p, "two", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+
+	e.SetPaused(false)
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+}
+
+func TestPauseWithBlockedHandlerDrainTimeoutCancelsHandlerCtx(t *testing.T) {
+	w := newWorldWith(t, worldOpts{drainTimeout: 100 * time.Millisecond})
+	entered := make(chan struct{})
+	canceled := make(chan struct{})
+	var startOnce, cancelOnce sync.Once
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(ctx context.Context, payload []byte) error {
+		startOnce.Do(func() { close(entered) })
+		<-ctx.Done()
+		cancelOnce.Do(func() { close(canceled) })
+		return ctx.Err()
+	}, HandleOpts{Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(w.rt, e); err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+
+	e.SetPaused(true)
+	w.advanceUntil(t, 20*time.Millisecond, func() bool {
+		select {
+		case <-canceled:
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+func TestOnOneReplicaPauseReleasesLease(t *testing.T) {
+	wa, _, lease := newLeaseWorldPair(t)
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(context.Context, []byte) error { return nil }, HandleOpts{RunMode: converge.OnOneReplica})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(wa.rt, e); err != nil {
+		t.Fatal(err)
+	}
+	wa.run(t)
+	await(t, func() bool { return wa.rec.count(leaseAcquired) == 1 })
+
+	e.SetPaused(true)
+	await(t, func() bool {
+		return wa.rec.count(func(ev converge.Event) bool {
+			lt, ok := ev.(converge.LeaseTransition)
+			return ok && !lt.Acquired
+		}) >= 1
+	})
+
+	h, ok, err := lease.TryAcquire(context.Background(), "wt/converge/worker/job/lease", time.Second)
+	if err != nil || !ok {
+		t.Fatalf("lease must be free after pause: ok=%v err=%v", ok, err)
+	}
+	h.Release(context.Background())
+}
+
+func TestResumeDuringDrainDoesNotInterruptThenStartsNextCycle(t *testing.T) {
+	w := newWorldWith(t, worldOpts{drainTimeout: 200 * time.Millisecond})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var mu sync.Mutex
+	var runs int
+	var gotErr error
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(ctx context.Context, payload []byte) error {
+		mu.Lock()
+		first := runs == 0
+		mu.Unlock()
+		if first {
+			once.Do(func() { close(entered) })
+			<-release
+		}
+		mu.Lock()
+		runs++
+		gotErr = ctx.Err()
+		mu.Unlock()
+		return nil
+	}, HandleOpts{Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(w.rt, e); err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "one", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first handler never started")
+	}
+
+	e.SetPaused(true)
+	e.SetPaused(false)
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 0 })
+
+	close(release)
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	mu.Lock()
+	if gotErr != nil {
+		t.Fatalf("in-flight handler ctx must not be canceled by a resume landing mid-drain, got %v", gotErr)
+	}
+	mu.Unlock()
+
+	if err := tk.Enqueue(context.Background(), p, "two", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+}
+
+func TestSetPausedSameValueIsNoOp(t *testing.T) {
+	wa, _, _ := newLeaseWorldPair(t)
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(context.Context, []byte) error { return nil }, HandleOpts{RunMode: converge.OnOneReplica})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(wa.rt, e); err != nil {
+		t.Fatal(err)
+	}
+	wa.run(t)
+	await(t, func() bool { return wa.rec.count(leaseAcquired) == 1 })
+
+	e.SetPaused(false)
+	if e.Info().Paused {
+		t.Fatal("same-value SetPaused(false) must not pause")
+	}
+	assertStable(t, func() bool {
+		return wa.rec.count(leaseAcquired) == 1 && wa.rec.count(func(ev converge.Event) bool {
+			lt, ok := ev.(converge.LeaseTransition)
+			return ok && !lt.Acquired
+		}) == 0
+	})
+}
+
+func TestInfoPausedReflectsLiveState(t *testing.T) {
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(context.Context, []byte) error { return nil }, HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Info().Paused {
+		t.Fatal("Info().Paused must start false for an unpaused config")
+	}
+	e.SetPaused(true)
+	if !e.Info().Paused {
+		t.Fatal("Info().Paused must reflect a live SetPaused(true)")
+	}
+	e.SetPaused(false)
+	if e.Info().Paused {
+		t.Fatal("Info().Paused must reflect a live SetPaused(false)")
+	}
+}
+
 func TestRateLimitSpacesRuns(t *testing.T) {
 	w := newWorld(t)
 	tk := NewTask[string]("job", TaskOpts{})

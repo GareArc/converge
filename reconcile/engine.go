@@ -146,6 +146,20 @@ func (e *engine) Hint(id string) error {
 	return nil
 }
 
+func (e *engine) SetPaused(paused bool) {
+	e.mu.Lock()
+	if e.cfg.paused == paused {
+		e.mu.Unlock()
+		return
+	}
+	e.cfg.paused = paused
+	q := e.queue
+	e.mu.Unlock()
+	if q != nil {
+		q.setPaused(paused)
+	}
+}
+
 func (e *engine) admitOps() (*wakeQueue, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -230,11 +244,14 @@ func (e *engine) Info() converge.JobInfo {
 	if e.cfg.allowUnscheduled {
 		settings["allow-unscheduled"] = "true"
 	}
+	e.mu.Lock()
+	paused := e.cfg.paused
+	e.mu.Unlock()
 	return converge.JobInfo{
 		Job:      e.cfg.name,
 		Surface:  converge.SurfaceReconcile,
 		RunMode:  e.cfg.runMode,
-		Paused:   e.cfg.paused,
+		Paused:   paused,
 		Settings: settings,
 	}
 }

@@ -58,6 +58,8 @@ type engine struct {
 	deadLetters int
 	lastSuccess time.Time
 	consecFails int
+	cycleCancel context.CancelFunc
+	resumeCh    chan struct{}
 }
 
 func (e *engine) Name() string { return e.cfg.info.name }
@@ -84,6 +86,51 @@ func (e *engine) Hint(string) error {
 
 func (e *engine) RunPassNow(context.Context) error {
 	return fmt.Errorf("worker: job %q: passes are a reconcile verb; workers have no schedule to run", e.cfg.info.name)
+}
+
+func (e *engine) SetPaused(paused bool) {
+	e.mu.Lock()
+	if e.cfg.paused == paused {
+		e.mu.Unlock()
+		return
+	}
+	e.cfg.paused = paused
+	var cancel context.CancelFunc
+	var resumeCh chan struct{}
+	if paused {
+		cancel = e.cycleCancel
+		e.cycleCancel = nil
+	} else {
+		resumeCh = e.resumeCh
+		e.resumeCh = nil
+	}
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if resumeCh != nil {
+		close(resumeCh)
+	}
+}
+
+func (e *engine) awaitUnpaused(ctx context.Context) bool {
+	for {
+		e.mu.Lock()
+		if !e.cfg.paused {
+			e.mu.Unlock()
+			return true
+		}
+		if e.resumeCh == nil {
+			e.resumeCh = make(chan struct{})
+		}
+		ch := e.resumeCh
+		e.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ch:
+		}
+	}
 }
 
 func (e *engine) durable() bool { return e.cfg.runMode != converge.OnAllReplicas }
@@ -124,12 +171,15 @@ func (e *engine) Info() converge.JobInfo {
 	if !e.cfg.rateLimit.IsZero() {
 		settings["rate-limit"] = e.cfg.rateLimit.String()
 	}
+	e.mu.Lock()
+	paused := e.cfg.paused
+	e.mu.Unlock()
 	return converge.JobInfo{
 		Job:      e.cfg.info.name,
 		Surface:  converge.SurfaceWorker,
 		RunMode:  e.cfg.runMode,
 		Queue:    e.cfg.info.queue,
-		Paused:   e.cfg.paused,
+		Paused:   paused,
 		Settings: settings,
 	}
 }
@@ -204,18 +254,36 @@ func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	if err := e.bind(deps); err != nil {
 		return err
 	}
-	if e.cfg.paused {
-		e.markReady()
-		<-ctx.Done()
-		return nil
-	}
-	switch e.cfg.runMode {
-	case converge.OnOneReplica:
-		return e.leaseLoop(ctx)
-	default:
-		e.markReady()
-		e.runActive(ctx, nil)
-		return nil
+	e.markReady()
+	for {
+		if !e.awaitUnpaused(ctx) {
+			return nil
+		}
+		cycleCtx, cancel := context.WithCancel(ctx)
+		e.mu.Lock()
+		if e.cfg.paused {
+			e.mu.Unlock()
+			cancel()
+			continue
+		}
+		e.cycleCancel = cancel
+		e.mu.Unlock()
+
+		switch e.cfg.runMode {
+		case converge.OnOneReplica:
+			e.leaseLoop(cycleCtx)
+		default:
+			e.runActive(cycleCtx, nil)
+		}
+
+		e.mu.Lock()
+		e.cycleCancel = nil
+		e.mu.Unlock()
+		cancel()
+
+		if ctx.Err() != nil {
+			return nil
+		}
 	}
 }
 

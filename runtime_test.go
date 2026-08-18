@@ -27,6 +27,7 @@ func (f *fakeQueueJob) QueueBinding() (string, MQ)               { return f.queu
 func (f *fakeQueueJob) Quiet() bool                              { return true }
 func (f *fakeQueueJob) Hint(id string) error                     { return nil }
 func (f *fakeQueueJob) RunPassNow(ctx context.Context) error     { return nil }
+func (f *fakeQueueJob) SetPaused(paused bool)                    {}
 
 func TestNewAppliesDefaults(t *testing.T) {
 	rt, err := New(Options{})

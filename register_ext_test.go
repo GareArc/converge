@@ -20,6 +20,7 @@ type stubJob struct {
 	poked   []string
 	hinted  []string
 	ranPass int
+	paused  []bool
 	mu      sync.Mutex
 }
 
@@ -63,6 +64,12 @@ func (s *stubJob) RunPassNow(ctx context.Context) error {
 	return nil
 }
 
+func (s *stubJob) SetPaused(paused bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paused = append(s.paused, paused)
+}
+
 func (s *stubJob) Stats() converge.JobStats {
 	return converge.JobStats{Job: s.name, Surface: converge.SurfaceReconcile}
 }
@@ -102,6 +109,8 @@ func (s *stubQueueJob) Quiet() bool { return true }
 func (s *stubQueueJob) Hint(id string) error { return nil }
 
 func (s *stubQueueJob) RunPassNow(ctx context.Context) error { return nil }
+
+func (s *stubQueueJob) SetPaused(paused bool) {}
 
 func (s *stubQueueJob) Stats() converge.JobStats { return converge.JobStats{Job: s.name} }
 
@@ -382,6 +391,21 @@ func TestAttachOptionsInvokesCallbackWithBuiltRuntime(t *testing.T) {
 	}
 	if got != rt {
 		t.Fatalf("attach callback got %v, want %v", got, rt)
+	}
+}
+
+func TestSetPausedReachesStubJob(t *testing.T) {
+	rt := mustRuntime(t)
+	s := newStubJob("a")
+	if err := hook.RegisterJob(rt, s); err != nil {
+		t.Fatal(err)
+	}
+	s.SetPaused(true)
+	s.SetPaused(false)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.paused) != 2 || s.paused[0] != true || s.paused[1] != false {
+		t.Fatalf("paused = %v, want [true false]", s.paused)
 	}
 }
 
