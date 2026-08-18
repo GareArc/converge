@@ -62,6 +62,7 @@ type engine struct {
 	consecFails int
 	passes      int
 	active      bool
+	opsInFlight sync.WaitGroup
 }
 
 func (e *engine) Name() string { return e.cfg.name }
@@ -141,27 +142,45 @@ func (e *engine) Hint(id string) error {
 	if e.cfg.single {
 		id = ""
 	}
-	e.hint(context.Background(), ID(id))
+	e.hintVia(context.Background(), q, ID(id))
 	return nil
 }
 
-func (e *engine) RunPassNow(ctx context.Context) error {
+func (e *engine) admitOps() (*wakeQueue, bool) {
 	e.mu.Lock()
-	active := e.active
-	e.mu.Unlock()
-	if !active {
+	defer e.mu.Unlock()
+	if !e.active {
+		return nil, false
+	}
+	e.opsInFlight.Add(1)
+	return e.queue, true
+}
+
+func (e *engine) isActive() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.active
+}
+
+func (e *engine) RunPassNow(ctx context.Context) error {
+	q, ok := e.admitOps()
+	if !ok {
 		return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)
 	}
+	defer e.opsInFlight.Done()
 	found := false
 	for idx, t := range e.cfg.triggers {
 		st, ok := t.(*scheduleTrigger)
 		if !ok {
 			continue
 		}
+		if !e.isActive() {
+			return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)
+		}
 		found = true
 		cursorKey := e.key("opspass", strconv.Itoa(idx))
 		e.deleteKey(ctx, cursorKey)
-		if !e.runPass(ctx, st, cursorKey) {
+		if !e.runPass(ctx, q, st, cursorKey) {
 			return ctx.Err()
 		}
 	}
@@ -260,18 +279,22 @@ func versionsSetting(v VersionSource) string {
 }
 
 func (e *engine) hint(ctx context.Context, id ID) {
+	e.hintVia(ctx, e.queue, id)
+}
+
+func (e *engine) hintVia(ctx context.Context, q *wakeQueue, id ID) {
 	if id == "" && !e.cfg.single {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
 		return
 	}
-	res := e.queue.wake(id, wakeHint)
-	if res == wakeDroppedParked && e.tryRevive(ctx, id) {
+	res := q.wake(id, wakeHint)
+	if res == wakeDroppedParked && e.tryRevive(ctx, q, id) {
 		return
 	}
 	e.report(id, res)
 }
 
-func (e *engine) tryRevive(ctx context.Context, id ID) bool {
+func (e *engine) tryRevive(ctx context.Context, q *wakeQueue, id ID) bool {
 	if e.cfg.versions == nil {
 		return false
 	}
@@ -284,7 +307,7 @@ func (e *engine) tryRevive(ctx context.Context, id ID) bool {
 		return false
 	}
 	e.deleteKey(ctx, e.parkKey(id))
-	return e.queue.wake(id, wakeVersion) == wakeRevived
+	return q.wake(id, wakeVersion) == wakeRevived
 }
 
 func (e *engine) parkedVersion(ctx context.Context, id ID) (Version, bool) {
@@ -560,6 +583,7 @@ func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 		return err
 	}
 	defer func() {
+		e.opsInFlight.Wait()
 		e.mu.Lock()
 		e.queue = nil
 		e.mu.Unlock()

@@ -60,7 +60,7 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 		last, ok := readLast(ctx)
 		now := e.deps.Clock.Now()
 		if !ok {
-			if !e.runPass(ctx, st, cursorKey) {
+			if !e.runPass(ctx, e.queue, st, cursorKey) {
 				return
 			}
 			writeLast(ctx, now)
@@ -79,12 +79,12 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 		}
 		switch {
 		case len(pending) == 1 || st.cad.missedTick() == RunOnce:
-			if !e.runPass(ctx, st, cursorKey) {
+			if !e.runPass(ctx, e.queue, st, cursorKey) {
 				return
 			}
 		case st.cad.missedTick() == Catchup:
 			for range pending {
-				if !e.runPass(ctx, st, cursorKey) {
+				if !e.runPass(ctx, e.queue, st, cursorKey) {
 					return
 				}
 			}
@@ -110,7 +110,7 @@ func (e *engine) checkOverrun(ctx context.Context, st *scheduleTrigger, writeLas
 	writeLast(ctx, latestBoundary(st.cad, over[len(over)-1], now))
 }
 
-func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey string) bool {
+func (e *engine) runPass(ctx context.Context, q *wakeQueue, st *scheduleTrigger, cursorKey string) bool {
 	e.mu.Lock()
 	e.passes++
 	e.mu.Unlock()
@@ -137,7 +137,7 @@ func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey str
 		}
 		retry = triggerRestartMin
 		for _, id := range ids {
-			e.hint(ctx, id)
+			e.hintVia(ctx, q, id)
 		}
 		if next == "" {
 			e.deleteKey(ctx, cursorKey)

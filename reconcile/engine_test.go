@@ -523,6 +523,45 @@ func TestHintRevivesParkedID(t *testing.T) {
 	await(t, func() bool { return te.e.Stats().Parked == 0 })
 }
 
+func TestHintDoesNotPanicRacingShutdown(t *testing.T) {
+	spec := Spec{
+		Name:       "job",
+		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Triggers: []Trigger{Schedule(StringIDs(func(context.Context) ([]string, error) {
+			return []string{"x"}, nil
+		}), Every(time.Hour))},
+	}
+	le, cancel := startRun(t, spec, nil)
+	select {
+	case <-le.e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			le.e.Hint("a")
+		}
+	}()
+	cancel()
+	if err := waitRun(t, le); err != nil {
+		t.Fatal(err)
+	}
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hint loop never stopped")
+	}
+}
+
 func TestPokeEmptyIDOnMultiIDJobFails(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	if err := te.e.Poke(""); err == nil {

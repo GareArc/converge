@@ -464,3 +464,89 @@ func TestRunPassNowCtxCancellationAbortsAndReturnsCtxErr(t *testing.T) {
 		t.Fatal("RunPassNow never returned after ctx cancellation")
 	}
 }
+
+func TestRunPassNowDoesNotPanicWhenQueueNilsMidPass(t *testing.T) {
+	first := true
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	src := IDs(func(context.Context) ([]ID, error) {
+		if first {
+			first = false
+			return []ID{"a"}, nil
+		}
+		close(entered)
+		<-release
+		return []ID{"a"}, nil
+	})
+	spec := Spec{
+		Name:       "job",
+		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Triggers:   []Trigger{Schedule(src, Every(time.Hour))},
+	}
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := convergetest.NewClock(wqStart)
+	deps := converge.JobDeps{
+		Lease:        inmem.NewLeaseWithClock(clock),
+		KV:           inmem.NewKVWithClock(clock),
+		Observer:     &eventRecorder{},
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: time.Second,
+	}
+	if err := e.bind(deps); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runActiveDone := make(chan struct{})
+	go func() {
+		e.runActive(ctx, nil)
+		close(runActiveDone)
+	}()
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	lastKey := e.key("sched", "0", "last")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok, err := deps.KV.Get(context.Background(), lastKey); err == nil && ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scheduled boot pass never completed")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- e.RunPassNow(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ops pass never entered the slow page")
+	}
+
+	cancel()
+	select {
+	case <-runActiveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runActive never returned")
+	}
+	e.mu.Lock()
+	e.queue = nil
+	e.mu.Unlock()
+
+	close(release)
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("RunPassNow returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunPassNow never returned")
+	}
+}
