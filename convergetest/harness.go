@@ -23,6 +23,7 @@ const (
 	drainGap        = 5 * time.Millisecond
 	runPassDeadline = 5 * time.Second
 	runPassPoll     = 2 * time.Millisecond
+	harnessLeaseTTL = 24 * 365 * time.Hour
 )
 
 type Harness struct {
@@ -66,6 +67,7 @@ func (h *Harness) Options() converge.Options {
 		KV:        h.KV,
 		Observer:  h.rec,
 		Clock:     h.Clock,
+		LeaseTTL:  harnessLeaseTTL,
 	}
 	out := hook.AttachOptions(o, h.attach)
 	opts, ok := out.(converge.Options)

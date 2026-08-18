@@ -113,7 +113,7 @@ func TestScheduleBoundaryDrivesReconcile(t *testing.T) {
 	})
 	h.Clock.Advance(time.Hour)
 	h.Drain(t)
-	convergetest.AdvanceUntil(t, h.Clock, time.Hour, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return runs == 2
@@ -238,6 +238,15 @@ func TestFailNextPublishSurfacesOnEnqueue(t *testing.T) {
 	}
 }
 
+func leaseDropped(events []converge.Event, job string) bool {
+	for _, e := range events {
+		if lt, ok := e.(converge.LeaseTransition); ok && lt.Job == job && !lt.Acquired {
+			return true
+		}
+	}
+	return false
+}
+
 func TestLeaseExpireCancelsInFlightHandler(t *testing.T) {
 	h := convergetest.New(t)
 	rt, err := converge.New(h.Options())
@@ -271,16 +280,47 @@ func TestLeaseExpireCancelsInFlightHandler(t *testing.T) {
 		t.Fatal("handler never started")
 	}
 
+	h.Clock.Advance(1000 * time.Hour)
+	convergetest.AssertStable(t, func() bool { return !leaseDropped(h.Events(), "job") })
+
 	h.Lease.Expire("job")
 
-	convergetest.Await(t, func() bool {
-		for _, e := range h.Events() {
-			if lt, ok := e.(converge.LeaseTransition); ok && lt.Job == "job" && !lt.Acquired {
-				return true
-			}
-		}
-		return false
+	convergetest.Await(t, func() bool { return leaseDropped(h.Events(), "job") })
+}
+
+func TestLargeClockAdvanceDoesNotDropLease(t *testing.T) {
+	h := convergetest.New(t)
+	rt, err := converge.New(h.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = reconcile.Register(rt, reconcile.Spec{
+		Name: "steady-runner",
+		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+			return nil
+		}),
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
+				return []string{"seed"}, nil
+			}), reconcile.Every(time.Hour)),
+		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	h.AssertReconciled(t, "steady-runner", "seed")
+
+	h.Clock.Advance(1000 * time.Hour)
+	h.Drain(t)
+
+	if leaseDropped(h.Events(), "steady-runner") {
+		t.Fatal("large Clock.Advance must not drop the lease under the pinned harness LeaseTTL")
+	}
+
+	h.Wake("steady-runner", "id_1")
+	h.Drain(t)
+	h.AssertReconciled(t, "steady-runner", "id_1")
 }
 
 func TestDrainOnPausedJobReturns(t *testing.T) {
