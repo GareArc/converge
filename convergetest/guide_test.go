@@ -77,6 +77,17 @@ func (r *guideRepo) enableAppBlock() {
 	r.app13Blocking = true
 }
 
+func reconciledCount(h *convergetest.Harness, job, id string) int {
+	n := 0
+	for _, e := range h.Events() {
+		rc, ok := e.(converge.RunCompleted)
+		if ok && rc.Job == job && rc.ID == id && rc.Err == nil {
+			n++
+		}
+	}
+	return n
+}
+
 func TestGuideSection5TestingWorkflow(t *testing.T) {
 	fakeRepo := newGuideRepo()
 	errBoom := errors.New("boom")
@@ -98,13 +109,33 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	h.Drain(t)
+	baselineReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
+
 	h.Wake("workspace-credentials", "ws_42")
 
 	h.Drain(t)
 
+	afterWakeReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
+	if afterWakeReconciled <= baselineReconciled {
+		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Wake+Drain = %d, want > %d (the wake must drive a real run, not just the startup pass)", afterWakeReconciled, baselineReconciled)
+	}
+
 	h.Clock.Advance(24 * time.Hour)
 
+	h.Drain(t)
+
+	afterAdvanceReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
+	if afterAdvanceReconciled <= afterWakeReconciled {
+		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Advance+Drain = %d, want > %d (the 24h advance must cross the schedule boundary and drive a real run)", afterAdvanceReconciled, afterWakeReconciled)
+	}
+
 	h.RunPass(t, "workspace-credentials")
+
+	afterRunPassReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
+	if afterRunPassReconciled <= afterAdvanceReconciled {
+		t.Fatalf("workspace-credentials ws_42 RunCompleted count after RunPass = %d, want > %d (RunPass must force a real additional pass)", afterRunPassReconciled, afterAdvanceReconciled)
+	}
 
 	h.AssertReconciled(t, "workspace-credentials", "ws_42")
 

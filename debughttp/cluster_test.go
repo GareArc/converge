@@ -231,7 +231,7 @@ func TestClusterOpsAcrossTwoReplicas(t *testing.T) {
 		convergetest.Await(t, func() bool { return state.handledCount() == 2 })
 	})
 
-	t.Run("poke reaches the leaseholder only", func(t *testing.T) {
+	t.Run("poke only the leaseholder's dispatch loop acts on", func(t *testing.T) {
 		beforeActive := reconCompletions(active)
 		beforeStandby := reconCompletions(standby)
 
@@ -322,8 +322,12 @@ func TestClusterOpsAcrossTwoReplicas(t *testing.T) {
 			t.Fatalf("requeue status = %d, body = %s", requeueRec.Code, requeueRec.Body)
 		}
 
-		if _, ok, err := w.kv.Get(context.Background(), "cluster/converge/worker/notify/dlq/"+dlqID); err != nil || ok {
-			t.Fatalf("dlq record ok=%v err=%v, want gone immediately after requeue", ok, err)
+		dlq, err := worker.DLQFrom(w.rtA, "notify")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := dlq.Get(context.Background(), dlqID); !errors.Is(err, worker.ErrDeadLetterNotFound) {
+			t.Fatalf("dlq.Get after requeue = %v, want %v (record gone immediately)", err, worker.ErrDeadLetterNotFound)
 		}
 
 		convergetest.Await(t, func() bool { return state.handledCount() > before })
