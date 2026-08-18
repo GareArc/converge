@@ -1534,6 +1534,109 @@ func TestRateLimitSpacesRuns(t *testing.T) {
 	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) == 3 })
 }
 
+func TestRateLimitWaitIsHeartbeatCovered(t *testing.T) {
+	w := newWorld(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	var mu sync.Mutex
+	runs := map[string]int{}
+	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+		mu.Lock()
+		runs[payload]++
+		mu.Unlock()
+		return nil
+	}, HandleOpts{Concurrency: 2, Visibility: 30 * time.Second, RateLimit: converge.Rate{Events: 1, Per: 2 * time.Minute}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "a", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "b", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return runs["a"]+runs["b"] == 1
+	})
+	w.advanceUntil(t, 10*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return runs["a"] == 1 && runs["b"] == 1
+	})
+	for range 15 {
+		w.clock.Advance(10 * time.Second)
+		time.Sleep(2 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if runs["a"] != 1 || runs["b"] != 1 {
+		t.Fatalf("runs = %v, want exactly {a:1, b:1}", runs)
+	}
+}
+
+func TestPanicIsRecoveredAsError(t *testing.T) {
+	w := newWorld(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	var mu sync.Mutex
+	var attempts []int
+	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+		meta, _ := MetaFromContext(ctx)
+		mu.Lock()
+		attempts = append(attempts, meta.Attempt)
+		n := len(attempts)
+		mu.Unlock()
+		if n == 1 {
+			panic("boom")
+		}
+		return nil
+	}, HandleOpts{Retry: RetryPolicy{MaxAttempts: 3, MinBackoff: time.Second, MaxBackoff: time.Minute}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	w.advanceUntil(t, 100*time.Millisecond, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(attempts) >= 2
+	})
+	assertStable(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(attempts) == 2
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	want := []int{1, 2}
+	if !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("attempts = %v, want %v", attempts, want)
+	}
+	if n := w.rec.count(func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Attempt == 1 && rc.Err != nil && strings.Contains(rc.Err.Error(), "boom")
+	}); n != 1 {
+		t.Fatalf("RunCompleted{Attempt:1, Err containing panic} count = %d, want 1", n)
+	}
+	if n := w.rec.count(func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Attempt == 2 && rc.Err == nil
+	}); n != 1 {
+		t.Fatalf("RunCompleted{Attempt:2, Err:nil} count = %d, want 1", n)
+	}
+}
+
 type failExtendHandle struct {
 	real converge.LeaseHandle
 	done chan struct{}

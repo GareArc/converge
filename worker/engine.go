@@ -341,13 +341,14 @@ func (e *engine) process(hctx context.Context, d converge.Delivery, m converge.M
 		e.deadLetter(sctx, d, meta, m, guard, nil)
 		return
 	}
-	if err := e.limit.Wait(hctx); err != nil {
-		e.neutral(d, m)
-		return
-	}
 	stopHB := make(chan struct{})
 	if e.durable() {
 		go e.extendLoop(sctx, d, stopHB)
+	}
+	if err := e.limit.Wait(hctx); err != nil {
+		close(stopHB)
+		e.neutral(d, m)
+		return
 	}
 	start := e.deps.Clock.Now()
 	err := e.invokeChain(hctx, meta, m.Payload)
