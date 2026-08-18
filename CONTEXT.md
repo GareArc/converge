@@ -166,7 +166,11 @@ _Avoid_: admin command, RPC
 **Durable pause flag**:
 The KV record (`internal/ctl.PausedKey`) a pause/resume verb writes and
 deletes. Every replica re-reads it at startup, so a pause survives a
-restart instead of living only in one process's memory.
+restart instead of living only in one process's memory. Dispatch writes
+the flag before publishing the broadcast: the broadcast is lossy, the
+flag is what a restarted replica obeys, so pause fails safe toward
+paused. A publish failure after the flag write surfaces as the dispatch
+error, and re-dispatching the same verb is idempotent.
 _Avoid_: soft pause, in-memory flag
 
 **Which-replica-acted response**:
@@ -187,6 +191,13 @@ _Avoid_: control op (that is the routed, per-replica kind)
 so the JSON `payload` key is present only when a caller explicitly enables
 it; headers are shown either way.
 _Avoid_: redaction (nothing is masked; the field is simply absent)
+
+**Ops exposure**:
+`debughttp.OpsHandler` mutates runtime state and carries no authentication
+of its own — the host mounts it only behind its own authentication and
+authorization. Where mutation is not needed, mount `ReadOnlyHandler`
+instead.
+_Avoid_: admin API (converge ships handlers, never an exposed endpoint)
 
 **Response expiry**:
 Ops-verb responses are written to KV with a short TTL, so a dispatcher
