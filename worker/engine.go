@@ -183,6 +183,21 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 	ictx, stopIntake := context.WithCancel(ctx)
 	defer stopIntake()
 
+	stopHB := make(chan struct{})
+	defer close(stopHB)
+	if h != nil {
+		lost := make(chan struct{})
+		go e.leaseHeartbeat(base, h, lost, stopHB)
+		go func() {
+			select {
+			case <-lost:
+				stopIntake()
+				cancelHandlers()
+			case <-stopHB:
+			}
+		}()
+	}
+
 	var wg sync.WaitGroup
 	e.intake(ictx, hctx, &wg)
 
@@ -476,9 +491,37 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 }
 
 func (e *engine) leaseLoop(ctx context.Context) error {
+	name := e.key("lease")
+	retry := e.deps.LeaseTTL / 3
 	e.markReady()
-	<-ctx.Done()
-	return nil
+	for {
+		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)
+		if err == nil && ok {
+			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.info.name, Acquired: true})
+			e.runActive(ctx, h)
+			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.info.name, Acquired: false})
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-e.deps.Clock.After(retry):
+		}
+	}
+}
+
+func (e *engine) leaseHeartbeat(ctx context.Context, h converge.LeaseHandle, lost chan<- struct{}, stop <-chan struct{}) {
+	interval := e.deps.LeaseTTL / 3
+	for {
+		select {
+		case <-stop:
+			return
+		case <-h.Done():
+			close(lost)
+			return
+		case <-e.deps.Clock.After(interval):
+			h.Extend(ctx, e.deps.LeaseTTL)
+		}
+	}
 }
 
 func (e *engine) extendLoop(ctx context.Context, d converge.Delivery, stop <-chan struct{}) {

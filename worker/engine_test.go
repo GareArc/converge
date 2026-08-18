@@ -1080,3 +1080,321 @@ func TestPointerOutcomeDispatch(t *testing.T) {
 		t.Fatalf("snoozeAttempts = %v, want %v", snoozeAttempts, want)
 	}
 }
+
+func newLeaseWorldPair(t *testing.T) (*world, *world, *inmem.Lease) {
+	t.Helper()
+	clock := convergetest.NewClock(wstart)
+	mq := inmem.NewMQWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	lease := inmem.NewLeaseWithClock(clock)
+	build := func() *world {
+		rec := &recorder{}
+		rt, err := converge.New(converge.Options{
+			Namespace: "wt",
+			MQ:        mq,
+			Lease:     lease,
+			KV:        kv,
+			Observer:  rec,
+			Clock:     clock,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &world{rt: rt, clock: clock, mq: mq, kv: kv, rec: rec, done: make(chan error, 1)}
+	}
+	return build(), build(), lease
+}
+
+func leaseAcquired(e converge.Event) bool {
+	lt, ok := e.(converge.LeaseTransition)
+	return ok && lt.Acquired
+}
+
+func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
+	wa, wb, _ := newLeaseWorldPair(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	var mu sync.Mutex
+	var aRuns, bRuns int
+	handlerFor := func(counter *int) func(context.Context, string) error {
+		return func(ctx context.Context, payload string) error {
+			mu.Lock()
+			*counter++
+			mu.Unlock()
+			return nil
+		}
+	}
+	if err := Handle(wa.rt, tk, handlerFor(&aRuns), HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Handle(wb.rt, tk, handlerFor(&bRuns), HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
+		t.Fatal(err)
+	}
+	wa.run(t)
+	wb.run(t)
+
+	p, err := ProducerFrom(wa.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := tk.Enqueue(context.Background(), p, fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return aRuns+bRuns == 3
+	})
+	assertStable(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return aRuns+bRuns == 3
+	})
+	mu.Lock()
+	leaderOnly := (aRuns == 3 && bRuns == 0) || (aRuns == 0 && bRuns == 3)
+	gotA, gotB := aRuns, bRuns
+	mu.Unlock()
+	if !leaderOnly {
+		t.Fatalf("expected exactly one replica to handle all 3 runs, got aRuns=%d bRuns=%d", gotA, gotB)
+	}
+	if n := wa.rec.count(leaseAcquired) + wb.rec.count(leaseAcquired); n != 1 {
+		t.Fatalf("LeaseTransition{Acquired:true} count across both replicas = %d, want 1", n)
+	}
+}
+
+func TestLeaseLossCancelsInFlight(t *testing.T) {
+	wa, wb, lease := newLeaseWorldPair(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	started := make(chan struct{})
+	var startOnce sync.Once
+	var mu sync.Mutex
+	var attempts []int
+	handler := func(ctx context.Context, payload string) error {
+		meta, _ := MetaFromContext(ctx)
+		mu.Lock()
+		attempts = append(attempts, meta.Attempt)
+		n := len(attempts)
+		mu.Unlock()
+		if n == 1 {
+			startOnce.Do(func() { close(started) })
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	}
+	if err := Handle(wa.rt, tk, handler, HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Handle(wb.rt, tk, handler, HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
+		t.Fatal(err)
+	}
+	wa.run(t)
+	wb.run(t)
+
+	p, err := ProducerFrom(wa.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+
+	lease.Expire("wt/converge/worker/job/lease")
+
+	wa.advanceUntil(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(attempts) >= 2
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if attempts[1] != 1 {
+		t.Fatalf("successor's attempt = %d, want 1", attempts[1])
+	}
+}
+
+func TestOnAllReplicasBroadcast(t *testing.T) {
+	clock := convergetest.NewClock(wstart)
+	mq := inmem.NewMQWithClock(clock)
+	build := func() *world {
+		rec := &recorder{}
+		rt, err := converge.New(converge.Options{Namespace: "wt", MQ: mq, Observer: rec, Clock: clock})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &world{rt: rt, clock: clock, mq: mq, rec: rec, done: make(chan error, 1)}
+	}
+	wa, wb := build(), build()
+
+	okTask := NewTask[string]("broadcast-ok", TaskOpts{})
+	var okA, okB int32
+	if err := Handle(wa.rt, okTask, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&okA, 1)
+		return nil
+	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Handle(wb.rt, okTask, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&okB, 1)
+		return nil
+	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
+		t.Fatal(err)
+	}
+
+	failTask := NewTask[string]("broadcast-fail", TaskOpts{})
+	var failA, failB int32
+	if err := Handle(wa.rt, failTask, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&failA, 1)
+		return errors.New("boom")
+	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Handle(wb.rt, failTask, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&failB, 1)
+		return errors.New("boom")
+	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
+		t.Fatal(err)
+	}
+
+	snoozeTask := NewTask[string]("broadcast-snooze", TaskOpts{})
+	var snoozeA, snoozeB int32
+	if err := Handle(wa.rt, snoozeTask, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&snoozeA, 1)
+		return Snooze{In: time.Second}
+	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Handle(wb.rt, snoozeTask, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&snoozeB, 1)
+		return Snooze{In: time.Second}
+	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
+		t.Fatal(err)
+	}
+
+	wa.run(t)
+	wb.run(t)
+
+	p, err := NewProducer(mq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := okTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { return atomic.LoadInt32(&okA) == 1 && atomic.LoadInt32(&okB) == 1 })
+	assertStable(t, func() bool { return atomic.LoadInt32(&okA) == 1 && atomic.LoadInt32(&okB) == 1 })
+
+	if err := failTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { return atomic.LoadInt32(&failA) == 1 && atomic.LoadInt32(&failB) == 1 })
+	assertStable(t, func() bool { return atomic.LoadInt32(&failA) == 1 && atomic.LoadInt32(&failB) == 1 })
+	failRunCompleted := func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Job == "broadcast-fail" && rc.Err != nil
+	}
+	if n := wa.rec.count(failRunCompleted); n != 1 {
+		t.Fatalf("worldA RunCompleted{Err!=nil} count = %d, want 1", n)
+	}
+	if n := wb.rec.count(failRunCompleted); n != 1 {
+		t.Fatalf("worldB RunCompleted{Err!=nil} count = %d, want 1", n)
+	}
+
+	if err := snoozeTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { return atomic.LoadInt32(&snoozeA) == 1 && atomic.LoadInt32(&snoozeB) == 1 })
+	assertStable(t, func() bool { return atomic.LoadInt32(&snoozeA) == 1 && atomic.LoadInt32(&snoozeB) == 1 })
+	snoozeRunCompleted := func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Job == "broadcast-snooze" && rc.Err != nil
+	}
+	if n := wa.rec.count(snoozeRunCompleted); n != 1 {
+		t.Fatalf("worldA snoozed RunCompleted{Err!=nil} count = %d, want 1", n)
+	}
+	if n := wb.rec.count(snoozeRunCompleted); n != 1 {
+		t.Fatalf("worldB snoozed RunCompleted{Err!=nil} count = %d, want 1", n)
+	}
+}
+
+func TestPausedConsumesNothing(t *testing.T) {
+	w := newWorld(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	var runs int32
+	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&runs, 1)
+		return nil
+	}, HandleOpts{Paused: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel := w.run(t)
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 0 })
+	cancel()
+
+	rec2 := &recorder{}
+	rt2, err := converge.New(converge.Options{
+		Namespace: "wt",
+		MQ:        w.mq,
+		Lease:     inmem.NewLeaseWithClock(w.clock),
+		KV:        w.kv,
+		Observer:  rec2,
+		Clock:     w.clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2 := &world{rt: rt2, clock: w.clock, mq: w.mq, kv: w.kv, rec: rec2, done: make(chan error, 1)}
+	tk2 := NewTask[string]("job", TaskOpts{})
+	var runs2 int32
+	err = Handle(w2.rt, tk2, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&runs2, 1)
+		return nil
+	}, HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2.run(t)
+	await(t, func() bool { return atomic.LoadInt32(&runs2) == 1 })
+}
+
+func TestRateLimitSpacesRuns(t *testing.T) {
+	w := newWorld(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	var runs int32
+	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&runs, 1)
+		return nil
+	}, HandleOpts{Concurrency: 4, RateLimit: converge.Rate{Events: 1, Per: time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := tk.Enqueue(context.Background(), p, fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) == 2 })
+	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) == 3 })
+}
