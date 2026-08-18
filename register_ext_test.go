@@ -324,6 +324,10 @@ func TestHintRejectsForeignRuntime(t *testing.T) {
 	if err := hook.Hint("not a runtime", "a", "x"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
+	var nilRt *converge.Runtime
+	if err := hook.Hint(nilRt, "a", "x"); err == nil {
+		t.Fatal("typed-nil runtime must be rejected")
+	}
 }
 
 func TestRunPassNowReachesStubJob(t *testing.T) {
@@ -352,6 +356,10 @@ func TestRunPassNowUnknownJobErrors(t *testing.T) {
 func TestRunPassNowRejectsForeignRuntime(t *testing.T) {
 	if err := hook.RunPassNow("not a runtime", context.Background(), "a"); err == nil {
 		t.Fatal("non-runtime must be rejected")
+	}
+	var nilRt *converge.Runtime
+	if err := hook.RunPassNow(nilRt, context.Background(), "a"); err == nil {
+		t.Fatal("typed-nil runtime must be rejected")
 	}
 }
 
@@ -406,6 +414,17 @@ func TestSetPausedReachesStubJob(t *testing.T) {
 	defer s.mu.Unlock()
 	if len(s.paused) != 2 || s.paused[0] != true || s.paused[1] != false {
 		t.Fatalf("paused = %v, want [true false]", s.paused)
+	}
+}
+
+func TestAttachOptionsPassesThroughForeignValueUnchanged(t *testing.T) {
+	called := false
+	wrapped := hook.AttachOptions("not options", func(rt any) { called = true })
+	if wrapped != "not options" {
+		t.Fatalf("AttachOptions(foreign) = %v, want the input returned unchanged", wrapped)
+	}
+	if called {
+		t.Fatal("attach must not be invoked for a foreign, non-Options value")
 	}
 }
 
