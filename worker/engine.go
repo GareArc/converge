@@ -606,7 +606,7 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 	e.observeRun(meta, took, nil)
 }
 
-func (e *engine) leaseLoop(ctx context.Context) error {
+func (e *engine) leaseLoop(ctx context.Context) {
 	name := e.key("lease")
 	retry := e.deps.LeaseTTL / 3
 	e.markReady()
@@ -619,7 +619,7 @@ func (e *engine) leaseLoop(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		case <-e.deps.Clock.After(retry):
 		}
 	}

@@ -182,7 +182,10 @@ func (q *DLQ) Requeue(ctx context.Context, messageID string) error {
 	if err := mq.Publish(ctx, rec.Queue, msg); err != nil {
 		return err
 	}
-	return q.kv.Delete(ctx, key)
+	if err := q.kv.Delete(ctx, key); err != nil {
+		return fmt.Errorf("worker: job %q: requeue %q: republished but record not purged: %w", q.job, messageID, err)
+	}
+	return nil
 }
 
 func (q *DLQ) Purge(ctx context.Context, messageID string) error {
