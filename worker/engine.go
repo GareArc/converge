@@ -187,7 +187,7 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 	defer close(stopHB)
 	if h != nil {
 		lost := make(chan struct{})
-		go e.leaseHeartbeat(base, h, lost, stopHB)
+		go e.leaseHeartbeat(ctx, h, lost, stopHB)
 		go func() {
 			select {
 			case <-lost:
@@ -210,7 +210,11 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 		<-finished
 	}
 	if h != nil {
-		h.Release(base)
+		select {
+		case <-h.Done():
+		default:
+			h.Release(base)
+		}
 	}
 }
 
@@ -509,8 +513,9 @@ func (e *engine) leaseLoop(ctx context.Context) error {
 	}
 }
 
-func (e *engine) leaseHeartbeat(ctx context.Context, h converge.LeaseHandle, lost chan<- struct{}, stop <-chan struct{}) {
+func (e *engine) leaseHeartbeat(runCtx context.Context, h converge.LeaseHandle, lost chan<- struct{}, stop <-chan struct{}) {
 	interval := e.deps.LeaseTTL / 3
+	base := context.WithoutCancel(runCtx)
 	for {
 		select {
 		case <-stop:
@@ -519,7 +524,13 @@ func (e *engine) leaseHeartbeat(ctx context.Context, h converge.LeaseHandle, los
 			close(lost)
 			return
 		case <-e.deps.Clock.After(interval):
-			h.Extend(ctx, e.deps.LeaseTTL)
+			ectx, cancel := context.WithTimeout(base, interval)
+			err := h.Extend(ectx, e.deps.LeaseTTL)
+			cancel()
+			if err != nil && runCtx.Err() == nil {
+				close(lost)
+				return
+			}
 		}
 	}
 }

@@ -1398,3 +1398,90 @@ func TestRateLimitSpacesRuns(t *testing.T) {
 	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) == 2 })
 	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) == 3 })
 }
+
+type failExtendHandle struct {
+	real converge.LeaseHandle
+	done chan struct{}
+}
+
+func (h *failExtendHandle) Extend(context.Context, time.Duration) error {
+	return errors.New("worker: test: extend always fails")
+}
+
+func (h *failExtendHandle) Release(ctx context.Context) error { return h.real.Release(ctx) }
+
+func (h *failExtendHandle) Done() <-chan struct{} { return h.done }
+
+type failExtendLease struct {
+	inner converge.Lease
+}
+
+func (l *failExtendLease) TryAcquire(ctx context.Context, name string, ttl time.Duration) (converge.LeaseHandle, bool, error) {
+	h, ok, err := l.inner.TryAcquire(ctx, name, ttl)
+	if err != nil || !ok {
+		return h, ok, err
+	}
+	return &failExtendHandle{real: h, done: make(chan struct{})}, true, nil
+}
+
+func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
+	clock := convergetest.NewClock(wstart)
+	mq := inmem.NewMQWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	lease := &failExtendLease{inner: inmem.NewLeaseWithClock(clock)}
+	rec := &recorder{}
+	rt, err := converge.New(converge.Options{
+		Namespace: "wt",
+		MQ:        mq,
+		Lease:     lease,
+		KV:        kv,
+		Observer:  rec,
+		Clock:     clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &world{rt: rt, clock: clock, mq: mq, kv: kv, rec: rec, done: make(chan error, 1)}
+
+	tk := NewTask[string]("job", TaskOpts{})
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	var startOnce, cancelOnce sync.Once
+	err = Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+		startOnce.Do(func() { close(started) })
+		<-ctx.Done()
+		cancelOnce.Do(func() { close(canceled) })
+		return ctx.Err()
+	}, HandleOpts{RunMode: converge.OnOneReplica})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+
+	w.advanceUntil(t, 3*time.Second, func() bool {
+		select {
+		case <-canceled:
+			return true
+		default:
+			return false
+		}
+	})
+	await(t, func() bool {
+		return w.rec.count(func(e converge.Event) bool {
+			lt, ok := e.(converge.LeaseTransition)
+			return ok && !lt.Acquired
+		}) >= 1
+	})
+}
