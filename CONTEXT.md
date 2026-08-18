@@ -89,10 +89,42 @@ column implement `VersionSource` instead.
 A named transport channel on the MQ port.
 _Avoid_: topic, list, stream (transport-specific words)
 
+**Message ID**:
+The identity header a producer mints once, at enqueue
+(`converge.message-id`). Carried unchanged through every retry and snooze
+republish; surfaces to the handler as the worker `Run.ID`.
+_Avoid_: correlation ID, trace ID
+
+**Logical attempt**:
+What `Meta.Attempt` reports: the `converge.attempt` header's base plus the
+current transport delivery count. A snooze folds the delivery back into the
+header, so it never advances the logical attempt.
+_Avoid_: retry count
+
+**Transport delivery**:
+`Delivery.Attempt()` — how many times the MQ port has redelivered this
+in-flight message; climbs with every Nack. A snooze republishes as a fresh
+message, so its transport delivery resets to one — the logical attempt is
+what survives that reset.
+_Avoid_: attempt (ambiguous alone — say logical attempt or transport
+delivery)
+
+**Snooze**:
+A worker outcome: Ack the current delivery, republish it after a delay,
+leave the logical attempt untouched. Capped by `Retry.MaxAge`, never by
+`Retry.MaxAttempts`.
+_Avoid_: delay, reschedule
+
 **Dead-letter (DLQ)**:
 Worker-only: a message moved aside after its retry budget or age is
 exhausted, kept with its final error. Revived only by an ops requeue.
 _Avoid_: parked (that is the reconcile term)
+
+**Dead-letter record**:
+The JSON document a dead-lettered message becomes, stored at KV key
+`{ns}/converge/worker/{job}/dlq/{message-id}`. Requeuing it is an ops verb
+the engine does not perform itself (plan 05).
+_Avoid_: DLQ entry (say dead-letter record)
 
 ### Kernel concepts
 
