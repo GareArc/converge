@@ -150,11 +150,10 @@ func (e *engine) Hint(id string) error {
 
 func (e *engine) SetPaused(paused bool) {
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	changed, _ := e.gate.SetPaused(paused)
-	q := e.queue
-	e.mu.Unlock()
-	if changed && q != nil {
-		q.setPaused(paused)
+	if changed && e.queue != nil {
+		e.queue.setPaused(paused)
 	}
 }
 

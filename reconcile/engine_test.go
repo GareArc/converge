@@ -965,6 +965,61 @@ func TestInfoPausedReflectsLiveState(t *testing.T) {
 	}
 }
 
+func TestSetPausedStormKeepsGatesConverged(t *testing.T) {
+	const iterations = 20000
+	const goroutinesPerSide = 4
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutinesPerSide; g++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				te.e.SetPaused(true)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < iterations; i++ {
+				te.e.SetPaused(false)
+			}
+		}()
+	}
+	wg.Wait()
+
+	te.e.mu.Lock()
+	enginePaused := te.e.gate.Paused
+	te.e.mu.Unlock()
+	te.e.queue.mu.Lock()
+	queuePaused := te.e.queue.gate.Paused
+	te.e.queue.mu.Unlock()
+	if enginePaused != queuePaused {
+		t.Fatalf("pause gates diverged after storm: engine.gate.Paused=%v queue.gate.Paused=%v", enginePaused, queuePaused)
+	}
+
+	te.e.SetPaused(false)
+	te.e.hint(context.Background(), "storm-flow")
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.ID == "storm-flow"
+		}) == 1
+	})
+
+	te.e.SetPaused(true)
+	te.e.hint(context.Background(), "storm-drop")
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
+			wd, ok := e.(converge.WakeDiscarded)
+			return ok && wd.ID == "storm-drop" && wd.Reason == converge.DiscardPaused
+		}) == 1
+	})
+	if !te.e.Info().Paused {
+		t.Fatal("Info().Paused must be true after the final SetPaused(true)")
+	}
+}
+
 func TestPausedHoldsAlreadyQueuedBacklogNotDropped(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
