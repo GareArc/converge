@@ -3,6 +3,7 @@ package inmem
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -49,6 +50,17 @@ func (l *Lease) Expire(name string) {
 		cur.loseLocked()
 		delete(l.held, name)
 	}
+}
+
+func (l *Lease) Names() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	names := make([]string, 0, len(l.held))
+	for name := range l.held {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 type leaseHandle struct {

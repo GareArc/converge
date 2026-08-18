@@ -29,7 +29,7 @@ type Harness struct {
 	Clock *Clock
 	MQ    *MQ
 	KV    *inmem.KV
-	Lease *inmem.Lease
+	Lease *Lease
 
 	t   testing.TB
 	rec *Recorder
@@ -38,6 +38,7 @@ type Harness struct {
 	rt       *converge.Runtime
 	attached bool
 	started  bool
+	starting chan struct{}
 	done     chan struct{}
 	runErr   error
 }
@@ -49,7 +50,7 @@ func New(t testing.TB) *Harness {
 		Clock: clock,
 		MQ:    WrapMQ(inmem.NewMQWithClock(clock)),
 		KV:    inmem.NewKVWithClock(clock),
-		Lease: inmem.NewLeaseWithClock(clock),
+		Lease: WrapLease(inmem.NewLeaseWithClock(clock)),
 		t:     t,
 		rec:   &Recorder{},
 		done:  make(chan struct{}),
@@ -100,14 +101,19 @@ func (h *Harness) ensureRunning(t testing.TB) bool {
 		return false
 	}
 	if h.started {
+		starting := h.starting
 		rt := h.rt
 		h.mu.Unlock()
+		<-starting
 		return h.checkAlive(t, rt)
 	}
 	h.started = true
+	starting := make(chan struct{})
+	h.starting = starting
 	rt := h.rt
 	ctx, cancel := context.WithCancel(context.Background())
 	h.mu.Unlock()
+	defer close(starting)
 
 	go func() {
 		err := rt.Run(ctx)

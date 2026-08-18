@@ -271,7 +271,7 @@ func TestLeaseExpireCancelsInFlightHandler(t *testing.T) {
 		t.Fatal("handler never started")
 	}
 
-	h.Lease.Expire("test/converge/worker/job/lease")
+	h.Lease.Expire("job")
 
 	convergetest.Await(t, func() bool {
 		for _, e := range h.Events() {
