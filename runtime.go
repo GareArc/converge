@@ -17,6 +17,10 @@ type job interface {
 	Stats() JobStats
 }
 
+type queueBound interface {
+	QueueBinding() (queue string, mq MQ)
+}
+
 type Runtime struct {
 	opts  Options
 	ready chan struct{}
@@ -39,6 +43,28 @@ func init() {
 		}
 		return r.register(jj)
 	}
+	hook.ProducerDeps = func(rt any) (hook.ProducerWiring, error) {
+		r, ok := rt.(*Runtime)
+		if !ok {
+			return hook.ProducerWiring{}, fmt.Errorf("converge: producer: %T is not a *converge.Runtime", rt)
+		}
+		return hook.ProducerWiring{
+			MQ:    r.opts.MQ,
+			Clock: r.opts.Clock,
+			QueueMQ: func(queue string) any {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				for _, name := range r.order {
+					if qb, ok := r.jobs[name].(queueBound); ok {
+						if q, m := qb.QueueBinding(); q == queue && m != nil {
+							return m
+						}
+					}
+				}
+				return nil
+			},
+		}, nil
+	}
 }
 
 func (rt *Runtime) register(j job) error {
@@ -53,6 +79,16 @@ func (rt *Runtime) register(j job) error {
 	}
 	if _, dup := rt.jobs[name]; dup {
 		return fmt.Errorf("converge: duplicate job name %q", name)
+	}
+	if qb, ok := j.(queueBound); ok {
+		queue, _ := qb.QueueBinding()
+		for _, existing := range rt.order {
+			if other, ok := rt.jobs[existing].(queueBound); ok {
+				if q, _ := other.QueueBinding(); q == queue {
+					return fmt.Errorf("converge: job %q: queue %q is already handled by job %q", name, queue, existing)
+				}
+			}
+		}
 	}
 	rt.jobs[name] = j
 	rt.order = append(rt.order, name)

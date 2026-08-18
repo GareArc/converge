@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/internal/backoff"
 )
 
 type Trigger interface {
@@ -100,7 +101,7 @@ func (e *engine) runMessages(ctx context.Context, t *messageTrigger) {
 }
 
 func (e *engine) supervise(ctx context.Context, run func()) {
-	backoff := triggerRestartMin
+	restart := triggerRestartMin
 	for {
 		start := e.deps.Clock.Now()
 		run()
@@ -108,14 +109,14 @@ func (e *engine) supervise(ctx context.Context, run func()) {
 			return
 		}
 		if e.deps.Clock.Now().Sub(start) >= triggerRestartMax {
-			backoff = triggerRestartMin
+			restart = triggerRestartMin
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-e.deps.Clock.After(jitter(backoff)):
+		case <-e.deps.Clock.After(backoff.Jitter(restart)):
 		}
-		backoff = min(backoff*2, triggerRestartMax)
+		restart = min(restart*2, triggerRestartMax)
 	}
 }
 

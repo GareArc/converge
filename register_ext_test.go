@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/convergetest"
+	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/internal/hook"
 )
 
@@ -81,6 +84,34 @@ func TestRegisterRejectsForeignTypes(t *testing.T) {
 		t.Fatal("non-job must be rejected")
 	}
 	if err := hook.RegisterJob("not a runtime", newStubJob("a")); err == nil {
+		t.Fatal("non-runtime must be rejected")
+	}
+}
+
+func TestProducerDepsRoundTripsWiring(t *testing.T) {
+	mq := inmem.NewMQ()
+	clock := convergetest.NewClock(time.Unix(0, 0))
+	rt, err := converge.New(converge.Options{MQ: mq, Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wiring, err := hook.ProducerDeps(rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wiring.MQ != mq {
+		t.Fatalf("MQ not round-tripped: got %v", wiring.MQ)
+	}
+	if wiring.Clock != clock {
+		t.Fatalf("Clock not round-tripped: got %v", wiring.Clock)
+	}
+	if got := wiring.QueueMQ("unbound"); got != nil {
+		t.Fatalf("QueueMQ for unbound queue = %v, want nil", got)
+	}
+}
+
+func TestProducerDepsRejectsForeignRuntime(t *testing.T) {
+	if _, err := hook.ProducerDeps("not a runtime"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
 }
