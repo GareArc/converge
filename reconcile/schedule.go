@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GareArc/converge/internal/durfmt"
 	"github.com/robfig/cron/v3"
 )
 
@@ -53,6 +54,7 @@ type Cadence struct {
 	loc    *time.Location
 	missed MissedTickPolicy
 	err    error
+	expr   string
 }
 
 func Every(d time.Duration) Cadence {
@@ -74,7 +76,7 @@ func Cron(expr string, o CronOpts) Cadence {
 	if loc == nil {
 		loc = time.UTC
 	}
-	return Cadence{sched: sched, loc: loc, missed: o.MissedTick}
+	return Cadence{sched: sched, loc: loc, missed: o.MissedTick, expr: expr}
 }
 
 func (c Cadence) missedTick() MissedTickPolicy {
@@ -82,6 +84,22 @@ func (c Cadence) missedTick() MissedTickPolicy {
 		return RunOnce
 	}
 	return c.missed
+}
+
+func (c Cadence) render() string {
+	var s string
+	if c.every > 0 {
+		s = "every " + durfmt.Format(c.every)
+	} else {
+		s = "cron " + c.expr
+		if c.loc != nil && c.loc != time.UTC {
+			s += " (loc: " + c.loc.String() + ")"
+		}
+	}
+	if mt := c.missedTick(); mt != RunOnce {
+		s += " (missed: " + mt.String() + ")"
+	}
+	return s
 }
 
 func (c Cadence) next(anchor, after time.Time) time.Time {

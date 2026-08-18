@@ -49,6 +49,42 @@ func (s *stubJob) Stats() converge.JobStats {
 	return converge.JobStats{Job: s.name, Surface: converge.SurfaceReconcile}
 }
 
+func (s *stubJob) Info() converge.JobInfo {
+	return converge.JobInfo{
+		Job:      s.name,
+		Surface:  converge.SurfaceReconcile,
+		Settings: map[string]string{"stub": s.name},
+	}
+}
+
+type stubQueueJob struct {
+	name  string
+	queue string
+	mq    converge.MQ
+	ready chan struct{}
+}
+
+func newStubQueueJob(name, queue string, mq converge.MQ) *stubQueueJob {
+	return &stubQueueJob{name: name, queue: queue, mq: mq, ready: make(chan struct{})}
+}
+
+func (s *stubQueueJob) Name() string { return s.name }
+
+func (s *stubQueueJob) Run(ctx context.Context, d converge.JobDeps) error {
+	<-ctx.Done()
+	return nil
+}
+
+func (s *stubQueueJob) Ready() <-chan struct{} { return s.ready }
+
+func (s *stubQueueJob) Poke(id string) error { return nil }
+
+func (s *stubQueueJob) Stats() converge.JobStats { return converge.JobStats{Job: s.name} }
+
+func (s *stubQueueJob) Info() converge.JobInfo { return converge.JobInfo{Job: s.name} }
+
+func (s *stubQueueJob) QueueBinding() (string, converge.MQ) { return s.queue, s.mq }
+
 func mustRuntime(t *testing.T) *converge.Runtime {
 	t.Helper()
 	rt, err := converge.New(converge.Options{})
@@ -129,5 +165,132 @@ func TestRegisterIsGoroutineSafe(t *testing.T) {
 	wg.Wait()
 	if got := len(rt.Stats()); got != 50 {
 		t.Fatalf("registered %d jobs, want 50", got)
+	}
+}
+
+func TestInspectReturnsRegisteredJobInfo(t *testing.T) {
+	rt := mustRuntime(t)
+	if err := hook.RegisterJob(rt, newStubJob("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(rt, newStubJob("b")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := hook.Inspect(rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	infos, ok := got.([]converge.JobInfo)
+	if !ok {
+		t.Fatalf("Inspect returned %T, want []converge.JobInfo", got)
+	}
+	if len(infos) != 2 || infos[0].Job != "a" || infos[1].Job != "b" {
+		t.Fatalf("infos = %+v, want [a b] in registration order", infos)
+	}
+	if infos[0].Settings["stub"] != "a" || infos[1].Settings["stub"] != "b" {
+		t.Fatalf("infos = %+v, per-job Settings not preserved", infos)
+	}
+}
+
+func TestInspectRejectsForeignRuntime(t *testing.T) {
+	if _, err := hook.Inspect("not a runtime"); err == nil {
+		t.Fatal("non-runtime must be rejected")
+	}
+	var nilRt *converge.Runtime
+	if _, err := hook.Inspect(nilRt); err == nil {
+		t.Fatal("typed-nil runtime must be rejected")
+	}
+}
+
+func TestOpsDepsRoundTripsWiring(t *testing.T) {
+	mq := inmem.NewMQ()
+	boundMQ := inmem.NewMQ()
+	kv := inmem.NewKV()
+	clock := convergetest.NewClock(time.Unix(0, 0))
+	rt, err := converge.New(converge.Options{Namespace: "svc", MQ: mq, KV: kv, Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := hook.RegisterJob(rt, newStubQueueJob("q-job", "bound-queue", boundMQ)); err != nil {
+		t.Fatal(err)
+	}
+	wiring, err := hook.OpsDeps(rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wiring.KV != kv || wiring.MQ != mq || wiring.Clock != clock {
+		t.Fatalf("ports not round-tripped: %+v", wiring)
+	}
+	if wiring.Namespace != "svc" {
+		t.Fatalf("Namespace = %q, want svc", wiring.Namespace)
+	}
+	if len(wiring.Replica) != 32 {
+		t.Fatalf("Replica = %q, want 32 hex chars", wiring.Replica)
+	}
+	if got := wiring.QueueMQ("bound-queue"); got != boundMQ {
+		t.Fatalf("QueueMQ(bound-queue) = %v, want %v", got, boundMQ)
+	}
+	if got := wiring.QueueMQ("unbound"); got != nil {
+		t.Fatalf("QueueMQ(unbound) = %v, want nil", got)
+	}
+}
+
+func TestOpsDepsRejectsForeignRuntime(t *testing.T) {
+	if _, err := hook.OpsDeps("nope"); err == nil {
+		t.Fatal("non-runtime must be rejected")
+	}
+	var nilRt *converge.Runtime
+	if _, err := hook.OpsDeps(nilRt); err == nil {
+		t.Fatal("typed-nil runtime must be rejected")
+	}
+}
+
+func TestReplicaIDsAreDistinctPerRuntime(t *testing.T) {
+	rt1 := mustRuntime(t)
+	rt2 := mustRuntime(t)
+	w1, err := hook.OpsDeps(rt1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2, err := hook.OpsDeps(rt2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w1.Replica == w2.Replica {
+		t.Fatal("replica ids must be distinct across Runtimes")
+	}
+	if len(w1.Replica) != 32 || len(w2.Replica) != 32 {
+		t.Fatalf("replica ids must be 32 chars, got %q and %q", w1.Replica, w2.Replica)
+	}
+}
+
+func TestAttachOptionsInvokesCallbackWithBuiltRuntime(t *testing.T) {
+	var got any
+	wrapped := hook.AttachOptions(converge.Options{}, func(rt any) { got = rt })
+	opts, ok := wrapped.(converge.Options)
+	if !ok {
+		t.Fatalf("AttachOptions returned %T, want converge.Options", wrapped)
+	}
+	rt, err := converge.New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != rt {
+		t.Fatalf("attach callback got %v, want %v", got, rt)
+	}
+}
+
+func TestAttachOptionsNotInvokedOnFailure(t *testing.T) {
+	called := false
+	wrapped := hook.AttachOptions(converge.Options{LeaseTTL: -time.Second}, func(rt any) { called = true })
+	opts, ok := wrapped.(converge.Options)
+	if !ok {
+		t.Fatalf("AttachOptions returned %T, want converge.Options", wrapped)
+	}
+	if _, err := converge.New(opts); err == nil {
+		t.Fatal("negative LeaseTTL must be rejected")
+	}
+	if called {
+		t.Fatal("attach must not be invoked when New fails")
 	}
 }

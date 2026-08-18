@@ -15,6 +15,7 @@ type job interface {
 	Ready() <-chan struct{}
 	Poke(id string) error
 	Stats() JobStats
+	Info() JobInfo
 }
 
 type queueBound interface {
@@ -27,8 +28,9 @@ type queueBinding struct {
 }
 
 type Runtime struct {
-	opts  Options
-	ready chan struct{}
+	opts    Options
+	ready   chan struct{}
+	replica string
 
 	mu     sync.Mutex
 	jobs   map[string]job
@@ -55,19 +57,60 @@ func init() {
 			return hook.ProducerWiring{}, fmt.Errorf("converge: producer: %T is not a usable *converge.Runtime", rt)
 		}
 		return hook.ProducerWiring{
-			MQ:    r.opts.MQ,
-			Clock: r.opts.Clock,
-			QueueMQ: func(queue string) any {
-				r.mu.Lock()
-				defer r.mu.Unlock()
-				b, ok := r.queues[queue]
-				if !ok || b.mq == nil {
-					return nil
-				}
-				return b.mq
-			},
+			MQ:      r.opts.MQ,
+			Clock:   r.opts.Clock,
+			QueueMQ: r.queueMQ,
 		}, nil
 	}
+	hook.Inspect = func(rt any) (any, error) {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return nil, fmt.Errorf("converge: inspect: %T is not a usable *converge.Runtime", rt)
+		}
+		r.mu.Lock()
+		jobs := make([]job, 0, len(r.order))
+		for _, name := range r.order {
+			jobs = append(jobs, r.jobs[name])
+		}
+		r.mu.Unlock()
+		out := make([]JobInfo, 0, len(jobs))
+		for _, j := range jobs {
+			out = append(out, j.Info())
+		}
+		return out, nil
+	}
+	hook.OpsDeps = func(rt any) (hook.OpsWiring, error) {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return hook.OpsWiring{}, fmt.Errorf("converge: ops: %T is not a usable *converge.Runtime", rt)
+		}
+		return hook.OpsWiring{
+			KV:        r.opts.KV,
+			MQ:        r.opts.MQ,
+			Clock:     r.opts.Clock,
+			Namespace: r.opts.Namespace,
+			Replica:   r.replica,
+			QueueMQ:   r.queueMQ,
+		}, nil
+	}
+	hook.AttachOptions = func(o any, attach func(rt any)) any {
+		opts, ok := o.(Options)
+		if !ok {
+			return o
+		}
+		opts.attach = func(rt *Runtime) { attach(rt) }
+		return opts
+	}
+}
+
+func (rt *Runtime) queueMQ(queue string) any {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	b, ok := rt.queues[queue]
+	if !ok || b.mq == nil {
+		return nil
+	}
+	return b.mq
 }
 
 func (rt *Runtime) register(j job) error {

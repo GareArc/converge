@@ -11,3 +11,12 @@ type JobStats struct {
 	LastSuccess      time.Time
 	ConsecutiveFails int
 }
+
+type JobInfo struct {
+	Job      string
+	Surface  Surface
+	RunMode  RunMode
+	Queue    string
+	Paused   bool
+	Settings map[string]string
+}

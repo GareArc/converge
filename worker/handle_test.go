@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +118,57 @@ func TestNewEngineAppliesDefaults(t *testing.T) {
 	}
 	if e.cfg.runMode != converge.SplitAcrossReplicas {
 		t.Fatalf("runMode = %v, want %v", e.cfg.runMode, converge.SplitAcrossReplicas)
+	}
+}
+
+func TestEngineInfoRendersDefaults(t *testing.T) {
+	e, err := newEngine(okTaskInfo(), okRun(), HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := e.Info()
+	if info.Job != "job" || info.Surface != converge.SurfaceWorker || info.RunMode != converge.SplitAcrossReplicas {
+		t.Fatalf("identity = %+v", info)
+	}
+	if info.Queue != "job" {
+		t.Fatalf("Queue = %q, want job", info.Queue)
+	}
+	if info.Paused {
+		t.Fatal("Paused must default to false")
+	}
+	want := map[string]string{
+		"concurrency":    strconv.Itoa(DefaultConcurrency),
+		"visibility":     "5m",
+		"retry":          "25 attempts, backoff 1s..15m, max-age 24h",
+		"schema-version": "1",
+	}
+	if !reflect.DeepEqual(info.Settings, want) {
+		t.Fatalf("Settings = %+v, want %+v", info.Settings, want)
+	}
+}
+
+func TestEngineInfoOmitsRateLimitWhenZero(t *testing.T) {
+	e, err := newEngine(okTaskInfo(), okRun(), HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.Info().Settings["rate-limit"]; ok {
+		t.Fatal("rate-limit must be omitted when zero")
+	}
+}
+
+func TestEngineInfoRendersRateLimitAndPaused(t *testing.T) {
+	o := HandleOpts{RateLimit: converge.Rate{Events: 5, Per: time.Second}, Paused: true}
+	e, err := newEngine(okTaskInfo(), okRun(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := e.Info()
+	if got := info.Settings["rate-limit"]; got != "5/1s" {
+		t.Fatalf("rate-limit = %q, want 5/1s", got)
+	}
+	if !info.Paused {
+		t.Fatal("Paused must reflect HandleOpts.Paused")
 	}
 }
 

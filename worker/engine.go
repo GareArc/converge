@@ -17,6 +17,7 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
+	"github.com/GareArc/converge/internal/durfmt"
 	"github.com/GareArc/converge/internal/mw"
 	"github.com/GareArc/converge/internal/sig"
 	"github.com/GareArc/converge/internal/tokenbucket"
@@ -97,6 +98,31 @@ func (e *engine) Stats() converge.JobStats {
 		LastSuccess:      e.lastSuccess,
 		ConsecutiveFails: e.consecFails,
 	}
+}
+
+func (e *engine) Info() converge.JobInfo {
+	settings := map[string]string{
+		"concurrency":    strconv.Itoa(e.cfg.concurrency),
+		"visibility":     durfmt.Format(e.cfg.visibility),
+		"retry":          retrySetting(e.cfg.retry),
+		"schema-version": strconv.Itoa(e.cfg.info.version),
+	}
+	if !e.cfg.rateLimit.IsZero() {
+		settings["rate-limit"] = e.cfg.rateLimit.String()
+	}
+	return converge.JobInfo{
+		Job:      e.cfg.info.name,
+		Surface:  converge.SurfaceWorker,
+		RunMode:  e.cfg.runMode,
+		Queue:    e.cfg.info.queue,
+		Paused:   e.cfg.paused,
+		Settings: settings,
+	}
+}
+
+func retrySetting(r RetryPolicy) string {
+	return fmt.Sprintf("%d attempts, backoff %s..%s, max-age %s",
+		r.MaxAttempts, durfmt.Format(r.MinBackoff), durfmt.Format(r.MaxBackoff), durfmt.Format(r.MaxAge))
 }
 
 func (e *engine) bind(deps converge.JobDeps) error {

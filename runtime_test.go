@@ -22,6 +22,7 @@ func (f *fakeQueueJob) Run(ctx context.Context, d JobDeps) error { <-ctx.Done();
 func (f *fakeQueueJob) Ready() <-chan struct{}                   { return f.ready }
 func (f *fakeQueueJob) Poke(id string) error                     { return nil }
 func (f *fakeQueueJob) Stats() JobStats                          { return JobStats{Job: f.name} }
+func (f *fakeQueueJob) Info() JobInfo                            { return JobInfo{Job: f.name} }
 func (f *fakeQueueJob) QueueBinding() (string, MQ)               { return f.queue, nil }
 
 func TestNewAppliesDefaults(t *testing.T) {

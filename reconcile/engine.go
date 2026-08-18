@@ -132,6 +132,76 @@ func (e *engine) Stats() converge.JobStats {
 	return s
 }
 
+func (e *engine) Info() converge.JobInfo {
+	settings := map[string]string{
+		"concurrency": strconv.Itoa(e.cfg.concurrency),
+	}
+	if sched := scheduleSetting(e.cfg.triggers); sched != "" {
+		settings["schedule"] = sched
+	}
+	if trig := triggersSetting(e.cfg.triggers); trig != "" {
+		settings["triggers"] = trig
+	}
+	if e.cfg.deadLetterAfter != 0 {
+		settings["dead-letter-after"] = strconv.Itoa(e.cfg.deadLetterAfter)
+	}
+	if !e.cfg.rateLimit.IsZero() {
+		settings["rate-limit"] = e.cfg.rateLimit.String()
+	}
+	if v := versionsSetting(e.cfg.versions); v != "" {
+		settings["versions"] = v
+	}
+	if e.cfg.allowUnscheduled {
+		settings["allow-unscheduled"] = "true"
+	}
+	return converge.JobInfo{
+		Job:      e.cfg.name,
+		Surface:  converge.SurfaceReconcile,
+		RunMode:  e.cfg.runMode,
+		Paused:   e.cfg.paused,
+		Settings: settings,
+	}
+}
+
+func triggerLabel(t Trigger) string {
+	switch tr := t.(type) {
+	case *scheduleTrigger:
+		return "schedule"
+	case *messageTrigger:
+		return "on-message " + tr.queue
+	default:
+		return "custom"
+	}
+}
+
+func triggersSetting(triggers []Trigger) string {
+	labels := make([]string, 0, len(triggers))
+	for _, t := range triggers {
+		labels = append(labels, triggerLabel(t))
+	}
+	return strings.Join(labels, " + ")
+}
+
+func scheduleSetting(triggers []Trigger) string {
+	var rendered []string
+	for _, t := range triggers {
+		if st, ok := t.(*scheduleTrigger); ok {
+			rendered = append(rendered, st.cad.render())
+		}
+	}
+	return strings.Join(rendered, " + ")
+}
+
+func versionsSetting(v VersionSource) string {
+	if v == nil {
+		return ""
+	}
+	if t, ok := v.(*Tracker); ok {
+		return t.namespace
+	}
+	return "custom"
+}
+
 func (e *engine) hint(ctx context.Context, id ID) {
 	if id == "" && !e.cfg.single {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
