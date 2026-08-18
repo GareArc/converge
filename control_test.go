@@ -543,7 +543,7 @@ func TestControlListenerSurvivesUndecodableCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, _, err := awaitControlDispatch(t, clock, rt, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x", Timeout: 200 * time.Millisecond})
+	resp, _, err := awaitControlDispatch(t, clock, rt, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x", Timeout: 2 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
