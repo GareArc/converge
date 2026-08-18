@@ -199,10 +199,19 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 	}
 
 	var wg sync.WaitGroup
-	e.intake(ictx, hctx, &wg)
+	intakeDone := make(chan struct{})
+	go func() {
+		e.intake(ictx, hctx, &wg)
+		close(intakeDone)
+	}()
 
+	<-ictx.Done()
 	finished := make(chan struct{})
-	go func() { wg.Wait(); close(finished) }()
+	go func() {
+		<-intakeDone
+		wg.Wait()
+		close(finished)
+	}()
 	select {
 	case <-finished:
 	case <-e.deps.Clock.After(e.deps.DrainTimeout):

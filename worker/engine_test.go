@@ -928,6 +928,141 @@ func (m *countingMQ) ConsumeGroup(ctx context.Context, queue, group string, deli
 	})
 }
 
+type publishCountingMQ struct {
+	*inmem.MQ
+	publishes atomic.Int64
+}
+
+func (m *publishCountingMQ) Publish(ctx context.Context, queue string, msg converge.Message) error {
+	m.publishes.Add(1)
+	return m.MQ.Publish(ctx, queue, msg)
+}
+
+func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
+	clock := convergetest.NewClock(wstart)
+	pmq := &publishCountingMQ{MQ: inmem.NewMQWithClock(clock)}
+	kv := inmem.NewKVWithClock(clock)
+	rec := &recorder{}
+	rt, err := converge.New(converge.Options{
+		Namespace:    "wt",
+		MQ:           pmq,
+		Lease:        inmem.NewLeaseWithClock(clock),
+		KV:           kv,
+		Observer:     rec,
+		Clock:        clock,
+		DrainTimeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w1 := &world{rt: rt, clock: clock, mq: pmq, kv: kv, rec: rec, done: make(chan error, 1)}
+
+	tk := NewTask[string]("job", TaskOpts{})
+	started := make(chan struct{}, 8)
+	err = Handle(w1.rt, tk, func(ctx context.Context, payload string) error {
+		started <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}, HandleOpts{Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- w1.rt.Run(runCtx) }()
+	select {
+	case <-w1.rt.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime never ready")
+	}
+
+	p, err := ProducerFrom(w1.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "one", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first handler never started")
+	}
+	if err := tk.Enqueue(context.Background(), p, "two", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { return w1.stats(t, "job").QueueDepth == 2 })
+
+	before := pmq.publishes.Load()
+	cancel()
+
+	var runErr error
+	gotDone := false
+	deadline := time.Now().Add(2 * time.Second)
+	for !gotDone {
+		select {
+		case runErr = <-done:
+			gotDone = true
+		default:
+		}
+		if gotDone {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Run never returned: drain timer starved by neutral-republish redelivery loop")
+		}
+		clock.Advance(100 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
+	}
+	if runErr != nil {
+		t.Fatalf("Run returned %v, want nil", runErr)
+	}
+	if republishes := pmq.publishes.Load() - before; republishes > 10 {
+		t.Fatalf("republishes during shutdown = %d, want O(1)", republishes)
+	}
+
+	rec2 := &recorder{}
+	rt2, err := converge.New(converge.Options{
+		Namespace: "wt",
+		MQ:        pmq,
+		Lease:     inmem.NewLeaseWithClock(clock),
+		KV:        kv,
+		Observer:  rec2,
+		Clock:     clock,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2 := &world{rt: rt2, clock: clock, mq: pmq, kv: kv, rec: rec2, done: make(chan error, 1)}
+	tk2 := NewTask[string]("job", TaskOpts{})
+	var mu sync.Mutex
+	var attempts []int
+	err = Handle(w2.rt, tk2, func(ctx context.Context, payload string) error {
+		meta, _ := MetaFromContext(ctx)
+		mu.Lock()
+		attempts = append(attempts, meta.Attempt)
+		mu.Unlock()
+		return nil
+	}, HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w2.run(t)
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(attempts) == 2
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	want := []int{1, 1}
+	if !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("successor attempts = %v, want %v", attempts, want)
+	}
+}
+
 func TestVisibilityHeartbeatExtends(t *testing.T) {
 	var cmq *countingMQ
 	w := newWorldWith(t, worldOpts{mq: func(clock *convergetest.Clock) converge.MQ {
