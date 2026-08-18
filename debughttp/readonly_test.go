@@ -346,6 +346,45 @@ func TestReadOnlyUnknownPath404(t *testing.T) {
 	}
 }
 
+func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler func(w *world) http.Handler
+	}{
+		{"ReadOnlyHandler", func(w *world) http.Handler { return debughttp.ReadOnlyHandler(w.rt) }},
+		{"OpsHandler", func(w *world) http.Handler { return debughttp.OpsHandler(w.rt, debughttp.OpsOpts{}) }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newWorld(t)
+			registerReconcileJob(t, w, "license-refresh")
+
+			outer := http.NewServeMux()
+			outer.Handle("/debug/jobs/", c.handler(w))
+			srv := httptest.NewServer(outer)
+			t.Cleanup(srv.Close)
+
+			resp, err := http.Get(srv.URL + "/debug/jobs")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (the guide's own %q mounting must serve the bare path)", resp.StatusCode, "/debug/jobs/")
+			}
+			var body struct {
+				Jobs []map[string]any `json:"jobs"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if len(body.Jobs) != 1 || body.Jobs[0]["job"] != "license-refresh" {
+				t.Fatalf("jobs = %+v, want one row for license-refresh", body.Jobs)
+			}
+		})
+	}
+}
+
 func TestOpsHandlerServesReadOnlyRoutesWithParity(t *testing.T) {
 	w := newWorld(t)
 	registerReconcileJob(t, w, "job")

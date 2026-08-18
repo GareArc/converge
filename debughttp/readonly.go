@@ -41,19 +41,8 @@ func ReadOnlyHandler(rt *converge.Runtime) http.Handler {
 }
 
 func registerReadOnlyRoutes(mux *http.ServeMux, rt *converge.Runtime) {
-	mux.HandleFunc("GET /debug/jobs", func(w http.ResponseWriter, r *http.Request) {
-		infos, err := inspectJobs(rt)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		stats := statsByJob(rt.Stats())
-		views := make([]jobView, 0, len(infos))
-		for _, info := range infos {
-			views = append(views, mergeJobView(info, stats[info.Job]))
-		}
-		writeJSON(w, http.StatusOK, jobsResponse{Jobs: views})
-	})
+	mux.HandleFunc("GET /debug/jobs", listJobsHandler(rt))
+	mux.HandleFunc("GET /debug/jobs/{$}", listJobsHandler(rt))
 	mux.HandleFunc("GET /debug/jobs/{job}", func(w http.ResponseWriter, r *http.Request) {
 		job := r.PathValue("job")
 		info, ok, err := lookupJob(rt, job)
@@ -68,6 +57,22 @@ func registerReadOnlyRoutes(mux *http.ServeMux, rt *converge.Runtime) {
 		stats := statsByJob(rt.Stats())
 		writeJSON(w, http.StatusOK, mergeJobView(info, stats[job]))
 	})
+}
+
+func listJobsHandler(rt *converge.Runtime) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		infos, err := inspectJobs(rt)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		stats := statsByJob(rt.Stats())
+		views := make([]jobView, 0, len(infos))
+		for _, info := range infos {
+			views = append(views, mergeJobView(info, stats[info.Job]))
+		}
+		writeJSON(w, http.StatusOK, jobsResponse{Jobs: views})
+	}
 }
 
 func inspectJobs(rt *converge.Runtime) ([]converge.JobInfo, error) {
