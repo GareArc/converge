@@ -117,10 +117,19 @@ URLs). Never push without explicit maintainer approval.
                 (converge.go, runtime.go, jobdeps.go, middleware.go, stats.go)
 internal/sig    sealed control-signal detection
 internal/hook   registration seam between kernel and surface engines
+internal/ctl    control-plane primitives: ops verbs, Request/Response, KV/queue keys
 internal/mw     middleware chain composition
+internal/backoff, internal/tokenbucket, internal/durfmt, internal/pausegate
+                shared engine primitives: jitter, rate limiting, duration
+                rendering, pause gating
 inmem/          stdlib-only port implementations (dev/test; single process)
-convergetest/   fake clock; portcheck/ = exported port contract suites
-reconcile/, worker/          surface engines (later plans)
+convergetest/   test harness (Harness/New/Options, Drain/Wake/RunPass, asserts,
+                Await/AdvanceUntil/AssertStable, Recorder, recording MQ and
+                Lease wrappers), fake clock; portcheck/ = exported port
+                contract suites
+reconcile/, worker/          surface engines
+debughttp/      HTTP introspection (ReadOnlyHandler) and ops (OpsHandler) over
+                hook.Inspect / hook.ControlDispatch / worker.DLQFrom
 adapters/, bridges/          separate modules (later plans)
 docs/superpowers/            local-only working docs — gitignored, never commit
 ```

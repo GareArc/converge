@@ -2,11 +2,13 @@ package reconcile
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
 )
 
@@ -151,11 +153,168 @@ func TestCustomPeriodicTriggerSatisfiesScheduleRequirement(t *testing.T) {
 	}
 }
 
+func TestEngineInfoRendersScheduleSettings(t *testing.T) {
+	s := okSpec()
+	s.Concurrency = 2
+	s.DeadLetterAfter = 3
+	e, err := newEngine(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := e.Info()
+	if info.Job != "job" || info.Surface != converge.SurfaceReconcile || info.RunMode != converge.OnOneReplica {
+		t.Fatalf("identity = %+v", info)
+	}
+	if info.Queue != "" {
+		t.Fatalf("Queue = %q, want empty", info.Queue)
+	}
+	if info.Paused {
+		t.Fatal("Paused must default to false")
+	}
+	want := map[string]string{
+		"concurrency":       "2",
+		"schedule":          "every 1h",
+		"triggers":          "schedule",
+		"dead-letter-after": "3",
+	}
+	if !reflect.DeepEqual(info.Settings, want) {
+		t.Fatalf("Settings = %+v, want %+v", info.Settings, want)
+	}
+}
+
+func TestEngineInfoRendersCronExpression(t *testing.T) {
+	s := okSpec()
+	s.Triggers = []Trigger{Schedule(SingleID(), Cron("*/5 * * * *", CronOpts{}))}
+	e, err := newEngine(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := e.Info().Settings["schedule"]; got != "cron */5 * * * *" {
+		t.Fatalf("schedule = %q, want %q", got, "cron */5 * * * *")
+	}
+}
+
+func TestEngineInfoRendersTriggerComposition(t *testing.T) {
+	s := okSpec()
+	s.Triggers = []Trigger{
+		Schedule(SingleID(), Every(time.Hour)),
+		OnMessage("deploy-hints", RawID(), OnMessageOpts{}),
+	}
+	e, err := newEngine(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "schedule + on-message deploy-hints"
+	if got := e.Info().Settings["triggers"]; got != want {
+		t.Fatalf("triggers = %q, want %q", got, want)
+	}
+}
+
+func TestEngineInfoRendersUnknownTriggerAsCustom(t *testing.T) {
+	s := okSpec()
+	s.Triggers = []Trigger{customPeriodic{}}
+	e, err := newEngine(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := e.Info()
+	if got := info.Settings["triggers"]; got != "custom" {
+		t.Fatalf("triggers = %q, want %q", got, "custom")
+	}
+	if _, ok := info.Settings["schedule"]; ok {
+		t.Fatalf("schedule key must be omitted with no Schedule trigger, got %+v", info.Settings)
+	}
+}
+
+func TestEngineInfoRendersOptionalSettings(t *testing.T) {
+	s := okSpec()
+	s.RateLimit = converge.Rate{Events: 5, Per: time.Second}
+	s.Versions = NewTracker(inmem.NewKV(), "job")
+	s.AllowUnscheduled = true
+	s.Paused = true
+	e, err := newEngine(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := e.Info()
+	if !info.Paused {
+		t.Fatal("Paused must reflect Spec.Paused")
+	}
+	if got := info.Settings["rate-limit"]; got != "5/1s" {
+		t.Fatalf("rate-limit = %q, want 5/1s", got)
+	}
+	if got := info.Settings["versions"]; got != "job" {
+		t.Fatalf("versions = %q, want job", got)
+	}
+	if got := info.Settings["allow-unscheduled"]; got != "true" {
+		t.Fatalf("allow-unscheduled = %q, want true", got)
+	}
+}
+
+func TestEngineInfoOmitsZeroSettings(t *testing.T) {
+	e, err := newEngine(okSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := e.Info()
+	for _, key := range []string{"rate-limit", "versions", "allow-unscheduled"} {
+		if _, ok := info.Settings[key]; ok {
+			t.Fatalf("Settings[%q] must be omitted for zero values, got %+v", key, info.Settings)
+		}
+	}
+}
+
+func TestEngineInfoRendersPinnedDisplayFormats(t *testing.T) {
+	loc := time.FixedZone("UTC+2", 2*60*60)
+	cases := []struct {
+		name   string
+		mutate func(*Spec)
+		key    string
+		want   string
+	}{
+		{
+			name:   "non-Tracker VersionSource renders as custom",
+			mutate: func(s *Spec) { s.Versions = fakeVersions{} },
+			key:    "versions",
+			want:   "custom",
+		},
+		{
+			name: "cron non-UTC location renders a loc suffix",
+			mutate: func(s *Spec) {
+				s.Triggers = []Trigger{Schedule(SingleID(), Cron("*/5 * * * *", CronOpts{Location: loc}))}
+			},
+			key:  "schedule",
+			want: "cron */5 * * * * (loc: " + loc.String() + ")",
+		},
+		{
+			name: "non-default missed-tick policy renders a missed suffix",
+			mutate: func(s *Spec) {
+				s.Triggers = []Trigger{Schedule(SingleID(), Cron("*/5 * * * *", CronOpts{MissedTick: Skip}))}
+			},
+			key:  "schedule",
+			want: "cron */5 * * * * (missed: Skip)",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := okSpec()
+			c.mutate(&s)
+			e, err := newEngine(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := e.Info().Settings[c.key]; got != c.want {
+				t.Fatalf("Settings[%q] = %q, want %q", c.key, got, c.want)
+			}
+		})
+	}
+}
+
 func TestPausedSpecDropsWakes(t *testing.T) {
 	te := startEngine(t, config{paused: true}, func(ctx context.Context, id ID) error { return nil })
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.Reason == converge.DiscardPaused
 		}) == 1

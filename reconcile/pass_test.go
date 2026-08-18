@@ -21,7 +21,7 @@ func startSchedule(t *testing.T, te *testEngine, src IDSource, cad Cadence) {
 }
 
 func runCount(te *testEngine) int {
-	return te.rec.count(func(e converge.Event) bool {
+	return te.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.RunCompleted)
 		return ok
 	})
@@ -32,7 +32,7 @@ func TestFirstPassRunsImmediatelyAndPersistsLastFire(t *testing.T) {
 	startSchedule(t, te, StringIDs(func(context.Context) ([]string, error) {
 		return []string{"a", "b"}, nil
 	}), Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 2 })
+	convergetest.Await(t, func() bool { return runCount(te) == 2 })
 	key := te.e.key("sched", "0", "last")
 	_, ok, err := te.e.deps.KV.Get(context.Background(), key)
 	if err != nil || !ok {
@@ -43,12 +43,12 @@ func TestFirstPassRunsImmediatelyAndPersistsLastFire(t *testing.T) {
 func TestSteadyStateFiresOncePerPeriod(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	startSchedule(t, te, SingleID(), Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 2 })
 	for i := 0; i < 10; i++ {
 		te.clock.Advance(time.Minute)
 	}
-	assertStable(t, func() bool { return runCount(te) == 2 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 2 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 3 })
 }
 
@@ -64,8 +64,8 @@ func TestMissedTickRunOnceRunsOneMakeupPass(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	seedLastFire(t, te, wqStart.Add(-5*time.Hour))
 	startSchedule(t, te, SingleID(), Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 1 })
-	assertStable(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 1 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 2 })
 }
 
@@ -73,7 +73,7 @@ func TestMissedTickSkipSkipsAll(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	seedLastFire(t, te, wqStart.Add(-5*time.Hour))
 	startSchedule(t, te, SingleID(), Cron("0 * * * *", CronOpts{MissedTick: Skip}))
-	assertStable(t, func() bool { return runCount(te) == 0 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 0 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 1 })
 }
 
@@ -89,7 +89,7 @@ func TestMissedTickCatchupReplaysEachBoundary(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	seedLastFire(t, te, wqStart.Add(-3*time.Hour))
 	startSchedule(t, te, src, Cron("0 * * * *", CronOpts{MissedTick: Catchup}))
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return pageCalls == 3
@@ -112,9 +112,9 @@ func TestRunOnceBacklogBeyondCapIsOneMakeupPass(t *testing.T) {
 	seedLastFire(t, te, wqStart.Add(-2500*time.Second))
 	startSchedule(t, te, src, Every(time.Second))
 	calls := func() int { mu.Lock(); defer mu.Unlock(); return pageCalls }
-	await(t, func() bool { return calls() == 1 })
-	assertStable(t, func() bool { return calls() == 1 })
-	if n := te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool { return calls() == 1 })
+	convergetest.AssertStable(t, func() bool { return calls() == 1 })
+	if n := te.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.PassOverrun)
 		return ok
 	}); n != 0 {
@@ -139,8 +139,8 @@ func TestOverrunBeyondCapIsConsumedNotMadeUp(t *testing.T) {
 	})
 	startSchedule(t, te, src, Every(time.Second))
 	calls := func() int { mu.Lock(); defer mu.Unlock(); return pageCalls }
-	await(t, func() bool { return calls() == 1 })
-	assertStable(t, func() bool { return calls() == 1 })
+	convergetest.Await(t, func() bool { return calls() == 1 })
+	convergetest.AssertStable(t, func() bool { return calls() == 1 })
 	advanceUntil(t, te, time.Second, func() bool { return calls() == 2 })
 }
 
@@ -171,7 +171,7 @@ func TestAllReplicasScheduleIsReplicaLocal(t *testing.T) {
 			runMode:     converge.OnAllReplicas,
 			rec:         Func(func(ctx context.Context, id ID) error { return nil }),
 		}, ready: make(chan struct{})}
-		if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &eventRecorder{}, Clock: clock}); err != nil {
+		if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &convergetest.Recorder{}, Clock: clock}); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -190,7 +190,7 @@ func TestAllReplicasScheduleIsReplicaLocal(t *testing.T) {
 	}
 	e1 := boot(1)
 	boot(2)
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return calls[1] == 1 && calls[2] == 1
@@ -222,7 +222,7 @@ func TestPassResumesFromPersistedCursor(t *testing.T) {
 		return nil, "", nil
 	})
 	startSchedule(t, te, src, Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
 	advanceUntil(t, te, time.Second, func() bool { return runCount(te) == 2 })
 	mu.Lock()
 	defer mu.Unlock()
@@ -240,19 +240,136 @@ func TestFirstPassOverrunSkipsWithoutMakeup(t *testing.T) {
 		return []ID{"a"}, nil
 	})
 	startSchedule(t, te, slow, Every(time.Hour))
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.PassOverrun)
 			return ok
 		}) >= 1
 	})
-	assertStable(t, func() bool { return runCount(te) == 1 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 1 })
+}
+
+type blockOnSetKV struct {
+	converge.KV
+	mu      sync.Mutex
+	armKey  string
+	entered chan struct{}
+	release chan struct{}
+	closed  bool
+}
+
+func (k *blockOnSetKV) armFor(key string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.armKey = key
+	k.entered = make(chan struct{})
+	k.release = make(chan struct{})
+	k.closed = false
+}
+
+func (k *blockOnSetKV) awaitEntered(t *testing.T) {
+	t.Helper()
+	k.mu.Lock()
+	entered := k.entered
+	k.mu.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Set on the armed key was never called")
+	}
+}
+
+func (k *blockOnSetKV) releaseBlock() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed {
+		return
+	}
+	k.closed = true
+	close(k.release)
+}
+
+func (k *blockOnSetKV) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+	k.mu.Lock()
+	armed := k.armKey != "" && key == k.armKey
+	var entered, release chan struct{}
+	if armed {
+		k.armKey = ""
+		entered, release = k.entered, k.release
+	}
+	k.mu.Unlock()
+	if armed {
+		close(entered)
+		<-release
+	}
+	return k.KV.Set(ctx, key, val, ttl)
+}
+
+func isPassOverrunEvent(e converge.Event) bool {
+	_, ok := e.(converge.PassOverrun)
+	return ok
+}
+
+func TestFirstPassHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T) {
+	kv := &blockOnSetKV{KV: inmem.NewKV()}
+	te := startEngineKV(t, config{single: true}, kv, func(context.Context, ID) error { return nil })
+	lastKey := te.e.key("sched", "0", "last")
+	kv.armFor(lastKey)
+	startSchedule(t, te, SingleID(), Every(time.Hour))
+	t.Cleanup(kv.releaseBlock)
+	kv.awaitEntered(t)
+
+	te.e.mu.Lock()
+	inFlight := te.e.passes > 0
+	te.e.mu.Unlock()
+	if !inFlight {
+		t.Fatal("engine must stay busy until checkOverrun completes, not just until runPass returns")
+	}
+
+	kv.releaseBlock()
+	convergetest.Await(t, te.e.Quiet)
+
+	te.clock.Advance(time.Hour)
+	convergetest.Await(t, func() bool { return runCount(te) == 2 })
+	if n := te.rec.Count(isPassOverrunEvent); n != 0 {
+		t.Fatalf("boundary must not be misclassified as overrun: got %d PassOverrun events", n)
+	}
+}
+
+func TestSteadyStateHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T) {
+	kv := &blockOnSetKV{KV: inmem.NewKV()}
+	te := startEngineKV(t, config{single: true}, kv, func(context.Context, ID) error { return nil })
+	startSchedule(t, te, SingleID(), Every(time.Hour))
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, te.e.Quiet)
+
+	lastKey := te.e.key("sched", "0", "last")
+	kv.armFor(lastKey)
+	t.Cleanup(kv.releaseBlock)
+	te.clock.Advance(time.Hour)
+	kv.awaitEntered(t)
+
+	te.e.mu.Lock()
+	inFlight := te.e.passes > 0
+	te.e.mu.Unlock()
+	if !inFlight {
+		t.Fatal("engine must stay busy (steady-state pass) until checkOverrun completes")
+	}
+
+	kv.releaseBlock()
+	convergetest.Await(t, te.e.Quiet)
+
+	te.clock.Advance(time.Hour)
+	convergetest.Await(t, func() bool { return runCount(te) == 3 })
+	if n := te.rec.Count(isPassOverrunEvent); n != 0 {
+		t.Fatalf("second boundary must not be misclassified as overrun: got %d PassOverrun events", n)
+	}
 }
 
 func TestErroredCadenceDoesNotPanic(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	startSchedule(t, te, SingleID(), Every(0))
-	assertStable(t, func() bool { return runCount(te) == 0 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 0 })
 }
 
 func TestCursorClearedAfterPassCompletes(t *testing.T) {
@@ -264,9 +381,369 @@ func TestCursorClearedAfterPassCompletes(t *testing.T) {
 		return []ID{"p2"}, "", nil
 	})
 	startSchedule(t, te, src, Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 2 })
-	await(t, func() bool {
+	convergetest.Await(t, func() bool { return runCount(te) == 2 })
+	convergetest.Await(t, func() bool {
 		_, ok, err := te.e.deps.KV.Get(context.Background(), te.e.key("sched", "0", "cursor"))
 		return err == nil && !ok
 	})
+}
+
+func TestScheduleBoundarySkippedWhilePausedLastFireUntouched(t *testing.T) {
+	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
+	startSchedule(t, te, SingleID(), Every(time.Hour))
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
+	lastKey := te.e.key("sched", "0", "last")
+	before, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
+	if err != nil || !ok {
+		t.Fatal("last-fire not persisted")
+	}
+
+	te.e.SetPaused(true)
+	te.clock.Advance(3 * time.Hour)
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 1 })
+
+	after, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
+	if err != nil || !ok || string(after) != string(before) {
+		t.Fatalf("last-fire changed while paused: before=%q after=%q", before, after)
+	}
+}
+
+func TestResumeAfterMissedBoundaryRunsOneCatchupPass(t *testing.T) {
+	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
+	startSchedule(t, te, SingleID(), Every(time.Hour))
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
+
+	te.e.SetPaused(true)
+	te.clock.Advance(3 * time.Hour)
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 1 })
+
+	te.e.SetPaused(false)
+	convergetest.Await(t, func() bool { return runCount(te) == 2 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 2 })
+}
+
+func TestPauseMidPassCompletesThenSkipsNextBoundary(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src := IDs(func(context.Context) ([]ID, error) {
+		once.Do(func() { close(entered) })
+		<-release
+		return []ID{"a"}, nil
+	})
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	startSchedule(t, te, src, Every(time.Hour))
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pass never entered the slow source")
+	}
+
+	te.e.SetPaused(true)
+	close(release)
+
+	lastKey := te.e.key("sched", "0", "last")
+	convergetest.Await(t, func() bool {
+		_, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
+		return err == nil && ok
+	})
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
+			wd, ok := e.(converge.WakeDiscarded)
+			return ok && wd.ID == "a" && wd.Reason == converge.DiscardPaused
+		}) == 1
+	})
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 0 })
+
+	before, _, err := te.e.deps.KV.Get(context.Background(), lastKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	te.clock.Advance(3 * time.Hour)
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 0 })
+
+	after, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
+	if err != nil || !ok || string(after) != string(before) {
+		t.Fatalf("next boundary must be skipped while paused: before=%q after=%q", before, after)
+	}
+}
+
+func TestQuietFalseWhilePassEnumerates(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	src := IDs(func(context.Context) ([]ID, error) {
+		close(entered)
+		<-release
+		return []ID{"a"}, nil
+	})
+	startSchedule(t, te, src, Every(time.Hour))
+	<-entered
+	if te.e.Quiet() {
+		t.Fatal("must not be quiet while a pass enumerates")
+	}
+	close(release)
+	convergetest.Await(t, te.e.Quiet)
+}
+
+func TestRunPassNowInactiveErrors(t *testing.T) {
+	e, err := newEngine(specWithSchedule())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.RunPassNow(context.Background()); err == nil {
+		t.Fatal("run-pass-now before Run must error")
+	}
+}
+
+func TestRunPassNowWithoutScheduleTriggerErrors(t *testing.T) {
+	spec := Spec{
+		Name:             "job",
+		Reconciler:       Func(func(context.Context, ID) error { return nil }),
+		AllowUnscheduled: true,
+		RunMode:          converge.OnAllReplicas,
+	}
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := convergetest.NewClock(wqStart)
+	deps := converge.JobDeps{
+		Observer:     &convergetest.Recorder{},
+		Clock:        clock,
+		DrainTimeout: time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.Run(ctx, deps)
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	if err := e.RunPassNow(context.Background()); err == nil {
+		t.Fatal("run-pass-now without a Schedule trigger must error")
+	}
+}
+
+func TestRunPassNowEnumeratesFullIDSource(t *testing.T) {
+	var mu sync.Mutex
+	counts := map[ID]int{}
+	spec := Spec{
+		Name: "job",
+		Reconciler: Func(func(_ context.Context, id ID) error {
+			mu.Lock()
+			counts[id]++
+			mu.Unlock()
+			return nil
+		}),
+		Triggers: []Trigger{Schedule(StringIDs(func(context.Context) ([]string, error) {
+			return []string{"a", "b", "c"}, nil
+		}), Every(time.Hour))},
+	}
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-le.e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	convergetest.Await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(counts) == 3
+	})
+	if err := le.e.RunPassNow(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, id := range []ID{"a", "b", "c"} {
+			if counts[id] < 2 {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func TestRunPassNowDoesNotDisturbScheduledLastFireOrCursor(t *testing.T) {
+	var mu sync.Mutex
+	scheduledRuns := 0
+	spec := Spec{
+		Name: "job",
+		Reconciler: Func(func(context.Context, ID) error {
+			mu.Lock()
+			scheduledRuns++
+			mu.Unlock()
+			return nil
+		}),
+		Triggers: []Trigger{Schedule(SingleID(), Every(time.Hour))},
+	}
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-le.e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return scheduledRuns == 1 })
+
+	lastKey := le.e.key("sched", "0", "last")
+	rawBefore, ok, err := le.kv.Get(context.Background(), lastKey)
+	if err != nil || !ok {
+		t.Fatal("scheduled last-fire not persisted")
+	}
+
+	if err := le.e.RunPassNow(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return scheduledRuns == 2 })
+
+	rawAfter, ok, err := le.kv.Get(context.Background(), lastKey)
+	if err != nil || !ok || string(rawAfter) != string(rawBefore) {
+		t.Fatalf("ops pass must not touch scheduled last-fire: before=%q after=%q", rawBefore, rawAfter)
+	}
+	if _, ok, _ := le.kv.Get(context.Background(), le.e.key("sched", "0", "cursor")); ok {
+		t.Fatal("scheduled cursor must not persist after completion")
+	}
+	if _, ok, _ := le.kv.Get(context.Background(), le.e.key("opspass", "0")); ok {
+		t.Fatal("ops cursor must be cleared after completion")
+	}
+
+	advanceUntil(t, &testEngine{clock: le.clock, rec: le.rec}, time.Minute, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return scheduledRuns == 3
+	})
+}
+
+func TestRunPassNowCtxCancellationAbortsAndReturnsCtxErr(t *testing.T) {
+	first := true
+	src := IDs(func(context.Context) ([]ID, error) {
+		if first {
+			first = false
+			return []ID{""}, nil
+		}
+		return nil, errors.New("db hiccup")
+	})
+	spec := Spec{
+		Name:       "job",
+		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Triggers:   []Trigger{Schedule(src, Every(time.Hour))},
+	}
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-le.e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	lastKey := le.e.key("sched", "0", "last")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok, err := le.kv.Get(context.Background(), lastKey); err == nil && ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scheduled boot pass never completed")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	opsCtx, opsCancel := context.WithCancel(context.Background())
+	resultCh := make(chan error, 1)
+	go func() { resultCh <- le.e.RunPassNow(opsCtx) }()
+	opsCancel()
+	select {
+	case err := <-resultCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunPassNow error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunPassNow never returned after ctx cancellation")
+	}
+}
+
+func TestRunPassNowDoesNotPanicWhenQueueNilsMidPass(t *testing.T) {
+	first := true
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	src := IDs(func(context.Context) ([]ID, error) {
+		if first {
+			first = false
+			return []ID{"a"}, nil
+		}
+		close(entered)
+		<-release
+		return []ID{"a"}, nil
+	})
+	spec := Spec{
+		Name:       "job",
+		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Triggers:   []Trigger{Schedule(src, Every(time.Hour))},
+	}
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := convergetest.NewClock(wqStart)
+	deps := converge.JobDeps{
+		Lease:        inmem.NewLeaseWithClock(clock),
+		KV:           inmem.NewKVWithClock(clock),
+		Observer:     &convergetest.Recorder{},
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: time.Second,
+	}
+	if err := e.bind(deps); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	runActiveDone := make(chan struct{})
+	go func() {
+		e.runActive(ctx, nil)
+		close(runActiveDone)
+	}()
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	lastKey := e.key("sched", "0", "last")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, ok, err := deps.KV.Get(context.Background(), lastKey); err == nil && ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("scheduled boot pass never completed")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- e.RunPassNow(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ops pass never entered the slow page")
+	}
+
+	cancel()
+	select {
+	case <-runActiveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runActive never returned")
+	}
+	e.mu.Lock()
+	e.queue = nil
+	e.mu.Unlock()
+
+	close(release)
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("RunPassNow returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunPassNow never returned")
+	}
 }

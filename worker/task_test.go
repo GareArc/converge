@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -40,6 +41,50 @@ func TestNewTaskMisconstruction(t *testing.T) {
 				t.Fatalf("err = %v, want mention of %q", tk.err, c.wantErr)
 			}
 		})
+	}
+}
+
+func TestTaskAccessors(t *testing.T) {
+	tk := NewTask[string]("send-invite", TaskOpts{})
+	if tk.Name() != "send-invite" {
+		t.Fatalf("Name() = %q, want %q", tk.Name(), "send-invite")
+	}
+	if tk.Queue() != "send-invite" {
+		t.Fatalf("Queue() = %q, want %q", tk.Queue(), "send-invite")
+	}
+	custom := NewTask[string]("send-invite", TaskOpts{Queue: "mail"})
+	if custom.Queue() != "mail" {
+		t.Fatalf("Queue() = %q, want %q", custom.Queue(), "mail")
+	}
+}
+
+func TestTaskEncodeRoundTrip(t *testing.T) {
+	type payload struct {
+		Name string
+		Age  int
+	}
+	tk := NewTask[payload]("send-invite", TaskOpts{})
+	want := payload{Name: "Alice", Age: 30}
+	data, err := tk.Encode(want)
+	if err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+	var got payload
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestTaskEncodeDeferredError(t *testing.T) {
+	tk := NewTask[string]("", TaskOpts{})
+	if tk.err == nil {
+		t.Fatal("test setup: expected a deferred construction error")
+	}
+	if _, err := tk.Encode("hello"); err != tk.err {
+		t.Fatalf("Encode() error = %v, want the deferred construction error %v", err, tk.err)
 	}
 }
 

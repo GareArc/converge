@@ -47,6 +47,7 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 	if st.cad.err != nil {
 		return
 	}
+	q := e.queue
 	lastKey := e.key("sched", strconv.Itoa(idx), "last")
 	cursorKey := e.key("sched", strconv.Itoa(idx), "cursor")
 	readLast := func(ctx context.Context) (time.Time, bool) { return e.readTime(ctx, lastKey) }
@@ -57,14 +58,20 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 		writeLast = func(_ context.Context, t time.Time) { local = t }
 	}
 	for ctx.Err() == nil {
+		if !q.awaitUnpaused(ctx) {
+			return
+		}
 		last, ok := readLast(ctx)
 		now := e.deps.Clock.Now()
 		if !ok {
-			if !e.runPass(ctx, st, cursorKey) {
+			release := e.markBusy()
+			if !e.runPass(ctx, q, st, cursorKey) {
+				release()
 				return
 			}
 			writeLast(ctx, now)
 			e.checkOverrun(ctx, st, writeLast, now)
+			release()
 			continue
 		}
 		pending := boundaries(st.cad, last, now)
@@ -77,14 +84,17 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 			}
 			continue
 		}
+		release := e.markBusy()
 		switch {
 		case len(pending) == 1 || st.cad.missedTick() == RunOnce:
-			if !e.runPass(ctx, st, cursorKey) {
+			if !e.runPass(ctx, q, st, cursorKey) {
+				release()
 				return
 			}
 		case st.cad.missedTick() == Catchup:
 			for range pending {
-				if !e.runPass(ctx, st, cursorKey) {
+				if !e.runPass(ctx, q, st, cursorKey) {
+					release()
 					return
 				}
 			}
@@ -95,6 +105,7 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 		}
 		writeLast(ctx, latest)
 		e.checkOverrun(ctx, st, writeLast, latest)
+		release()
 	}
 }
 
@@ -110,7 +121,19 @@ func (e *engine) checkOverrun(ctx context.Context, st *scheduleTrigger, writeLas
 	writeLast(ctx, latestBoundary(st.cad, over[len(over)-1], now))
 }
 
-func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey string) bool {
+func (e *engine) markBusy() func() {
+	e.mu.Lock()
+	e.passes++
+	e.mu.Unlock()
+	return func() {
+		e.mu.Lock()
+		e.passes--
+		e.mu.Unlock()
+	}
+}
+
+func (e *engine) runPass(ctx context.Context, q *wakeQueue, st *scheduleTrigger, cursorKey string) bool {
+	defer e.markBusy()()
 	cursor := e.readString(ctx, cursorKey)
 	retry := triggerRestartMin
 	for {
@@ -129,7 +152,7 @@ func (e *engine) runPass(ctx context.Context, st *scheduleTrigger, cursorKey str
 		}
 		retry = triggerRestartMin
 		for _, id := range ids {
-			e.hint(ctx, id)
+			e.hintVia(ctx, q, id)
 		}
 		if next == "" {
 			e.deleteKey(ctx, cursorKey)

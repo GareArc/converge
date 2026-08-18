@@ -52,3 +52,14 @@ func NewTask[T any](name string, o TaskOpts) Task[T] {
 	}
 	return t
 }
+
+func (t Task[T]) Name() string { return t.name }
+
+func (t Task[T]) Queue() string { return t.queue }
+
+func (t Task[T]) Encode(v any) ([]byte, error) {
+	if t.err != nil {
+		return nil, t.err
+	}
+	return t.codec.Marshal(v)
+}

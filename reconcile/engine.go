@@ -13,6 +13,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
 	"github.com/GareArc/converge/internal/mw"
+	"github.com/GareArc/converge/internal/pausegate"
 	"github.com/GareArc/converge/internal/sig"
 	"github.com/GareArc/converge/internal/tokenbucket"
 )
@@ -58,8 +59,12 @@ type engine struct {
 
 	mu          sync.Mutex
 	queue       *wakeQueue
+	gate        pausegate.Gate
 	lastSuccess time.Time
 	consecFails int
+	passes      int
+	active      bool
+	opsInFlight sync.WaitGroup
 }
 
 func (e *engine) Name() string { return e.cfg.name }
@@ -84,7 +89,7 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 		deadLetterAfter: e.cfg.deadLetterAfter,
 		backoff:         backoffAfter,
 		floor:           backoff.Floor,
-	}, e.cfg.paused)
+	}, e.gate.Paused)
 	e.mu.Unlock()
 	return nil
 }
@@ -114,6 +119,88 @@ func (e *engine) Poke(id string) error {
 	return nil
 }
 
+func (e *engine) Quiet() bool {
+	e.mu.Lock()
+	q := e.queue
+	inFlight := e.passes > 0
+	e.mu.Unlock()
+	if q == nil {
+		return true
+	}
+	if inFlight {
+		return false
+	}
+	return q.quiet(e.deps.Clock.Now())
+}
+
+func (e *engine) Hint(id string) error {
+	q := e.wakeQueueRef()
+	if q == nil {
+		return fmt.Errorf("reconcile: job %q is not running", e.cfg.name)
+	}
+	if id == "" && !e.cfg.single {
+		return fmt.Errorf("reconcile: job %q: hint needs an id", e.cfg.name)
+	}
+	if e.cfg.single {
+		id = ""
+	}
+	e.hintVia(context.Background(), q, ID(id))
+	return nil
+}
+
+func (e *engine) SetPaused(paused bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	changed, _ := e.gate.SetPaused(paused)
+	if changed && e.queue != nil {
+		e.queue.setPaused(paused)
+	}
+}
+
+func (e *engine) admitOps() (*wakeQueue, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !e.active {
+		return nil, false
+	}
+	e.opsInFlight.Add(1)
+	return e.queue, true
+}
+
+func (e *engine) isActive() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.active
+}
+
+func (e *engine) RunPassNow(ctx context.Context) error {
+	q, ok := e.admitOps()
+	if !ok {
+		return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)
+	}
+	defer e.opsInFlight.Done()
+	found := false
+	for idx, t := range e.cfg.triggers {
+		st, ok := t.(*scheduleTrigger)
+		if !ok {
+			continue
+		}
+		if !e.isActive() {
+			return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)
+		}
+		found = true
+		cursorKey := e.key("opspass", strconv.Itoa(idx))
+		e.deleteKey(ctx, cursorKey)
+		if !e.runPass(ctx, q, st, cursorKey) {
+			return ctx.Err()
+		}
+	}
+	if !found {
+		return fmt.Errorf("reconcile: job %q: run-pass-now needs a Schedule trigger", e.cfg.name)
+	}
+	return nil
+}
+
 func (e *engine) Stats() converge.JobStats {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -132,19 +219,96 @@ func (e *engine) Stats() converge.JobStats {
 	return s
 }
 
+func (e *engine) Info() converge.JobInfo {
+	settings := map[string]string{
+		"concurrency": strconv.Itoa(e.cfg.concurrency),
+	}
+	if sched := scheduleSetting(e.cfg.triggers); sched != "" {
+		settings["schedule"] = sched
+	}
+	if trig := triggersSetting(e.cfg.triggers); trig != "" {
+		settings["triggers"] = trig
+	}
+	if e.cfg.deadLetterAfter != 0 {
+		settings["dead-letter-after"] = strconv.Itoa(e.cfg.deadLetterAfter)
+	}
+	if !e.cfg.rateLimit.IsZero() {
+		settings["rate-limit"] = e.cfg.rateLimit.String()
+	}
+	if v := versionsSetting(e.cfg.versions); v != "" {
+		settings["versions"] = v
+	}
+	if e.cfg.allowUnscheduled {
+		settings["allow-unscheduled"] = "true"
+	}
+	e.mu.Lock()
+	paused := e.gate.Paused
+	e.mu.Unlock()
+	return converge.JobInfo{
+		Job:      e.cfg.name,
+		Surface:  converge.SurfaceReconcile,
+		RunMode:  e.cfg.runMode,
+		Paused:   paused,
+		Settings: settings,
+	}
+}
+
+func triggerLabel(t Trigger) string {
+	switch tr := t.(type) {
+	case *scheduleTrigger:
+		return "schedule"
+	case *messageTrigger:
+		return "on-message " + tr.queue
+	default:
+		return "custom"
+	}
+}
+
+func triggersSetting(triggers []Trigger) string {
+	labels := make([]string, 0, len(triggers))
+	for _, t := range triggers {
+		labels = append(labels, triggerLabel(t))
+	}
+	return strings.Join(labels, " + ")
+}
+
+func scheduleSetting(triggers []Trigger) string {
+	var rendered []string
+	for _, t := range triggers {
+		if st, ok := t.(*scheduleTrigger); ok {
+			rendered = append(rendered, st.cad.render())
+		}
+	}
+	return strings.Join(rendered, " + ")
+}
+
+func versionsSetting(v VersionSource) string {
+	if v == nil {
+		return ""
+	}
+	if t, ok := v.(*Tracker); ok {
+		return t.namespace
+	}
+	return "custom"
+}
+
 func (e *engine) hint(ctx context.Context, id ID) {
+	e.hintVia(ctx, e.queue, id)
+}
+
+func (e *engine) hintVia(ctx context.Context, q *wakeQueue, id ID) {
 	if id == "" && !e.cfg.single {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
 		return
 	}
-	res := e.queue.wake(id, wakeHint)
-	if res == wakeDroppedParked && e.tryRevive(ctx, id) {
+	res := q.wake(id, wakeHint)
+	if res == wakeDroppedParked && e.tryRevive(ctx, q, id) {
 		return
 	}
 	e.report(id, res)
 }
 
-func (e *engine) tryRevive(ctx context.Context, id ID) bool {
+func (e *engine) tryRevive(ctx context.Context, q *wakeQueue, id ID) bool {
 	if e.cfg.versions == nil {
 		return false
 	}
@@ -157,7 +321,7 @@ func (e *engine) tryRevive(ctx context.Context, id ID) bool {
 		return false
 	}
 	e.deleteKey(ctx, e.parkKey(id))
-	return e.queue.wake(id, wakeVersion) == wakeRevived
+	return q.wake(id, wakeVersion) == wakeRevived
 }
 
 func (e *engine) parkedVersion(ctx context.Context, id ID) (Version, bool) {
@@ -433,6 +597,7 @@ func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 		return err
 	}
 	defer func() {
+		e.opsInFlight.Wait()
 		e.mu.Lock()
 		e.queue = nil
 		e.mu.Unlock()
@@ -496,6 +661,15 @@ func (e *engine) leaseLoop(ctx context.Context) error {
 }
 
 func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
+	e.mu.Lock()
+	e.active = true
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		e.active = false
+		e.mu.Unlock()
+	}()
+
 	intake, stopIntake := context.WithCancel(ctx)
 	defer stopIntake()
 	hctx, stopHandlers := context.WithCancel(context.WithoutCancel(ctx))

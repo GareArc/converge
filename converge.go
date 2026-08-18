@@ -1,6 +1,8 @@
 package converge
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"slices"
 	"time"
@@ -16,6 +18,7 @@ type Options struct {
 	Clock        Clock
 	LeaseTTL     time.Duration
 	DrainTimeout time.Duration
+	attach       func(rt *Runtime)
 }
 
 const (
@@ -40,10 +43,21 @@ func New(o Options) (*Runtime, error) {
 		o.Clock = systemClock{}
 	}
 	o.Middleware = slices.Clone(o.Middleware)
-	return &Runtime{
-		opts:   o,
-		jobs:   map[string]job{},
-		queues: map[string]queueBinding{},
-		ready:  make(chan struct{}),
-	}, nil
+	rt := &Runtime{
+		opts:    o,
+		jobs:    map[string]job{},
+		queues:  map[string]queueBinding{},
+		ready:   make(chan struct{}),
+		replica: newReplicaID(),
+	}
+	if o.attach != nil {
+		o.attach(rt)
+	}
+	return rt, nil
+}
+
+func newReplicaID() string {
+	var b [16]byte
+	rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }

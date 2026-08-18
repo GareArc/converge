@@ -17,7 +17,9 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
+	"github.com/GareArc/converge/internal/durfmt"
 	"github.com/GareArc/converge/internal/mw"
+	"github.com/GareArc/converge/internal/pausegate"
 	"github.com/GareArc/converge/internal/sig"
 	"github.com/GareArc/converge/internal/tokenbucket"
 )
@@ -40,7 +42,6 @@ type config struct {
 	mq          converge.MQ
 	rateLimit   converge.Rate
 	middleware  []converge.Middleware
-	paused      bool
 }
 
 type engine struct {
@@ -57,6 +58,8 @@ type engine struct {
 	deadLetters int
 	lastSuccess time.Time
 	consecFails int
+	gate        pausegate.Gate
+	cycleCancel context.CancelFunc
 }
 
 func (e *engine) Name() string { return e.cfg.info.name }
@@ -69,6 +72,41 @@ func (e *engine) QueueBinding() (string, converge.MQ) { return e.cfg.info.queue,
 
 func (e *engine) Poke(string) error {
 	return fmt.Errorf("worker: job %q: poke is a reconcile verb; requeue dead letters via ops instead", e.cfg.info.name)
+}
+
+func (e *engine) Quiet() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.depth == 0
+}
+
+func (e *engine) Hint(string) error {
+	return fmt.Errorf("worker: job %q: hint is a reconcile verb; workers react to deliveries instead", e.cfg.info.name)
+}
+
+func (e *engine) RunPassNow(context.Context) error {
+	return fmt.Errorf("worker: job %q: passes are a reconcile verb; workers have no schedule to run", e.cfg.info.name)
+}
+
+func (e *engine) SetPaused(paused bool) {
+	e.mu.Lock()
+	changed, closeCh := e.gate.SetPaused(paused)
+	var cancel context.CancelFunc
+	if changed && paused {
+		cancel = e.cycleCancel
+		e.cycleCancel = nil
+	}
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if closeCh != nil {
+		close(closeCh)
+	}
+}
+
+func (e *engine) awaitUnpaused(ctx context.Context) bool {
+	return pausegate.AwaitUnpaused(ctx, &e.mu, &e.gate)
 }
 
 func (e *engine) durable() bool { return e.cfg.runMode != converge.OnAllReplicas }
@@ -97,6 +135,34 @@ func (e *engine) Stats() converge.JobStats {
 		LastSuccess:      e.lastSuccess,
 		ConsecutiveFails: e.consecFails,
 	}
+}
+
+func (e *engine) Info() converge.JobInfo {
+	settings := map[string]string{
+		"concurrency":    strconv.Itoa(e.cfg.concurrency),
+		"visibility":     durfmt.Format(e.cfg.visibility),
+		"retry":          retrySetting(e.cfg.retry),
+		"schema-version": strconv.Itoa(e.cfg.info.version),
+	}
+	if !e.cfg.rateLimit.IsZero() {
+		settings["rate-limit"] = e.cfg.rateLimit.String()
+	}
+	e.mu.Lock()
+	paused := e.gate.Paused
+	e.mu.Unlock()
+	return converge.JobInfo{
+		Job:      e.cfg.info.name,
+		Surface:  converge.SurfaceWorker,
+		RunMode:  e.cfg.runMode,
+		Queue:    e.cfg.info.queue,
+		Paused:   paused,
+		Settings: settings,
+	}
+}
+
+func retrySetting(r RetryPolicy) string {
+	return fmt.Sprintf("%d attempts, backoff %s..%s, max-age %s",
+		r.MaxAttempts, durfmt.Format(r.MinBackoff), durfmt.Format(r.MaxBackoff), durfmt.Format(r.MaxAge))
 }
 
 func (e *engine) bind(deps converge.JobDeps) error {
@@ -164,18 +230,36 @@ func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	if err := e.bind(deps); err != nil {
 		return err
 	}
-	if e.cfg.paused {
-		e.markReady()
-		<-ctx.Done()
-		return nil
-	}
-	switch e.cfg.runMode {
-	case converge.OnOneReplica:
-		return e.leaseLoop(ctx)
-	default:
-		e.markReady()
-		e.runActive(ctx, nil)
-		return nil
+	e.markReady()
+	for {
+		if !e.awaitUnpaused(ctx) {
+			return nil
+		}
+		cycleCtx, cancel := context.WithCancel(ctx)
+		e.mu.Lock()
+		if e.gate.Paused {
+			e.mu.Unlock()
+			cancel()
+			continue
+		}
+		e.cycleCancel = cancel
+		e.mu.Unlock()
+
+		switch e.cfg.runMode {
+		case converge.OnOneReplica:
+			e.leaseLoop(cycleCtx)
+		default:
+			e.runActive(cycleCtx, nil)
+		}
+
+		e.mu.Lock()
+		e.cycleCancel = nil
+		e.mu.Unlock()
+		cancel()
+
+		if ctx.Err() != nil {
+			return nil
+		}
 	}
 }
 
@@ -522,7 +606,7 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 	e.observeRun(meta, took, nil)
 }
 
-func (e *engine) leaseLoop(ctx context.Context) error {
+func (e *engine) leaseLoop(ctx context.Context) {
 	name := e.key("lease")
 	retry := e.deps.LeaseTTL / 3
 	e.markReady()
@@ -535,7 +619,7 @@ func (e *engine) leaseLoop(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
-			return nil
+			return
 		case <-e.deps.Clock.After(retry):
 		}
 	}

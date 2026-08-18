@@ -209,6 +209,30 @@ func (q *MQ) ConsumeGroup(ctx context.Context, queue, group string, deliver func
 	return q.consumeGroup(ctx, queue, group, deliver)
 }
 
+func (q *MQ) Idle() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	now := q.clock.Now()
+	for _, qu := range q.queues {
+		for _, g := range qu.groups {
+			if len(g.inflight) > 0 {
+				return false
+			}
+			for _, msg := range g.pending {
+				if !msg.availableAt.After(now) {
+					return false
+				}
+			}
+		}
+		for _, sub := range qu.subs {
+			if len(sub.pending) > 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func (q *MQ) PublishDelayed(_ context.Context, queue string, m converge.Message, delay time.Duration) error {
 	return q.publish(queue, m, delay)
 }

@@ -58,7 +58,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	consumerRec := &recorder{}
+	consumerRec := &convergetest.Recorder{}
 	consumerRt, err := converge.New(converge.Options{
 		Namespace: "wt",
 		MQ:        mq,
@@ -130,26 +130,26 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: rejectedInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { return mailer.count(cleanInviteEmail) == 1 })
-	await(t, func() bool {
+	convergetest.Await(t, func() bool { return mailer.count(cleanInviteEmail) == 1 })
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		_, ok := messageIDs[rejectedInviteEmail]
 		return ok
 	})
-	assertStable(t, func() bool { return mailer.count(cleanInviteEmail) == 1 })
+	convergetest.AssertStable(t, func() bool { return mailer.count(cleanInviteEmail) == 1 })
 
 	mu.Lock()
 	cleanID, rejectID := messageIDs[cleanInviteEmail], messageIDs[rejectedInviteEmail]
 	mu.Unlock()
 
-	if n := consumer.rec.count(func(e converge.Event) bool {
+	if n := consumer.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.ID == cleanID && rc.Err == nil
 	}); n != 1 {
 		t.Fatalf("clean send RunCompleted{Err:nil} count = %d, want 1", n)
 	}
-	if n := consumer.rec.count(func(e converge.Event) bool {
+	if n := consumer.rec.Count(func(e converge.Event) bool {
 		md, ok := e.(converge.MessageDiscarded)
 		return ok && md.MessageID == rejectID && md.Reason == "rejected address"
 	}); n != 1 {
@@ -162,12 +162,12 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: throttledInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(throttleAttempts) == 1
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(throttleAttempts) == 1
@@ -183,20 +183,20 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	if want := []int{1, 1}; !reflect.DeepEqual(gotThrottle, want) {
 		t.Fatalf("throttled attempts = %v, want %v", gotThrottle, want)
 	}
-	await(t, func() bool { return mailer.count(throttledInviteEmail) == 1 })
+	convergetest.Await(t, func() bool { return mailer.count(throttledInviteEmail) == 1 })
 
 	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: hardFailInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	consumer.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 2 })
 	consumer.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 3 })
-	await(t, func() bool {
-		return consumer.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return consumer.rec.Count(func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
 			return ok && dl.Reason == converge.DeadLetterMaxAttempts
 		}) == 1
 	})
-	assertStable(t, func() bool { return atomic.LoadInt32(&hardFailRuns) == 3 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&hardFailRuns) == 3 })
 	if got := atomic.LoadInt32(&escalations); got != 1 {
 		t.Fatalf("escalations = %d, want 1", got)
 	}
@@ -240,7 +240,7 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 	}
 
 	w.advanceUntil(t, time.Minute, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
 			return ok && dl.Reason == converge.DeadLetterMaxAge
 		}) == 1
@@ -250,7 +250,7 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 		t.Fatalf("handler ran %d times, want <= 6", got)
 	}
 	stopped := atomic.LoadInt32(&runs)
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == stopped })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == stopped })
 
 	keys := dlqKeys(t, w, "job")
 	if len(keys) != 1 {
@@ -290,8 +290,8 @@ func TestProducerFromResolvesHandlerBinding(t *testing.T) {
 	if err := bound.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { return atomic.LoadInt32(&boundRuns) == 1 })
-	assertStable(t, func() bool { return atomic.LoadInt32(&boundRuns) == 1 })
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&boundRuns) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&boundRuns) == 1 })
 
 	if err := unbound.Enqueue(context.Background(), p, "world", EnqueueOpts{}); err != nil {
 		t.Fatal(err)

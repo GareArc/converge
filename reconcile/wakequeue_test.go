@@ -1,7 +1,9 @@
 package reconcile
 
 import (
+	"context"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -332,6 +334,41 @@ func TestCountsAndReset(t *testing.T) {
 	}
 }
 
+func TestQuietReportsQueueState(t *testing.T) {
+	q, clock := newTestQueue(2, false)
+	if !q.quiet(clock.Now()) {
+		t.Fatal("empty queue must be quiet")
+	}
+	q.wake("a", wakeHint)
+	if q.quiet(clock.Now()) {
+		t.Fatal("a due queued id must not be quiet")
+	}
+	mustPop(t, q, clock, "a")
+	if q.quiet(clock.Now()) {
+		t.Fatal("a running id must not be quiet")
+	}
+	q.finish("a", finishFailure, 0)
+	if !q.quiet(clock.Now()) {
+		t.Fatal("a future-due backoff id must be quiet")
+	}
+	due, ok := q.nextDue()
+	if !ok {
+		t.Fatal("backoff id must have a due time")
+	}
+	if q.quiet(due) {
+		t.Fatal("an id due now must not be quiet")
+	}
+	clock.Advance(time.Minute)
+	mustPop(t, q, clock, "a")
+	q.finish("a", finishFailure, 0)
+	if q.counts().parked != 1 {
+		t.Fatal("a must be parked")
+	}
+	if !q.quiet(clock.Now()) {
+		t.Fatal("a parked id must be quiet")
+	}
+}
+
 func heapLen(q *wakeQueue) int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -489,5 +526,62 @@ func TestStaleDuplicateHeapEntryDiscardedAfterDispatch(t *testing.T) {
 	mustPop(t, q, clock, "x")
 	if _, ok := q.next(clock.Now()); ok {
 		t.Fatal("duplicate stale heap entry must be discarded, not redispatched")
+	}
+}
+
+func TestSetPausedSameValueDoesNotSignalNotify(t *testing.T) {
+	q, _ := newTestQueue(0, true)
+	select {
+	case <-q.notify:
+	default:
+	}
+	q.setPaused(true)
+	select {
+	case <-q.notify:
+		t.Fatal("same-value setPaused(true) must not signal notify")
+	default:
+	}
+}
+
+func TestAwaitUnpausedBlocksUntilResumed(t *testing.T) {
+	q, _ := newTestQueue(0, true)
+	var mu sync.Mutex
+	returned := false
+	go func() {
+		q.awaitUnpaused(context.Background())
+		mu.Lock()
+		returned = true
+		mu.Unlock()
+	}()
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
+	q.setPaused(false)
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
+}
+
+func TestAwaitUnpausedReturnsFalseOnCtxDone(t *testing.T) {
+	q, _ := newTestQueue(0, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	var mu sync.Mutex
+	var ok, returned bool
+	go func() {
+		result := q.awaitUnpaused(ctx)
+		mu.Lock()
+		ok, returned = result, true
+		mu.Unlock()
+	}()
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
+	cancel()
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
+	mu.Lock()
+	defer mu.Unlock()
+	if ok {
+		t.Fatal("awaitUnpaused must return false when ctx is done before resume")
+	}
+}
+
+func TestAwaitUnpausedReturnsImmediatelyWhenNotPaused(t *testing.T) {
+	q, _ := newTestQueue(0, false)
+	if !q.awaitUnpaused(context.Background()) {
+		t.Fatal("awaitUnpaused on an unpaused queue must return true immediately")
 	}
 }

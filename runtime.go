@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/GareArc/converge/internal/ctl"
 	"github.com/GareArc/converge/internal/hook"
 )
 
@@ -15,6 +16,11 @@ type job interface {
 	Ready() <-chan struct{}
 	Poke(id string) error
 	Stats() JobStats
+	Info() JobInfo
+	Quiet() bool
+	Hint(id string) error
+	RunPassNow(ctx context.Context) error
+	SetPaused(paused bool)
 }
 
 type queueBound interface {
@@ -27,8 +33,9 @@ type queueBinding struct {
 }
 
 type Runtime struct {
-	opts  Options
-	ready chan struct{}
+	opts    Options
+	ready   chan struct{}
+	replica string
 
 	mu     sync.Mutex
 	jobs   map[string]job
@@ -55,19 +62,111 @@ func init() {
 			return hook.ProducerWiring{}, fmt.Errorf("converge: producer: %T is not a usable *converge.Runtime", rt)
 		}
 		return hook.ProducerWiring{
-			MQ:    r.opts.MQ,
-			Clock: r.opts.Clock,
-			QueueMQ: func(queue string) any {
-				r.mu.Lock()
-				defer r.mu.Unlock()
-				b, ok := r.queues[queue]
-				if !ok || b.mq == nil {
-					return nil
-				}
-				return b.mq
-			},
+			MQ:      r.opts.MQ,
+			Clock:   r.opts.Clock,
+			QueueMQ: r.queueMQ,
 		}, nil
 	}
+	hook.Inspect = func(rt any) (any, error) {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return nil, fmt.Errorf("converge: inspect: %T is not a usable *converge.Runtime", rt)
+		}
+		r.mu.Lock()
+		jobs := make([]job, 0, len(r.order))
+		for _, name := range r.order {
+			jobs = append(jobs, r.jobs[name])
+		}
+		r.mu.Unlock()
+		out := make([]JobInfo, 0, len(jobs))
+		for _, j := range jobs {
+			out = append(out, j.Info())
+		}
+		return out, nil
+	}
+	hook.OpsDeps = func(rt any) (hook.OpsWiring, error) {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return hook.OpsWiring{}, fmt.Errorf("converge: ops: %T is not a usable *converge.Runtime", rt)
+		}
+		return hook.OpsWiring{
+			KV:        r.opts.KV,
+			MQ:        r.opts.MQ,
+			Clock:     r.opts.Clock,
+			Namespace: r.opts.Namespace,
+			Replica:   r.replica,
+			QueueMQ:   r.queueMQ,
+		}, nil
+	}
+	hook.Hint = func(rt any, jobName, id string) error {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return fmt.Errorf("converge: hint: %T is not a usable *converge.Runtime", rt)
+		}
+		r.mu.Lock()
+		j, ok := r.jobs[jobName]
+		r.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("converge: unknown job %q", jobName)
+		}
+		return j.Hint(id)
+	}
+	hook.RunPassNow = func(rt any, ctx context.Context, jobName string) error {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return fmt.Errorf("converge: run-pass-now: %T is not a usable *converge.Runtime", rt)
+		}
+		r.mu.Lock()
+		j, ok := r.jobs[jobName]
+		r.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("converge: unknown job %q", jobName)
+		}
+		return j.RunPassNow(ctx)
+	}
+	hook.Quiet = func(rt any) bool {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return false
+		}
+		r.mu.Lock()
+		jobs := make([]job, 0, len(r.order))
+		for _, name := range r.order {
+			jobs = append(jobs, r.jobs[name])
+		}
+		r.mu.Unlock()
+		for _, j := range jobs {
+			if !j.Quiet() {
+				return false
+			}
+		}
+		return true
+	}
+	hook.ControlDispatch = func(rt any, ctx context.Context, req ctl.Request) ([]ctl.Response, error) {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return nil, fmt.Errorf("converge: control: %T is not a usable *converge.Runtime", rt)
+		}
+		return r.controlDispatch(ctx, req)
+	}
+	hook.AttachOptions = func(o any, attach func(rt any)) any {
+		opts, ok := o.(Options)
+		if !ok {
+			return o
+		}
+		opts.attach = func(rt *Runtime) { attach(rt) }
+		return opts
+	}
+}
+
+func (rt *Runtime) queueMQ(queue string) any {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	b, ok := rt.queues[queue]
+	if !ok || b.mq == nil {
+		return nil
+	}
+	return b.mq
 }
 
 func (rt *Runtime) register(j job) error {
@@ -144,6 +243,13 @@ func (rt *Runtime) Run(ctx context.Context) error {
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	if rt.opts.KV != nil {
+		if err := rt.applyPausedFlags(runCtx, jobs); err != nil {
+			return err
+		}
+	}
+	rt.startControlListener(runCtx)
 
 	go func() {
 		for _, j := range jobs {

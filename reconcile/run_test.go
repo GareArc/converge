@@ -16,7 +16,7 @@ import (
 type liveEngine struct {
 	e     *engine
 	clock *convergetest.Clock
-	rec   *eventRecorder
+	rec   *convergetest.Recorder
 	lease *inmem.Lease
 	kv    converge.KV
 	done  chan error
@@ -26,7 +26,7 @@ func startRun(t *testing.T, spec Spec, shared *liveEngine) (*liveEngine, context
 	t.Helper()
 	var (
 		clock *convergetest.Clock
-		rec   *eventRecorder
+		rec   *convergetest.Recorder
 		lease *inmem.Lease
 		kv    converge.KV
 	)
@@ -35,7 +35,7 @@ func startRun(t *testing.T, spec Spec, shared *liveEngine) (*liveEngine, context
 		kv = shared.kv
 	} else {
 		clock = convergetest.NewClock(wqStart)
-		rec = &eventRecorder{}
+		rec = &convergetest.Recorder{}
 		lease = inmem.NewLeaseWithClock(clock)
 		kv = inmem.NewKVWithClock(clock)
 	}
@@ -69,15 +69,15 @@ func waitRun(t *testing.T, le *liveEngine) error {
 	}
 }
 
-func acquired(rec *eventRecorder) int {
-	return rec.count(func(e converge.Event) bool {
+func acquired(rec *convergetest.Recorder) int {
+	return rec.Count(func(e converge.Event) bool {
 		lt, ok := e.(converge.LeaseTransition)
 		return ok && lt.Acquired
 	})
 }
 
-func released(rec *eventRecorder) int {
-	return rec.count(func(e converge.Event) bool {
+func released(rec *convergetest.Recorder) int {
+	return rec.Count(func(e converge.Event) bool {
 		lt, ok := e.(converge.LeaseTransition)
 		return ok && !lt.Acquired
 	})
@@ -96,7 +96,7 @@ func TestRunRejectsBadDeps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deps := converge.JobDeps{KV: inmem.NewKV(), Clock: convergetest.NewClock(wqStart), Observer: &eventRecorder{}}
+	deps := converge.JobDeps{KV: inmem.NewKV(), Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}}
 	if err := e.Run(context.Background(), deps); err == nil {
 		t.Fatal("OnOneReplica without a Lease must fail Run")
 	}
@@ -104,7 +104,7 @@ func TestRunRejectsBadDeps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deps2 := converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &eventRecorder{}}
+	deps2 := converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}}
 	if err := e2.Run(context.Background(), deps2); err == nil {
 		t.Fatal("Schedule without KV must fail Run")
 	}
@@ -121,7 +121,7 @@ func TestVersionsRequireKV(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = e.bind(converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &eventRecorder{}})
+	err = e.bind(converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}})
 	if err == nil || !strings.Contains(err.Error(), "Versions needs Options.KV") {
 		t.Fatalf("bind without KV = %v", err)
 	}
@@ -134,8 +134,8 @@ func TestLeaderRunsPassStandbyWaits(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("leader never ready")
 	}
-	await(t, func() bool { return acquired(leader.rec) == 1 })
-	await(t, func() bool { return runCount(&testEngine{rec: leader.rec}) >= 1 })
+	convergetest.Await(t, func() bool { return acquired(leader.rec) == 1 })
+	convergetest.Await(t, func() bool { return runCount(&testEngine{rec: leader.rec}) >= 1 })
 
 	standbySpec := specWithSchedule()
 	standby, _ := startRun(t, standbySpec, leader)
@@ -144,15 +144,15 @@ func TestLeaderRunsPassStandbyWaits(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("standby must be ready without the lease")
 	}
-	assertStable(t, func() bool { return acquired(leader.rec) == 1 })
+	convergetest.AssertStable(t, func() bool { return acquired(leader.rec) == 1 })
 }
 
 func TestLeaseLossStepsDownAndReelects(t *testing.T) {
 	leader, _ := startRun(t, specWithSchedule(), nil)
-	await(t, func() bool { return acquired(leader.rec) == 1 })
+	convergetest.Await(t, func() bool { return acquired(leader.rec) == 1 })
 	leader.lease.Expire("converge/reconcile/job/lease")
-	await(t, func() bool { return released(leader.rec) >= 1 })
-	await(t, func() bool { return acquired(leader.rec) >= 2 })
+	convergetest.Await(t, func() bool { return released(leader.rec) >= 1 })
+	convergetest.Await(t, func() bool { return acquired(leader.rec) >= 2 })
 }
 
 func TestLeaseLossCancelsInFlightNeutrally(t *testing.T) {
@@ -172,8 +172,8 @@ func TestLeaseLossCancelsInFlightNeutrally(t *testing.T) {
 		t.Fatal("handler never started")
 	}
 	le.lease.Expire("converge/reconcile/job/lease")
-	await(t, func() bool { return released(le.rec) >= 1 })
-	if n := le.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool { return released(le.rec) >= 1 })
+	if n := le.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Err != nil
 	}); n != 0 {
@@ -197,7 +197,7 @@ func TestShutdownGivesDrainGraceThenReturnsNil(t *testing.T) {
 		t.Fatal("handler never started")
 	}
 	cancel()
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		select {
 		case <-le.done:
 			return false
@@ -225,7 +225,7 @@ func TestShutdownGivesDrainGraceThenReturnsNil(t *testing.T) {
 
 func TestShutdownReleasesLease(t *testing.T) {
 	le, cancel := startRun(t, specWithSchedule(), nil)
-	await(t, func() bool { return acquired(le.rec) == 1 })
+	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })
 	cancel()
 	if err := waitRun(t, le); err != nil {
 		t.Fatal(err)
@@ -248,7 +248,7 @@ func TestAllReplicasRunsWithoutLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	clock := convergetest.NewClock(wqStart)
-	rec := &eventRecorder{}
+	rec := &convergetest.Recorder{}
 	deps := converge.JobDeps{
 		KV:           inmem.NewKVWithClock(clock),
 		Observer:     rec,
@@ -264,8 +264,8 @@ func TestAllReplicasRunsWithoutLease(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("never ready")
 	}
-	await(t, func() bool {
-		return rec.count(func(ev converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return rec.Count(func(ev converge.Event) bool {
 			_, ok := ev.(converge.RunCompleted)
 			return ok
 		}) >= 1
@@ -350,7 +350,7 @@ func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rec := &eventRecorder{}
+	rec := &convergetest.Recorder{}
 	deps := converge.JobDeps{
 		Lease:        lease,
 		KV:           inmem.NewKVWithClock(clock),
@@ -408,8 +408,8 @@ func TestPausedSpecDropsPokes(t *testing.T) {
 	if err := le.e.Poke("x"); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return le.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return le.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.ID == "x" && wd.Reason == converge.DiscardPaused
 		}) >= 1
@@ -496,7 +496,7 @@ func (h *flakyHandle) Done() <-chan struct{} { return h.done }
 
 func TestLeaseAcquireRetriesTransientErrors(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
-	rec := &eventRecorder{}
+	rec := &convergetest.Recorder{}
 	lease := &flakyLease{acquireErrs: 2}
 	e, err := newEngine(specWithSchedule())
 	if err != nil {
@@ -540,7 +540,7 @@ func TestLeaseAcquireRetriesTransientErrors(t *testing.T) {
 
 func TestHeartbeatExtendErrorStepsDownAndReacquires(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
-	rec := &eventRecorder{}
+	rec := &convergetest.Recorder{}
 	lease := &flakyLease{}
 	e, err := newEngine(specWithSchedule())
 	if err != nil {
@@ -562,7 +562,7 @@ func TestHeartbeatExtendErrorStepsDownAndReacquires(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("never ready")
 	}
-	await(t, func() bool { return acquired(rec) == 1 })
+	convergetest.Await(t, func() bool { return acquired(rec) == 1 })
 	lease.armExtendErr()
 	deadline := time.Now().Add(2 * time.Second)
 	for released(rec) == 0 {
@@ -601,7 +601,7 @@ func startDrainingLeader(t *testing.T) (*convergetest.Clock, *flakyLease, contex
 	deps := converge.JobDeps{
 		Lease:        lease,
 		KV:           inmem.NewKVWithClock(clock),
-		Observer:     &eventRecorder{},
+		Observer:     &convergetest.Recorder{},
 		Clock:        clock,
 		LeaseTTL:     30 * time.Second,
 		DrainTimeout: 30 * time.Second,
@@ -664,7 +664,7 @@ func TestHeartbeatExtendsThroughDrain(t *testing.T) {
 
 func bootPersistent(t *testing.T, clock *convergetest.Clock, kv converge.KV, fn Func, dla int) (*testEngine, chan error, context.CancelFunc) {
 	t.Helper()
-	rec := &eventRecorder{}
+	rec := &convergetest.Recorder{}
 	e := &engine{cfg: config{name: "job", concurrency: 1, deadLetterAfter: dla, allowUnscheduled: true, rec: fn}, ready: make(chan struct{})}
 	deps := converge.JobDeps{
 		KV:           kv,
@@ -693,13 +693,13 @@ func TestParkedMarksSurviveRestart(t *testing.T) {
 		return errors.New("boom")
 	}, 1)
 	te1.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te1.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te1.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.IDParked)
 			return ok
 		}) == 1
 	})
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		_, ok, err := kv.Get(context.Background(), te1.e.parkKey("a"))
 		return err == nil && ok
 	})
@@ -714,10 +714,10 @@ func TestParkedMarksSurviveRestart(t *testing.T) {
 		mu.Unlock()
 		return nil
 	}, 1)
-	await(t, func() bool { return te2.e.Stats().Parked == 1 })
+	convergetest.Await(t, func() bool { return te2.e.Stats().Parked == 1 })
 	te2.e.hint(context.Background(), "a")
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 0 })
-	if n := te2.rec.count(func(e converge.Event) bool {
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 0 })
+	if n := te2.rec.Count(func(e converge.Event) bool {
 		w, ok := e.(converge.WakeDiscarded)
 		return ok && w.Reason == converge.DiscardParked
 	}); n != 1 {
@@ -726,8 +726,8 @@ func TestParkedMarksSurviveRestart(t *testing.T) {
 	if err := te2.e.Poke("a"); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
-	await(t, func() bool {
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	convergetest.Await(t, func() bool {
 		_, ok, err := kv.Get(context.Background(), te2.e.parkKey("a"))
 		return err == nil && !ok
 	})

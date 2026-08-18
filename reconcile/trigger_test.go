@@ -38,7 +38,7 @@ func TestCustomTriggerWakesIDs(t *testing.T) {
 	}}
 	go te.e.runTrigger(ctx, 0, trig)
 	<-fired
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(got) == 1 && got[0] == "ws_1"
@@ -58,7 +58,7 @@ func TestCustomTriggerIsRestartedAfterFailure(t *testing.T) {
 		return errors.New("source died")
 	}}
 	go te.e.runTrigger(ctx, 0, trig)
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return starts >= 1
@@ -87,7 +87,7 @@ func TestCustomTriggerRestartBackoffResetsAfterHealthyRun(t *testing.T) {
 		return errors.New("source died")
 	}}
 	go te.e.runTrigger(ctx, 0, trig)
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return starts >= 1
@@ -97,13 +97,13 @@ func TestCustomTriggerRestartBackoffResetsAfterHealthyRun(t *testing.T) {
 		defer mu.Unlock()
 		return starts >= 2
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return starts < 3
 	})
 	te.clock.Advance(time.Second)
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return starts >= 3
@@ -134,7 +134,7 @@ func TestOnMessageBindDefaultsAndCapabilities(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	mq := inmem.NewMQWithClock(clock)
 	e := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
-	e.deps = converge.JobDeps{MQ: mq, Clock: clock, Observer: &eventRecorder{}}
+	e.deps = converge.JobDeps{MQ: mq, Clock: clock, Observer: &convergetest.Recorder{}}
 	trig := OnMessage("app-events", RawID(), OnMessageOpts{}).(*messageTrigger)
 	if err := trig.bind(e); err != nil {
 		t.Fatal(err)
@@ -152,13 +152,13 @@ func TestOnMessageBindDefaultsAndCapabilities(t *testing.T) {
 		t.Fatalf("OnAllReplicas default delivery = %v", bTrig.delivery)
 	}
 	noMQ := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
-	noMQ.deps = converge.JobDeps{Clock: clock, Observer: &eventRecorder{}}
+	noMQ.deps = converge.JobDeps{Clock: clock, Observer: &convergetest.Recorder{}}
 	if err := (OnMessage("q", RawID(), OnMessageOpts{}).(*messageTrigger)).bind(noMQ); err == nil {
 		t.Fatal("bind without an MQ must error")
 	}
 	bare := bareMQ{}
 	e2 := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
-	e2.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &eventRecorder{}}
+	e2.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &convergetest.Recorder{}}
 	if err := (OnMessage("q", RawID(), OnMessageOpts{}).(*messageTrigger)).bind(e2); err == nil {
 		t.Fatal("Group delivery without GroupConsumer must error")
 	}
@@ -189,8 +189,8 @@ func TestOnMessageWakesFromHints(t *testing.T) {
 	if err := mq.Publish(context.Background(), "app-events", converge.Message{Payload: []byte(`{"workspace_id": "ws_9"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
 			return ok && rc.ID == "ws_9"
 		}) == 1
@@ -211,13 +211,13 @@ func TestOnMessageUndecodableHintCountedAndDropped(t *testing.T) {
 	if err := mq.Publish(context.Background(), "app-events", converge.Message{Payload: []byte(`garbage`)}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.Reason == converge.DiscardUndecodable
 		}) == 1
 	})
-	if n := te.rec.count(func(e converge.Event) bool {
+	if n := te.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.RunCompleted)
 		return ok
 	}); n != 0 {
