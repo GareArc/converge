@@ -1006,3 +1006,77 @@ func TestUnknownWorkerSignalFallsBackToError(t *testing.T) {
 		t.Fatal("expected a RunCompleted event with non-nil Err")
 	}
 }
+
+func TestPointerOutcomeDispatch(t *testing.T) {
+	w := newWorld(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	var mu sync.Mutex
+	discardRuns := 0
+	var snoozeAttempts []int
+	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+		meta, _ := MetaFromContext(ctx)
+		switch payload {
+		case "discard-me":
+			mu.Lock()
+			discardRuns++
+			mu.Unlock()
+			return &Discard{Reason: "gone"}
+		case "snooze-me":
+			mu.Lock()
+			snoozeAttempts = append(snoozeAttempts, meta.Attempt)
+			n := len(snoozeAttempts)
+			mu.Unlock()
+			if n == 1 {
+				return &Snooze{In: time.Minute}
+			}
+			return nil
+		default:
+			return fmt.Errorf("unexpected payload %q", payload)
+		}
+	}, HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "discard-me", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "snooze-me", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return discardRuns == 1 && len(snoozeAttempts) == 1
+	})
+	assertStable(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return discardRuns == 1 && len(snoozeAttempts) == 1
+	})
+	if n := w.rec.count(func(e converge.Event) bool {
+		md, ok := e.(converge.MessageDiscarded)
+		return ok && md.Reason == "gone"
+	}); n != 1 {
+		t.Fatalf("MessageDiscarded count = %d, want 1", n)
+	}
+	w.advanceUntil(t, time.Minute, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(snoozeAttempts) == 2
+	})
+	assertStable(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return discardRuns == 1 && len(snoozeAttempts) == 2
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []int{1, 1}; !reflect.DeepEqual(snoozeAttempts, want) {
+		t.Fatalf("snoozeAttempts = %v, want %v", snoozeAttempts, want)
+	}
+}
