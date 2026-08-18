@@ -2,14 +2,20 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/internal/backoff"
 	"github.com/GareArc/converge/internal/mw"
+	"github.com/GareArc/converge/internal/sig"
 	"github.com/GareArc/converge/internal/tokenbucket"
 )
 
@@ -147,11 +153,360 @@ func invocationFrom(ctx context.Context) (invocation, bool) {
 	return inv, ok
 }
 
+const consumeRetryInterval = time.Second
+
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	if err := e.bind(deps); err != nil {
 		return err
 	}
+	if e.cfg.paused {
+		e.markReady()
+		<-ctx.Done()
+		return nil
+	}
+	switch e.cfg.runMode {
+	case converge.OnOneReplica:
+		return e.leaseLoop(ctx)
+	default:
+		e.markReady()
+		e.runActive(ctx, nil)
+		return nil
+	}
+}
+
+func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
+	base := context.WithoutCancel(ctx)
+	hctx, cancelHandlers := context.WithCancel(base)
+	defer cancelHandlers()
+	ictx, stopIntake := context.WithCancel(ctx)
+	defer stopIntake()
+
+	var wg sync.WaitGroup
+	e.intake(ictx, hctx, &wg)
+
+	finished := make(chan struct{})
+	go func() { wg.Wait(); close(finished) }()
+	select {
+	case <-finished:
+	case <-e.deps.Clock.After(e.deps.DrainTimeout):
+		cancelHandlers()
+		<-finished
+	}
+	if h != nil {
+		h.Release(base)
+	}
+}
+
+func (e *engine) intake(ictx, hctx context.Context, wg *sync.WaitGroup) {
+	slots := make(chan struct{}, e.cfg.concurrency)
+	deliver := func(d converge.Delivery) { e.receive(ictx, hctx, d, slots, wg) }
+	for {
+		e.startConsumer(ictx, deliver)
+		if ictx.Err() != nil {
+			return
+		}
+		select {
+		case <-ictx.Done():
+			return
+		case <-e.deps.Clock.After(consumeRetryInterval):
+		}
+	}
+}
+
+func (e *engine) startConsumer(ctx context.Context, deliver func(converge.Delivery)) {
+	switch e.cfg.runMode {
+	case converge.OnOneReplica:
+		e.mq.Consume(ctx, e.cfg.info.queue, deliver)
+	case converge.OnAllReplicas:
+		e.mq.(converge.BroadcastConsumer).ConsumeBroadcast(ctx, e.cfg.info.queue, deliver)
+	default:
+		e.mq.(converge.GroupConsumer).ConsumeGroup(ctx, e.cfg.info.queue, e.key("group"), deliver)
+	}
+}
+
+func (e *engine) receive(ictx, hctx context.Context, d converge.Delivery, slots chan struct{}, wg *sync.WaitGroup) {
+	m := d.Message()
+	if e.durable() {
+		d.Extend(ictx, e.cfg.visibility)
+	}
+	e.setDepth(1)
+	select {
+	case slots <- struct{}{}:
+	case <-ictx.Done():
+		e.setDepth(-1)
+		e.neutral(d, m)
+		return
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() { <-slots }()
+		defer e.setDepth(-1)
+		e.process(hctx, d, m)
+	}()
+}
+
+func (e *engine) setDepth(delta int) {
+	e.mu.Lock()
+	e.depth += delta
+	depth := e.depth
+	e.mu.Unlock()
+	e.deps.Observer.Observe(converge.QueueDepth{Job: e.cfg.info.name, Queue: e.cfg.info.queue, Depth: depth})
+}
+
+func logicalBase(m converge.Message) (int, bool) {
+	raw, ok := m.Headers[converge.HeaderAttempt]
+	if !ok {
+		return 0, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, converge.DeadLetterReason) {
+	meta := Meta{
+		Task:        e.cfg.info.name,
+		Queue:       e.cfg.info.queue,
+		MessageID:   m.Headers[converge.HeaderMessageID],
+		MaxAttempts: e.cfg.retry.MaxAttempts,
+		EnqueuedAt:  d.EnqueuedAt(),
+		Headers:     maps.Clone(m.Headers),
+	}
+	if meta.MessageID == "" {
+		meta.MessageID = newID()
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, m.Headers[converge.HeaderEnqueuedAt]); err == nil {
+		meta.EnqueuedAt = ts
+	}
+	base, ok := logicalBase(m)
+	meta.Attempt = base + d.Attempt()
+	if !e.durable() {
+		return meta, converge.DeadLetterReason{}
+	}
+	if m.Kind != e.cfg.info.name {
+		return meta, converge.DeadLetterWrongKind
+	}
+	if m.Headers[converge.HeaderSchemaVersion] != strconv.Itoa(e.cfg.info.version) {
+		return meta, converge.DeadLetterSchemaVersion
+	}
+	if !ok {
+		return meta, converge.DeadLetterUndecodable
+	}
+	if e.deps.Clock.Now().Sub(meta.EnqueuedAt) > e.cfg.retry.MaxAge {
+		return meta, converge.DeadLetterMaxAge
+	}
+	if meta.Attempt > e.cfg.retry.MaxAttempts {
+		return meta, converge.DeadLetterMaxAttempts
+	}
+	return meta, converge.DeadLetterReason{}
+}
+
+func (e *engine) process(hctx context.Context, d converge.Delivery, m converge.Message) {
+	meta, guard := e.classify(d, m)
+	sctx := context.WithoutCancel(hctx)
+	if !guard.IsZero() {
+		e.deadLetter(sctx, d, meta, m, guard, nil)
+		return
+	}
+	if err := e.limit.Wait(hctx); err != nil {
+		e.neutral(d, m)
+		return
+	}
+	stopHB := make(chan struct{})
+	if e.durable() {
+		go e.extendLoop(sctx, d, stopHB)
+	}
+	start := e.deps.Clock.Now()
+	err := e.invokeChain(hctx, meta, m.Payload)
+	took := e.deps.Clock.Now().Sub(start)
+	close(stopHB)
+	e.settle(hctx, d, m, meta, err, took)
+}
+
+func (e *engine) invokeChain(ctx context.Context, meta Meta, payload []byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("worker: job %q: handler panic: %v", e.cfg.info.name, r)
+		}
+	}()
+	ctx = withMeta(ctx, meta)
+	ctx = withInvocation(ctx, invocation{payload: payload})
+	return e.handler(ctx, converge.Run{Job: e.cfg.info.name, Surface: converge.SurfaceWorker, ID: meta.MessageID})
+}
+
+func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Message, meta Meta, err error, took time.Duration) {
+	sctx := context.WithoutCancel(hctx)
+	if err == nil {
+		d.Ack(sctx)
+		e.recordSuccess()
+		e.observeRun(meta, took, nil)
+		return
+	}
+	var dec decodeError
+	if errors.As(err, &dec) {
+		e.observeRun(meta, took, err)
+		e.deadLetterOrDrop(sctx, d, meta, m, converge.DeadLetterUndecodable, err)
+		return
+	}
+	if s, ok := sig.FromError(err); ok {
+		if e.settleSignal(sctx, d, m, meta, s, err, took) {
+			return
+		}
+	}
+	if hctx.Err() != nil {
+		e.neutral(d, m)
+		return
+	}
+	e.recordFailure()
+	e.observeRun(meta, took, err)
+	if !e.durable() {
+		return
+	}
+	if meta.Attempt >= e.cfg.retry.MaxAttempts {
+		e.deadLetter(sctx, d, meta, m, converge.DeadLetterMaxAttempts, err)
+		return
+	}
+	d.Nack(sctx, e.retryDelay(meta.Attempt))
+}
+
+func (e *engine) retryDelay(attempt int) time.Duration {
+	d := e.cfg.retry.MinBackoff
+	for i := 1; i < attempt; i++ {
+		d *= 2
+		if d >= e.cfg.retry.MaxBackoff {
+			return backoff.Jitter(e.cfg.retry.MaxBackoff)
+		}
+	}
+	return backoff.Jitter(d)
+}
+
+func (e *engine) recordSuccess() {
+	now := e.deps.Clock.Now()
+	e.mu.Lock()
+	e.lastSuccess = now
+	e.consecFails = 0
+	e.mu.Unlock()
+}
+
+func (e *engine) recordFailure() {
+	e.mu.Lock()
+	e.consecFails++
+	e.mu.Unlock()
+}
+
+func (e *engine) observeRun(meta Meta, took time.Duration, err error) {
+	e.deps.Observer.Observe(converge.RunCompleted{
+		Job:      e.cfg.info.name,
+		Surface:  converge.SurfaceWorker,
+		ID:       meta.MessageID,
+		Attempt:  meta.Attempt,
+		Duration: took,
+		Err:      err,
+	})
+}
+
+func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, s sig.Signal, err error, took time.Duration) bool {
+	return false
+}
+
+func (e *engine) leaseLoop(ctx context.Context) error {
 	e.markReady()
 	<-ctx.Done()
 	return nil
+}
+
+func (e *engine) extendLoop(ctx context.Context, d converge.Delivery, stop <-chan struct{}) {
+	interval := e.cfg.visibility / 3
+	for {
+		select {
+		case <-stop:
+			return
+		case <-e.deps.Clock.After(interval):
+			d.Extend(ctx, e.cfg.visibility)
+		}
+	}
+}
+
+type dlqRecord struct {
+	Task           string            `json:"task"`
+	Queue          string            `json:"queue"`
+	MessageID      string            `json:"message_id"`
+	Attempt        int               `json:"attempt"`
+	Reason         string            `json:"reason"`
+	Error          string            `json:"error,omitempty"`
+	EnqueuedAt     time.Time         `json:"enqueued_at"`
+	DeadLetteredAt time.Time         `json:"dead_lettered_at"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	Payload        []byte            `json:"payload,omitempty"`
+}
+
+func (e *engine) deadLetterOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason converge.DeadLetterReason, cause error) {
+	e.recordFailure()
+	if !e.durable() {
+		return
+	}
+	e.deadLetter(ctx, d, meta, m, reason, cause)
+}
+
+func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason converge.DeadLetterReason, cause error) {
+	rec := dlqRecord{
+		Task:           e.cfg.info.name,
+		Queue:          e.cfg.info.queue,
+		MessageID:      meta.MessageID,
+		Attempt:        meta.Attempt,
+		Reason:         reason.String(),
+		EnqueuedAt:     meta.EnqueuedAt,
+		DeadLetteredAt: e.deps.Clock.Now(),
+		Headers:        meta.Headers,
+		Payload:        m.Payload,
+	}
+	if cause != nil {
+		rec.Error = cause.Error()
+	}
+	raw, err := json.Marshal(rec)
+	if err == nil {
+		err = e.deps.KV.Set(ctx, e.dlqKey(meta.MessageID), raw, 0)
+	}
+	if err != nil {
+		d.Nack(ctx, e.retryDelay(meta.Attempt))
+		return
+	}
+	d.Ack(ctx)
+	e.mu.Lock()
+	e.deadLetters++
+	e.mu.Unlock()
+	e.deps.Observer.Observe(converge.MessageDeadLettered{
+		Job:       e.cfg.info.name,
+		Queue:     e.cfg.info.queue,
+		MessageID: meta.MessageID,
+		Attempt:   meta.Attempt,
+		Reason:    reason,
+		Err:       cause,
+	})
+}
+
+func (e *engine) neutral(d converge.Delivery, m converge.Message) {
+	if !e.durable() {
+		return
+	}
+	ctx := context.Background()
+	base, ok := logicalBase(m)
+	if !ok {
+		d.Nack(ctx, 0)
+		return
+	}
+	h := maps.Clone(m.Headers)
+	if h == nil {
+		h = map[string]string{}
+	}
+	h[converge.HeaderAttempt] = strconv.Itoa(base + d.Attempt() - 1)
+	republished := converge.Message{Kind: m.Kind, Headers: h, Payload: m.Payload}
+	if err := e.mq.Publish(ctx, e.cfg.info.queue, republished); err != nil {
+		d.Nack(ctx, 0)
+		return
+	}
+	d.Ack(ctx)
 }
