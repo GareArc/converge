@@ -19,6 +19,7 @@ import (
 	"github.com/GareArc/converge/internal/backoff"
 	"github.com/GareArc/converge/internal/durfmt"
 	"github.com/GareArc/converge/internal/mw"
+	"github.com/GareArc/converge/internal/pausegate"
 	"github.com/GareArc/converge/internal/sig"
 	"github.com/GareArc/converge/internal/tokenbucket"
 )
@@ -41,7 +42,6 @@ type config struct {
 	mq          converge.MQ
 	rateLimit   converge.Rate
 	middleware  []converge.Middleware
-	paused      bool
 }
 
 type engine struct {
@@ -58,8 +58,8 @@ type engine struct {
 	deadLetters int
 	lastSuccess time.Time
 	consecFails int
+	gate        pausegate.Gate
 	cycleCancel context.CancelFunc
-	resumeCh    chan struct{}
 }
 
 func (e *engine) Name() string { return e.cfg.info.name }
@@ -90,47 +90,23 @@ func (e *engine) RunPassNow(context.Context) error {
 
 func (e *engine) SetPaused(paused bool) {
 	e.mu.Lock()
-	if e.cfg.paused == paused {
-		e.mu.Unlock()
-		return
-	}
-	e.cfg.paused = paused
+	changed, closeCh := e.gate.SetPaused(paused)
 	var cancel context.CancelFunc
-	var resumeCh chan struct{}
-	if paused {
+	if changed && paused {
 		cancel = e.cycleCancel
 		e.cycleCancel = nil
-	} else {
-		resumeCh = e.resumeCh
-		e.resumeCh = nil
 	}
 	e.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	if resumeCh != nil {
-		close(resumeCh)
+	if closeCh != nil {
+		close(closeCh)
 	}
 }
 
 func (e *engine) awaitUnpaused(ctx context.Context) bool {
-	for {
-		e.mu.Lock()
-		if !e.cfg.paused {
-			e.mu.Unlock()
-			return true
-		}
-		if e.resumeCh == nil {
-			e.resumeCh = make(chan struct{})
-		}
-		ch := e.resumeCh
-		e.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return false
-		case <-ch:
-		}
-	}
+	return pausegate.AwaitUnpaused(ctx, &e.mu, &e.gate)
 }
 
 func (e *engine) durable() bool { return e.cfg.runMode != converge.OnAllReplicas }
@@ -172,7 +148,7 @@ func (e *engine) Info() converge.JobInfo {
 		settings["rate-limit"] = e.cfg.rateLimit.String()
 	}
 	e.mu.Lock()
-	paused := e.cfg.paused
+	paused := e.gate.Paused
 	e.mu.Unlock()
 	return converge.JobInfo{
 		Job:      e.cfg.info.name,
@@ -261,7 +237,7 @@ func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 		}
 		cycleCtx, cancel := context.WithCancel(ctx)
 		e.mu.Lock()
-		if e.cfg.paused {
+		if e.gate.Paused {
 			e.mu.Unlock()
 			cancel()
 			continue

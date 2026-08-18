@@ -13,6 +13,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
 	"github.com/GareArc/converge/internal/mw"
+	"github.com/GareArc/converge/internal/pausegate"
 	"github.com/GareArc/converge/internal/sig"
 	"github.com/GareArc/converge/internal/tokenbucket"
 )
@@ -58,6 +59,7 @@ type engine struct {
 
 	mu          sync.Mutex
 	queue       *wakeQueue
+	gate        pausegate.Gate
 	lastSuccess time.Time
 	consecFails int
 	passes      int
@@ -87,7 +89,7 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 		deadLetterAfter: e.cfg.deadLetterAfter,
 		backoff:         backoffAfter,
 		floor:           backoff.Floor,
-	}, e.cfg.paused)
+	}, e.gate.Paused)
 	e.mu.Unlock()
 	return nil
 }
@@ -148,14 +150,10 @@ func (e *engine) Hint(id string) error {
 
 func (e *engine) SetPaused(paused bool) {
 	e.mu.Lock()
-	if e.cfg.paused == paused {
-		e.mu.Unlock()
-		return
-	}
-	e.cfg.paused = paused
+	changed, _ := e.gate.SetPaused(paused)
 	q := e.queue
 	e.mu.Unlock()
-	if q != nil {
+	if changed && q != nil {
 		q.setPaused(paused)
 	}
 }
@@ -245,7 +243,7 @@ func (e *engine) Info() converge.JobInfo {
 		settings["allow-unscheduled"] = "true"
 	}
 	e.mu.Lock()
-	paused := e.cfg.paused
+	paused := e.gate.Paused
 	e.mu.Unlock()
 	return converge.JobInfo{
 		Job:      e.cfg.name,

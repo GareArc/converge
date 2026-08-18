@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/internal/pausegate"
 )
 
 type wakeClass int
@@ -126,65 +127,39 @@ func (h *dueHeap) Pop() any {
 }
 
 type wakeQueue struct {
-	mu       sync.Mutex
-	clock    converge.Clock
-	policy   wakePolicy
-	paused   bool
-	resumeCh chan struct{}
-	ids      map[ID]*idState
-	heap     dueHeap
-	notify   chan struct{}
+	mu     sync.Mutex
+	clock  converge.Clock
+	policy wakePolicy
+	gate   pausegate.Gate
+	ids    map[ID]*idState
+	heap   dueHeap
+	notify chan struct{}
 }
 
 func newWakeQueue(clock converge.Clock, policy wakePolicy, paused bool) *wakeQueue {
-	q := &wakeQueue{
+	return &wakeQueue{
 		clock:  clock,
 		policy: policy,
-		paused: paused,
+		gate:   pausegate.New(paused),
 		ids:    map[ID]*idState{},
 		notify: make(chan struct{}, 1),
 	}
-	if paused {
-		q.resumeCh = make(chan struct{})
-	}
-	return q
 }
 
 func (q *wakeQueue) setPaused(paused bool) {
 	q.mu.Lock()
-	if q.paused == paused {
-		q.mu.Unlock()
-		return
-	}
-	q.paused = paused
-	var closeCh chan struct{}
-	if paused {
-		q.resumeCh = make(chan struct{})
-	} else {
-		closeCh = q.resumeCh
-		q.resumeCh = nil
-	}
+	changed, closeCh := q.gate.SetPaused(paused)
 	q.mu.Unlock()
 	if closeCh != nil {
 		close(closeCh)
 	}
+	if changed && !paused {
+		q.signal()
+	}
 }
 
 func (q *wakeQueue) awaitUnpaused(ctx context.Context) bool {
-	for {
-		q.mu.Lock()
-		if !q.paused {
-			q.mu.Unlock()
-			return true
-		}
-		ch := q.resumeCh
-		q.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return false
-		case <-ch:
-		}
-	}
+	return pausegate.AwaitUnpaused(ctx, &q.mu, &q.gate)
 }
 
 func (q *wakeQueue) signal() {
@@ -218,7 +193,7 @@ func (q *wakeQueue) wake(id ID, class wakeClass) wakeResult {
 	now := q.clock.Now()
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.paused {
+	if q.gate.Paused {
 		return wakeDroppedPaused
 	}
 	st := q.ids[id]
@@ -274,6 +249,9 @@ func (q *wakeQueue) wake(id ID, class wakeClass) wakeResult {
 func (q *wakeQueue) next(now time.Time) (ID, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.gate.Paused {
+		return "", false
+	}
 	for q.heap.Len() > 0 {
 		top := q.heap[0]
 		st := q.ids[top.id]
@@ -295,6 +273,9 @@ func (q *wakeQueue) next(now time.Time) (ID, bool) {
 func (q *wakeQueue) nextDue() (time.Time, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.gate.Paused {
+		return time.Time{}, false
+	}
 	for q.heap.Len() > 0 {
 		top := q.heap[0]
 		st := q.ids[top.id]
@@ -434,7 +415,10 @@ func (q *wakeQueue) quiet(now time.Time) bool {
 		if st.phase == phaseParked {
 			continue
 		}
-		if st.phase == phaseRunning || !st.due.After(now) {
+		if st.phase == phaseRunning {
+			return false
+		}
+		if !q.gate.Paused && !st.due.After(now) {
 			return false
 		}
 	}

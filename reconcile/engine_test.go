@@ -11,6 +11,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/internal/pausegate"
 )
 
 type eventRecorder struct {
@@ -88,7 +89,7 @@ func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn Func) *testEngin
 		cfg.concurrency = 1
 	}
 	cfg.rec = fn
-	e := &engine{cfg: cfg, ready: make(chan struct{})}
+	e := &engine{cfg: cfg, ready: make(chan struct{}), gate: pausegate.New(cfg.paused)}
 	deps := converge.JobDeps{
 		KV:       kv,
 		Observer: rec,
@@ -1013,4 +1014,76 @@ func TestInfoPausedReflectsLiveState(t *testing.T) {
 	if te.e.Info().Paused {
 		t.Fatal("Info().Paused must reflect a live SetPaused(false)")
 	}
+}
+
+func TestPausedHoldsAlreadyQueuedBacklogNotDropped(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var mu sync.Mutex
+	ranB := false
+	te := startEngine(t, config{concurrency: 1}, func(ctx context.Context, id ID) error {
+		if id == "a" {
+			once.Do(func() { close(started) })
+			<-release
+			return nil
+		}
+		mu.Lock()
+		ranB = true
+		mu.Unlock()
+		return nil
+	})
+	te.e.hint(context.Background(), "a")
+	<-started
+	te.e.hint(context.Background(), "b")
+	await(t, func() bool { return te.e.queue.counts().depth == 1 })
+
+	te.e.SetPaused(true)
+	close(release)
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.ID == "a"
+		}) == 1
+	})
+
+	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !ranB })
+	if n := te.rec.count(func(e converge.Event) bool {
+		wd, ok := e.(converge.WakeDiscarded)
+		return ok && wd.ID == "b"
+	}); n != 0 {
+		t.Fatalf("already-queued backlog must be held, not dropped: got %d WakeDiscarded for b", n)
+	}
+
+	te.e.SetPaused(false)
+	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return ranB })
+}
+
+func TestQuietTrueWhilePausedWithHeldDueBacklog(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	te := startEngine(t, config{concurrency: 1}, func(ctx context.Context, id ID) error {
+		if id == "a" {
+			once.Do(func() { close(started) })
+			<-release
+		}
+		return nil
+	})
+	te.e.hint(context.Background(), "a")
+	<-started
+	te.e.hint(context.Background(), "b")
+	await(t, func() bool { return te.e.queue.counts().depth == 1 })
+
+	te.e.SetPaused(true)
+	close(release)
+	await(t, func() bool {
+		return te.rec.count(func(e converge.Event) bool {
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.ID == "a"
+		}) == 1
+	})
+
+	await(t, te.e.Quiet)
+	assertStable(t, te.e.Quiet)
 }

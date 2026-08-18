@@ -8,6 +8,7 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/pausegate"
 )
 
 const (
@@ -92,7 +93,6 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 		mq:          o.MQ,
 		rateLimit:   o.RateLimit,
 		middleware:  slices.Clone(o.Middleware),
-		paused:      o.Paused,
 	}
 	if cfg.concurrency == 0 {
 		cfg.concurrency = DefaultConcurrency
@@ -121,5 +121,5 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 	if cfg.runMode == converge.OnAllReplicas && o.Retry != (RetryPolicy{}) {
 		return nil, fail("OnAllReplicas cannot use Retry")
 	}
-	return &engine{cfg: cfg, ready: make(chan struct{})}, nil
+	return &engine{cfg: cfg, ready: make(chan struct{}), gate: pausegate.New(o.Paused)}, nil
 }

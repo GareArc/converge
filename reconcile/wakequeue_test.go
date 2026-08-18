@@ -529,20 +529,17 @@ func TestStaleDuplicateHeapEntryDiscardedAfterDispatch(t *testing.T) {
 	}
 }
 
-func TestSetPausedSameValueDoesNotChurnResumeChannel(t *testing.T) {
+func TestSetPausedSameValueDoesNotSignalNotify(t *testing.T) {
 	q, _ := newTestQueue(0, true)
-	q.mu.Lock()
-	before := q.resumeCh
-	q.mu.Unlock()
-	if before == nil {
-		t.Fatal("a queue constructed paused must have a resume channel")
+	select {
+	case <-q.notify:
+	default:
 	}
 	q.setPaused(true)
-	q.mu.Lock()
-	after := q.resumeCh
-	q.mu.Unlock()
-	if before != after {
-		t.Fatal("same-value setPaused must not replace the resume channel")
+	select {
+	case <-q.notify:
+		t.Fatal("same-value setPaused(true) must not signal notify")
+	default:
 	}
 }
 
