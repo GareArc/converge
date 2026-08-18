@@ -21,7 +21,7 @@ func startSchedule(t *testing.T, te *testEngine, src IDSource, cad Cadence) {
 }
 
 func runCount(te *testEngine) int {
-	return te.rec.count(func(e converge.Event) bool {
+	return te.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.RunCompleted)
 		return ok
 	})
@@ -32,7 +32,7 @@ func TestFirstPassRunsImmediatelyAndPersistsLastFire(t *testing.T) {
 	startSchedule(t, te, StringIDs(func(context.Context) ([]string, error) {
 		return []string{"a", "b"}, nil
 	}), Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 2 })
+	convergetest.Await(t, func() bool { return runCount(te) == 2 })
 	key := te.e.key("sched", "0", "last")
 	_, ok, err := te.e.deps.KV.Get(context.Background(), key)
 	if err != nil || !ok {
@@ -43,12 +43,12 @@ func TestFirstPassRunsImmediatelyAndPersistsLastFire(t *testing.T) {
 func TestSteadyStateFiresOncePerPeriod(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	startSchedule(t, te, SingleID(), Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 2 })
 	for i := 0; i < 10; i++ {
 		te.clock.Advance(time.Minute)
 	}
-	assertStable(t, func() bool { return runCount(te) == 2 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 2 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 3 })
 }
 
@@ -64,8 +64,8 @@ func TestMissedTickRunOnceRunsOneMakeupPass(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	seedLastFire(t, te, wqStart.Add(-5*time.Hour))
 	startSchedule(t, te, SingleID(), Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 1 })
-	assertStable(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 1 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 2 })
 }
 
@@ -73,7 +73,7 @@ func TestMissedTickSkipSkipsAll(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	seedLastFire(t, te, wqStart.Add(-5*time.Hour))
 	startSchedule(t, te, SingleID(), Cron("0 * * * *", CronOpts{MissedTick: Skip}))
-	assertStable(t, func() bool { return runCount(te) == 0 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 0 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 1 })
 }
 
@@ -89,7 +89,7 @@ func TestMissedTickCatchupReplaysEachBoundary(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	seedLastFire(t, te, wqStart.Add(-3*time.Hour))
 	startSchedule(t, te, src, Cron("0 * * * *", CronOpts{MissedTick: Catchup}))
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return pageCalls == 3
@@ -112,9 +112,9 @@ func TestRunOnceBacklogBeyondCapIsOneMakeupPass(t *testing.T) {
 	seedLastFire(t, te, wqStart.Add(-2500*time.Second))
 	startSchedule(t, te, src, Every(time.Second))
 	calls := func() int { mu.Lock(); defer mu.Unlock(); return pageCalls }
-	await(t, func() bool { return calls() == 1 })
-	assertStable(t, func() bool { return calls() == 1 })
-	if n := te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool { return calls() == 1 })
+	convergetest.AssertStable(t, func() bool { return calls() == 1 })
+	if n := te.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.PassOverrun)
 		return ok
 	}); n != 0 {
@@ -139,8 +139,8 @@ func TestOverrunBeyondCapIsConsumedNotMadeUp(t *testing.T) {
 	})
 	startSchedule(t, te, src, Every(time.Second))
 	calls := func() int { mu.Lock(); defer mu.Unlock(); return pageCalls }
-	await(t, func() bool { return calls() == 1 })
-	assertStable(t, func() bool { return calls() == 1 })
+	convergetest.Await(t, func() bool { return calls() == 1 })
+	convergetest.AssertStable(t, func() bool { return calls() == 1 })
 	advanceUntil(t, te, time.Second, func() bool { return calls() == 2 })
 }
 
@@ -171,7 +171,7 @@ func TestAllReplicasScheduleIsReplicaLocal(t *testing.T) {
 			runMode:     converge.OnAllReplicas,
 			rec:         Func(func(ctx context.Context, id ID) error { return nil }),
 		}, ready: make(chan struct{})}
-		if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &eventRecorder{}, Clock: clock}); err != nil {
+		if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &convergetest.Recorder{}, Clock: clock}); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -190,7 +190,7 @@ func TestAllReplicasScheduleIsReplicaLocal(t *testing.T) {
 	}
 	e1 := boot(1)
 	boot(2)
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return calls[1] == 1 && calls[2] == 1
@@ -222,7 +222,7 @@ func TestPassResumesFromPersistedCursor(t *testing.T) {
 		return nil, "", nil
 	})
 	startSchedule(t, te, src, Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
 	advanceUntil(t, te, time.Second, func() bool { return runCount(te) == 2 })
 	mu.Lock()
 	defer mu.Unlock()
@@ -240,13 +240,13 @@ func TestFirstPassOverrunSkipsWithoutMakeup(t *testing.T) {
 		return []ID{"a"}, nil
 	})
 	startSchedule(t, te, slow, Every(time.Hour))
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.PassOverrun)
 			return ok
 		}) >= 1
 	})
-	assertStable(t, func() bool { return runCount(te) == 1 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 1 })
 }
 
 type blockOnSetKV struct {
@@ -327,11 +327,11 @@ func TestFirstPassHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T) 
 	}
 
 	kv.releaseBlock()
-	await(t, te.e.Quiet)
+	convergetest.Await(t, te.e.Quiet)
 
 	te.clock.Advance(time.Hour)
-	await(t, func() bool { return runCount(te) == 2 })
-	if n := te.rec.count(isPassOverrunEvent); n != 0 {
+	convergetest.Await(t, func() bool { return runCount(te) == 2 })
+	if n := te.rec.Count(isPassOverrunEvent); n != 0 {
 		t.Fatalf("boundary must not be misclassified as overrun: got %d PassOverrun events", n)
 	}
 }
@@ -340,8 +340,8 @@ func TestSteadyStateHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T
 	kv := &blockOnSetKV{KV: inmem.NewKV()}
 	te := startEngineKV(t, config{single: true}, kv, func(context.Context, ID) error { return nil })
 	startSchedule(t, te, SingleID(), Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 1 })
-	await(t, te.e.Quiet)
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, te.e.Quiet)
 
 	lastKey := te.e.key("sched", "0", "last")
 	kv.armFor(lastKey)
@@ -357,11 +357,11 @@ func TestSteadyStateHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T
 	}
 
 	kv.releaseBlock()
-	await(t, te.e.Quiet)
+	convergetest.Await(t, te.e.Quiet)
 
 	te.clock.Advance(time.Hour)
-	await(t, func() bool { return runCount(te) == 3 })
-	if n := te.rec.count(isPassOverrunEvent); n != 0 {
+	convergetest.Await(t, func() bool { return runCount(te) == 3 })
+	if n := te.rec.Count(isPassOverrunEvent); n != 0 {
 		t.Fatalf("second boundary must not be misclassified as overrun: got %d PassOverrun events", n)
 	}
 }
@@ -369,7 +369,7 @@ func TestSteadyStateHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T
 func TestErroredCadenceDoesNotPanic(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	startSchedule(t, te, SingleID(), Every(0))
-	assertStable(t, func() bool { return runCount(te) == 0 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 0 })
 }
 
 func TestCursorClearedAfterPassCompletes(t *testing.T) {
@@ -381,8 +381,8 @@ func TestCursorClearedAfterPassCompletes(t *testing.T) {
 		return []ID{"p2"}, "", nil
 	})
 	startSchedule(t, te, src, Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 2 })
-	await(t, func() bool {
+	convergetest.Await(t, func() bool { return runCount(te) == 2 })
+	convergetest.Await(t, func() bool {
 		_, ok, err := te.e.deps.KV.Get(context.Background(), te.e.key("sched", "0", "cursor"))
 		return err == nil && !ok
 	})
@@ -391,7 +391,7 @@ func TestCursorClearedAfterPassCompletes(t *testing.T) {
 func TestScheduleBoundarySkippedWhilePausedLastFireUntouched(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	startSchedule(t, te, SingleID(), Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
 	lastKey := te.e.key("sched", "0", "last")
 	before, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
 	if err != nil || !ok {
@@ -400,7 +400,7 @@ func TestScheduleBoundarySkippedWhilePausedLastFireUntouched(t *testing.T) {
 
 	te.e.SetPaused(true)
 	te.clock.Advance(3 * time.Hour)
-	assertStable(t, func() bool { return runCount(te) == 1 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 1 })
 
 	after, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
 	if err != nil || !ok || string(after) != string(before) {
@@ -411,15 +411,15 @@ func TestScheduleBoundarySkippedWhilePausedLastFireUntouched(t *testing.T) {
 func TestResumeAfterMissedBoundaryRunsOneCatchupPass(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	startSchedule(t, te, SingleID(), Every(time.Hour))
-	await(t, func() bool { return runCount(te) == 1 })
+	convergetest.Await(t, func() bool { return runCount(te) == 1 })
 
 	te.e.SetPaused(true)
 	te.clock.Advance(3 * time.Hour)
-	assertStable(t, func() bool { return runCount(te) == 1 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 1 })
 
 	te.e.SetPaused(false)
-	await(t, func() bool { return runCount(te) == 2 })
-	assertStable(t, func() bool { return runCount(te) == 2 })
+	convergetest.Await(t, func() bool { return runCount(te) == 2 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 2 })
 }
 
 func TestPauseMidPassCompletesThenSkipsNextBoundary(t *testing.T) {
@@ -443,24 +443,24 @@ func TestPauseMidPassCompletesThenSkipsNextBoundary(t *testing.T) {
 	close(release)
 
 	lastKey := te.e.key("sched", "0", "last")
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		_, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
 		return err == nil && ok
 	})
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.ID == "a" && wd.Reason == converge.DiscardPaused
 		}) == 1
 	})
-	assertStable(t, func() bool { return runCount(te) == 0 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 0 })
 
 	before, _, err := te.e.deps.KV.Get(context.Background(), lastKey)
 	if err != nil {
 		t.Fatal(err)
 	}
 	te.clock.Advance(3 * time.Hour)
-	assertStable(t, func() bool { return runCount(te) == 0 })
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 0 })
 
 	after, ok, err := te.e.deps.KV.Get(context.Background(), lastKey)
 	if err != nil || !ok || string(after) != string(before) {
@@ -483,7 +483,7 @@ func TestQuietFalseWhilePassEnumerates(t *testing.T) {
 		t.Fatal("must not be quiet while a pass enumerates")
 	}
 	close(release)
-	await(t, te.e.Quiet)
+	convergetest.Await(t, te.e.Quiet)
 }
 
 func TestRunPassNowInactiveErrors(t *testing.T) {
@@ -509,7 +509,7 @@ func TestRunPassNowWithoutScheduleTriggerErrors(t *testing.T) {
 	}
 	clock := convergetest.NewClock(wqStart)
 	deps := converge.JobDeps{
-		Observer:     &eventRecorder{},
+		Observer:     &convergetest.Recorder{},
 		Clock:        clock,
 		DrainTimeout: time.Second,
 	}
@@ -547,7 +547,7 @@ func TestRunPassNowEnumeratesFullIDSource(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("never ready")
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(counts) == 3
@@ -555,7 +555,7 @@ func TestRunPassNowEnumeratesFullIDSource(t *testing.T) {
 	if err := le.e.RunPassNow(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		for _, id := range []ID{"a", "b", "c"} {
@@ -586,7 +586,7 @@ func TestRunPassNowDoesNotDisturbScheduledLastFireOrCursor(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("never ready")
 	}
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return scheduledRuns == 1 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return scheduledRuns == 1 })
 
 	lastKey := le.e.key("sched", "0", "last")
 	rawBefore, ok, err := le.kv.Get(context.Background(), lastKey)
@@ -597,7 +597,7 @@ func TestRunPassNowDoesNotDisturbScheduledLastFireOrCursor(t *testing.T) {
 	if err := le.e.RunPassNow(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return scheduledRuns == 2 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return scheduledRuns == 2 })
 
 	rawAfter, ok, err := le.kv.Get(context.Background(), lastKey)
 	if err != nil || !ok || string(rawAfter) != string(rawBefore) {
@@ -688,7 +688,7 @@ func TestRunPassNowDoesNotPanicWhenQueueNilsMidPass(t *testing.T) {
 	deps := converge.JobDeps{
 		Lease:        inmem.NewLeaseWithClock(clock),
 		KV:           inmem.NewKVWithClock(clock),
-		Observer:     &eventRecorder{},
+		Observer:     &convergetest.Recorder{},
 		Clock:        clock,
 		LeaseTTL:     30 * time.Second,
 		DrainTimeout: time.Second,

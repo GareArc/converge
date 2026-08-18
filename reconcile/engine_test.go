@@ -14,64 +14,15 @@ import (
 	"github.com/GareArc/converge/internal/pausegate"
 )
 
-type eventRecorder struct {
-	mu     sync.Mutex
-	events []converge.Event
-}
-
-func (r *eventRecorder) Observe(e converge.Event) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.events = append(r.events, e)
-}
-
-func (r *eventRecorder) count(match func(converge.Event) bool) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	n := 0
-	for _, e := range r.events {
-		if match(e) {
-			n++
-		}
-	}
-	return n
-}
-
-func await(t *testing.T, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition never became true")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
 func advanceUntil(t *testing.T, te *testEngine, step time.Duration, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition never became true while advancing")
-		}
-		te.clock.Advance(step)
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
-func assertStable(t *testing.T, cond func() bool) {
-	t.Helper()
-	time.Sleep(20 * time.Millisecond)
-	if !cond() {
-		t.Fatal("state changed while it must hold")
-	}
+	convergetest.AdvanceUntil(t, te.clock, step, cond)
 }
 
 type testEngine struct {
 	e      *engine
 	clock  *convergetest.Clock
-	rec    *eventRecorder
+	rec    *convergetest.Recorder
 	cancel context.CancelFunc
 	hctx   context.Context
 	hstop  context.CancelFunc
@@ -81,7 +32,7 @@ type testEngine struct {
 func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn Func) *testEngine {
 	t.Helper()
 	clock := convergetest.NewClock(wqStart)
-	rec := &eventRecorder{}
+	rec := &convergetest.Recorder{}
 	if cfg.name == "" {
 		cfg.name = "job"
 	}
@@ -122,8 +73,8 @@ func TestSuccessRunsOnceAndStampsStats(t *testing.T) {
 		return nil
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
 			return ok
 		}) == 1
@@ -150,12 +101,12 @@ func TestFailureBacksOffThenRecovers(t *testing.T) {
 		return nil
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 1 {
 		t.Fatalf("ConsecutiveFails = %d", s.ConsecutiveFails)
 	}
 	advanceUntil(t, te, time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
-	await(t, func() bool { return te.e.Stats().ConsecutiveFails == 0 })
+	convergetest.Await(t, func() bool { return te.e.Stats().ConsecutiveFails == 0 })
 }
 
 func TestCheckAgainSchedulesRevisitWithoutFailure(t *testing.T) {
@@ -171,7 +122,7 @@ func TestCheckAgainSchedulesRevisitWithoutFailure(t *testing.T) {
 		return nil
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 0 || s.LastSuccess.IsZero() {
 		t.Fatalf("CheckAgain must not count as failure: %+v", s)
 	}
@@ -191,7 +142,7 @@ func TestErrOutdatedRequeuesImmediately(t *testing.T) {
 		return nil
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	advanceUntil(t, te, 100*time.Millisecond, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 0 {
 		t.Fatalf("ErrOutdated must not count as failure: %+v", s)
@@ -203,8 +154,8 @@ func TestPanicIsAFailure(t *testing.T) {
 		panic("kaboom")
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
 			return ok && rc.Err != nil
 		}) == 1
@@ -224,14 +175,14 @@ func TestForeignSignalParksImmediately(t *testing.T) {
 		return fakeWorkerSignal{}
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			ws, ok := e.(converge.WrongSurfaceSignal)
 			return ok && ws.Surface == converge.SurfaceWorker
 		}) == 1
 	})
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.IDParked)
 			return ok
 		}) == 1
@@ -246,9 +197,9 @@ func TestDeadLetterAfterParksAndEvents(t *testing.T) {
 		return errors.New("always")
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool { return te.e.Stats().ConsecutiveFails >= 1 })
+	convergetest.Await(t, func() bool { return te.e.Stats().ConsecutiveFails >= 1 })
 	advanceUntil(t, te, time.Second, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			dl, ok := e.(converge.IDParked)
 			return ok && dl.ID == "a" && dl.Failures == 2
 		}) == 1
@@ -268,14 +219,14 @@ func TestNeutralOnCanceledContext(t *testing.T) {
 	te.e.hint(context.Background(), "a")
 	<-started
 	te.hstop()
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		q := te.e.queue
 		q.mu.Lock()
 		defer q.mu.Unlock()
 		st := q.ids["a"]
 		return st != nil && st.phase == phaseQueued && st.fails == 0
 	})
-	if n := te.rec.count(func(e converge.Event) bool {
+	if n := te.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.RunCompleted)
 		return ok
 	}); n != 0 {
@@ -304,8 +255,8 @@ func TestSingleFlightPerID(t *testing.T) {
 		te.e.hint(context.Background(), "a")
 		te.e.hint(context.Background(), "b")
 	}
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
 			return ok
 		}) >= 2
@@ -331,7 +282,7 @@ func TestMiddlewareWrapsEveryRunOutermostFirst(t *testing.T) {
 		}
 	}
 	clock := convergetest.NewClock(wqStart)
-	rec := &eventRecorder{}
+	rec := &convergetest.Recorder{}
 	e := &engine{cfg: config{name: "job", concurrency: 1, middleware: []converge.Middleware{mkmw("local")}, rec: Func(func(ctx context.Context, id ID) error { return nil })}, ready: make(chan struct{})}
 	deps := converge.JobDeps{
 		KV:         inmem.NewKVWithClock(clock),
@@ -347,7 +298,7 @@ func TestMiddlewareWrapsEveryRunOutermostFirst(t *testing.T) {
 	var wg sync.WaitGroup
 	go e.dispatch(ctx, ctx, &wg)
 	e.hint(context.Background(), "x")
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(order) == 2
@@ -370,24 +321,24 @@ func TestRateLimitThrottlesRuns(t *testing.T) {
 	})
 	te.e.hint(context.Background(), "a")
 	te.e.hint(context.Background(), "b")
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	advanceUntil(t, te, 10*time.Minute, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 }
 
 func TestEmptyIDHintRejectedUnlessSingle(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	te.e.hint(context.Background(), "")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.Reason == converge.DiscardEmptyID
 		}) == 1
 	})
 	single := startEngine(t, config{name: "single", single: true}, func(ctx context.Context, id ID) error { return nil })
 	single.e.hint(context.Background(), "")
-	await(t, func() bool {
-		return single.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return single.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
 			return ok
 		}) == 1
@@ -425,7 +376,7 @@ func TestQuietFalseWhileHandlerBlocks(t *testing.T) {
 		t.Fatal("must not be quiet while a handler runs")
 	}
 	close(release)
-	await(t, te.e.Quiet)
+	convergetest.Await(t, te.e.Quiet)
 }
 
 func TestQuietTrueWithOnlyFutureBackoffItems(t *testing.T) {
@@ -433,7 +384,7 @@ func TestQuietTrueWithOnlyFutureBackoffItems(t *testing.T) {
 		return errors.New("boom")
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool { return te.e.Stats().ConsecutiveFails == 1 })
+	convergetest.Await(t, func() bool { return te.e.Stats().ConsecutiveFails == 1 })
 	if !te.e.Quiet() {
 		t.Fatal("a future-due backoff item must be quiet")
 	}
@@ -458,8 +409,8 @@ func TestHintOnSingleJobCoercesIDToEmpty(t *testing.T) {
 	if err := te.e.Hint("whatever"); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
 			return ok && rc.ID == ""
 		}) == 1
@@ -479,15 +430,15 @@ func TestHintRespectsBackoffUnlikePoke(t *testing.T) {
 		return nil
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	if err := te.e.Hint("a"); err != nil {
 		t.Fatal(err)
 	}
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	if err := te.e.Poke("a"); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 }
 
 func TestHintRevivesParkedID(t *testing.T) {
@@ -510,7 +461,7 @@ func TestHintRevivesParkedID(t *testing.T) {
 		return nil
 	})
 	te.e.hint(ctx, "a")
-	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
 	mu.Lock()
 	fail = false
 	mu.Unlock()
@@ -520,8 +471,8 @@ func TestHintRevivesParkedID(t *testing.T) {
 	if err := te.e.Hint("a"); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
-	await(t, func() bool { return te.e.Stats().Parked == 0 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
 }
 
 func TestHintDoesNotPanicRacingShutdown(t *testing.T) {
@@ -578,14 +529,14 @@ func TestPokeOnSingleJobCoercesIDToEmpty(t *testing.T) {
 	if err := te.e.Poke("whatever"); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
 			return ok && rc.ID == ""
 		}) == 1
 	})
-	assertStable(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.AssertStable(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
 			return ok && rc.ID == "whatever"
 		}) == 0
@@ -616,13 +567,13 @@ func TestDroppedHintOnForcedParkEmitsDiscard(t *testing.T) {
 	<-started
 	te.e.hint(context.Background(), "a")
 	close(release)
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.IDParked)
 			return ok
 		}) == 1
 	})
-	if n := te.rec.count(func(e converge.Event) bool {
+	if n := te.rec.Count(func(e converge.Event) bool {
 		wd, ok := e.(converge.WakeDiscarded)
 		return ok && wd.Reason == converge.DiscardParked
 	}); n != 1 {
@@ -653,14 +604,14 @@ func TestRevivedPokeDuringParkingRunsAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(release)
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.IDParked)
 			return ok
 		}) == 1
 	})
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
 			return ok
 		}) == 2
@@ -675,7 +626,7 @@ func TestSettleOnUnknownIDIsUnsettled(t *testing.T) {
 	if before != after {
 		t.Fatalf("stats changed on unsettled finish: before=%+v after=%+v", before, after)
 	}
-	if n := te.rec.count(func(converge.Event) bool { return true }); n != 0 {
+	if n := te.rec.Count(func(converge.Event) bool { return true }); n != 0 {
 		t.Fatalf("unsettled finish must emit no events, got %d", n)
 	}
 }
@@ -686,14 +637,12 @@ func TestBackoffFallbackReportsTrueTripCount(t *testing.T) {
 	})
 	te.e.hint(context.Background(), "a")
 	advanceUntil(t, te, 300*time.Millisecond, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.BackoffFallback)
 			return ok
 		}) >= 1
 	})
-	te.rec.mu.Lock()
-	defer te.rec.mu.Unlock()
-	for _, e := range te.rec.events {
+	for _, e := range te.rec.Events() {
 		if bf, ok := e.(converge.BackoffFallback); ok {
 			if bf.Consecutive != noBackoffLimit+1 {
 				t.Fatalf("BackoffFallback.Consecutive = %d, want %d", bf.Consecutive, noBackoffLimit+1)
@@ -711,8 +660,8 @@ func TestVersionZeroEventOnPark(t *testing.T) {
 		return errors.New("boom")
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.VersionZero)
 			return ok
 		}) == 1
@@ -729,14 +678,14 @@ func TestNoVersionZeroWhenProducerMarked(t *testing.T) {
 		return errors.New("boom")
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.IDParked)
 			return ok
 		}) == 1
 	})
-	assertStable(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.AssertStable(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.VersionZero)
 			return ok
 		}) == 0
@@ -773,21 +722,21 @@ func TestVersionAdvanceRevivesParked(t *testing.T) {
 		return nil
 	})
 	te.e.hint(ctx, "a")
-	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
 	mu.Lock()
 	fail = false
 	mu.Unlock()
 
 	te.e.hint(ctx, "a")
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
 
 	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
 		t.Fatal(err)
 	}
 	te.e.hint(ctx, "a")
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
-	await(t, func() bool { return te.e.Stats().Parked == 0 })
-	await(t, func() bool {
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
+	convergetest.Await(t, func() bool {
 		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
 		return err == nil && !ok
 	})
@@ -800,10 +749,10 @@ func TestVersionSourceErrorKeepsParked(t *testing.T) {
 	})
 	ctx := context.Background()
 	te.e.hint(ctx, "a")
-	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
 	te.e.hint(ctx, "a")
-	assertStable(t, func() bool { return te.e.Stats().Parked == 1 })
-	if n := te.rec.count(func(e converge.Event) bool {
+	convergetest.AssertStable(t, func() bool { return te.e.Stats().Parked == 1 })
+	if n := te.rec.Count(func(e converge.Event) bool {
 		w, ok := e.(converge.WakeDiscarded)
 		return ok && w.Reason == converge.DiscardParked
 	}); n == 0 {
@@ -833,13 +782,13 @@ func TestMidRunVersionBumpStillRevives(t *testing.T) {
 		return nil
 	})
 	te.e.hint(ctx, "a")
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
-	await(t, func() bool { return te.e.Stats().Parked == 0 })
-	await(t, func() bool {
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
+	convergetest.Await(t, func() bool {
 		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
 		return err == nil && !ok
 	})
-	if n := te.rec.count(func(e converge.Event) bool {
+	if n := te.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.IDParked)
 		return ok
 	}); n != 1 {
@@ -863,8 +812,8 @@ func TestInvalidMarkBlocksVersionRevival(t *testing.T) {
 		return errors.New("boom")
 	})
 	te.e.hint(ctx, "a")
-	await(t, func() bool { return te.e.Stats().Parked == 1 })
-	await(t, func() bool {
+	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
+	convergetest.Await(t, func() bool {
 		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
 		return err == nil && ok
 	})
@@ -875,20 +824,20 @@ func TestInvalidMarkBlocksVersionRevival(t *testing.T) {
 		t.Fatal(err)
 	}
 	te.e.hint(ctx, "a")
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
 	if err := kv.Set(ctx, te.e.parkKey("a"), []byte("junk"), 0); err != nil {
 		t.Fatal(err)
 	}
 	te.e.hint(ctx, "a")
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
-	assertStable(t, func() bool { return te.e.Stats().Parked == 1 })
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	convergetest.AssertStable(t, func() bool { return te.e.Stats().Parked == 1 })
 }
 
 func TestActivationClearsMarkForActiveID(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	kv := inmem.NewKVWithClock(clock)
 	e := &engine{cfg: config{name: "job", concurrency: 1, rec: Func(func(context.Context, ID) error { return nil })}, ready: make(chan struct{})}
-	if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &eventRecorder{}, Clock: clock}); err != nil {
+	if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &convergetest.Recorder{}, Clock: clock}); err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
@@ -912,7 +861,7 @@ func TestOnAllReplicasParksInMemoryOnly(t *testing.T) {
 		return fakeWorkerSignal{}
 	})
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool { return te.e.Stats().Parked == 1 })
+	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
 	keys, _, err := te.e.deps.KV.Scan(context.Background(), te.e.parkKey(""), "")
 	if err != nil {
 		t.Fatal(err)
@@ -926,13 +875,13 @@ func TestSetPausedDropsHintWakes(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	te.e.SetPaused(true)
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.ID == "a" && wd.Reason == converge.DiscardPaused
 		}) == 1
 	})
-	if n := te.rec.count(func(e converge.Event) bool {
+	if n := te.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.RunCompleted)
 		return ok
 	}); n != 0 {
@@ -946,8 +895,8 @@ func TestSetPausedDropsPokes(t *testing.T) {
 	if err := te.e.Poke("a"); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.ID == "a" && wd.Reason == converge.DiscardPaused
 		}) == 1
@@ -958,16 +907,16 @@ func TestSetPausedResumeAllowsHintsAgain(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	te.e.SetPaused(true)
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.Reason == converge.DiscardPaused
 		}) == 1
 	})
 	te.e.SetPaused(false)
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
 			return ok
 		}) == 1
@@ -981,8 +930,8 @@ func TestSetPausedSameValueIsNoOp(t *testing.T) {
 		t.Fatal("same-value SetPaused(false) must not pause an unpaused engine")
 	}
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
 			return ok
 		}) == 1
@@ -993,8 +942,8 @@ func TestSetPausedSameValueIsNoOp(t *testing.T) {
 		t.Fatal("engine must be paused")
 	}
 	te.e.hint(context.Background(), "b")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.ID == "b" && wd.Reason == converge.DiscardPaused
 		}) == 1
@@ -1036,19 +985,19 @@ func TestPausedHoldsAlreadyQueuedBacklogNotDropped(t *testing.T) {
 	te.e.hint(context.Background(), "a")
 	<-started
 	te.e.hint(context.Background(), "b")
-	await(t, func() bool { return te.e.queue.counts().depth == 1 })
+	convergetest.Await(t, func() bool { return te.e.queue.counts().depth == 1 })
 
 	te.e.SetPaused(true)
 	close(release)
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
 			return ok && rc.ID == "a"
 		}) == 1
 	})
 
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !ranB })
-	if n := te.rec.count(func(e converge.Event) bool {
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !ranB })
+	if n := te.rec.Count(func(e converge.Event) bool {
 		wd, ok := e.(converge.WakeDiscarded)
 		return ok && wd.ID == "b"
 	}); n != 0 {
@@ -1056,7 +1005,7 @@ func TestPausedHoldsAlreadyQueuedBacklogNotDropped(t *testing.T) {
 	}
 
 	te.e.SetPaused(false)
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return ranB })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return ranB })
 }
 
 func TestQuietTrueWhilePausedWithHeldDueBacklog(t *testing.T) {
@@ -1073,17 +1022,17 @@ func TestQuietTrueWhilePausedWithHeldDueBacklog(t *testing.T) {
 	te.e.hint(context.Background(), "a")
 	<-started
 	te.e.hint(context.Background(), "b")
-	await(t, func() bool { return te.e.queue.counts().depth == 1 })
+	convergetest.Await(t, func() bool { return te.e.queue.counts().depth == 1 })
 
 	te.e.SetPaused(true)
 	close(release)
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
 			return ok && rc.ID == "a"
 		}) == 1
 	})
 
-	await(t, te.e.Quiet)
-	assertStable(t, te.e.Quiet)
+	convergetest.Await(t, te.e.Quiet)
+	convergetest.AssertStable(t, te.e.Quiet)
 }

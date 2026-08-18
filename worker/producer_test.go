@@ -14,17 +14,6 @@ import (
 	"github.com/GareArc/converge/inmem"
 )
 
-func await(t *testing.T, cond func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition never became true")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
 func assertNoDelivery(t *testing.T, ch <-chan converge.Delivery, wait time.Duration) {
 	t.Helper()
 	select {
@@ -90,7 +79,7 @@ func TestEnqueuePublishesMessage(t *testing.T) {
 		t.Fatalf("Enqueue 2: %v", err)
 	}
 
-	await(t, func() bool { return len(ch) >= 2 })
+	convergetest.Await(t, func() bool { return len(ch) >= 2 })
 	first := (<-ch).Message()
 	second := (<-ch).Message()
 
@@ -137,7 +126,7 @@ func TestEnqueueSchemaVersionFromTaskOpts(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, 1, EnqueueOpts{}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	await(t, func() bool { return len(ch) >= 1 })
+	convergetest.Await(t, func() bool { return len(ch) >= 1 })
 	m := (<-ch).Message()
 	if m.Headers[converge.HeaderSchemaVersion] != "5" {
 		t.Fatalf("schema-version = %q, want 5", m.Headers[converge.HeaderSchemaVersion])
@@ -175,7 +164,7 @@ func TestEnqueueDelay(t *testing.T) {
 	}
 	assertNoDelivery(t, ch, 50*time.Millisecond)
 	clock.Advance(time.Minute)
-	await(t, func() bool { return len(ch) >= 1 })
+	convergetest.Await(t, func() bool { return len(ch) >= 1 })
 }
 
 func TestEnqueueDelayWithoutDelayedPublisher(t *testing.T) {
@@ -265,7 +254,7 @@ func TestProducerFromUsesOptionsMQAndClock(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	await(t, func() bool { return len(ch) >= 1 })
+	convergetest.Await(t, func() bool { return len(ch) >= 1 })
 	m := (<-ch).Message()
 	want := clock.Now().UTC().Format(time.RFC3339Nano)
 	if m.Headers[converge.HeaderEnqueuedAt] != want {

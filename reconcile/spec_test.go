@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
 )
 
@@ -266,8 +267,8 @@ func TestEngineInfoOmitsZeroSettings(t *testing.T) {
 func TestPausedSpecDropsWakes(t *testing.T) {
 	te := startEngine(t, config{paused: true}, func(ctx context.Context, id ID) error { return nil })
 	te.e.hint(context.Background(), "a")
-	await(t, func() bool {
-		return te.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
 			return ok && wd.Reason == converge.DiscardPaused
 		}) == 1

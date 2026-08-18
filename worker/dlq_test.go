@@ -34,8 +34,8 @@ func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.MessageDeadLettered)
 			return ok
 		}) == 1
@@ -174,8 +174,8 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.MessageDeadLettered)
 			return ok
 		}) == 1
@@ -205,12 +205,12 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(metas) == 2
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(metas) == 2
@@ -236,7 +236,7 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 	if keys := dlqKeys(t, w, "job"); len(keys) != 0 {
 		t.Fatalf("dlq keys after requeue = %v, want none", keys)
 	}
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Err == nil
 	}); n != 1 {
@@ -279,7 +279,7 @@ func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	if err := dlq.Requeue(context.Background(), rec.MessageID); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { return len(ch) >= 1 })
+	convergetest.Await(t, func() bool { return len(ch) >= 1 })
 	m := (<-ch).Message()
 	if _, ok := m.Headers[converge.HeaderMessageID]; ok {
 		t.Fatalf("republished message has message-id header %q, want none", m.Headers[converge.HeaderMessageID])

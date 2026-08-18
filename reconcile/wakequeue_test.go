@@ -553,9 +553,9 @@ func TestAwaitUnpausedBlocksUntilResumed(t *testing.T) {
 		returned = true
 		mu.Unlock()
 	}()
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
 	q.setPaused(false)
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
 }
 
 func TestAwaitUnpausedReturnsFalseOnCtxDone(t *testing.T) {
@@ -569,9 +569,9 @@ func TestAwaitUnpausedReturnsFalseOnCtxDone(t *testing.T) {
 		ok, returned = result, true
 		mu.Unlock()
 	}()
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
 	cancel()
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
 	mu.Lock()
 	defer mu.Unlock()
 	if ok {

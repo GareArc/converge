@@ -23,35 +23,12 @@ import (
 
 var wstart = time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
 
-type recorder struct {
-	mu     sync.Mutex
-	events []converge.Event
-}
-
-func (r *recorder) Observe(e converge.Event) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.events = append(r.events, e)
-}
-
-func (r *recorder) count(match func(converge.Event) bool) int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	n := 0
-	for _, e := range r.events {
-		if match(e) {
-			n++
-		}
-	}
-	return n
-}
-
 type world struct {
 	rt    *converge.Runtime
 	clock *convergetest.Clock
 	mq    converge.MQ
 	kv    converge.KV
-	rec   *recorder
+	rec   *convergetest.Recorder
 	done  chan error
 }
 
@@ -78,7 +55,7 @@ func newWorldWith(t *testing.T, o worldOpts) *world {
 	} else {
 		kv = inmem.NewKVWithClock(clock)
 	}
-	rec := &recorder{}
+	rec := &convergetest.Recorder{}
 	rt, err := converge.New(converge.Options{
 		Namespace:    "wt",
 		MQ:           mq,
@@ -143,22 +120,7 @@ func (w *world) stats(t *testing.T, job string) converge.JobStats {
 
 func (w *world) advanceUntil(t *testing.T, step time.Duration, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatal("condition never became true while advancing")
-		}
-		w.clock.Advance(step)
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
-func assertStable(t *testing.T, cond func() bool) {
-	t.Helper()
-	time.Sleep(20 * time.Millisecond)
-	if !cond() {
-		t.Fatal("state changed while it must hold")
-	}
+	convergetest.AdvanceUntil(t, w.clock, step, cond)
 }
 
 func dlqKeys(t *testing.T, w *world, job string) []string {
@@ -211,12 +173,12 @@ func TestHandleRunsAndAcks(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return runs == 1
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return runs == 1
@@ -238,7 +200,7 @@ func TestHandleRunsAndAcks(t *testing.T) {
 	if !gotMeta.EnqueuedAt.Equal(enqueuedAt) {
 		t.Fatalf("enqueuedAt = %v, want %v", gotMeta.EnqueuedAt, enqueuedAt)
 	}
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Surface == converge.SurfaceWorker && rc.Err == nil && rc.Attempt == 1
 	}); n != 1 {
@@ -267,13 +229,13 @@ func TestErrorRetriesWithBackoffThenDeadLetters(t *testing.T) {
 	}
 	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 2 })
 	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 3 })
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.MessageDeadLettered)
 			return ok
 		}) == 1
 	})
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 3 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 3 })
 	keys := dlqKeys(t, w, "job")
 	if len(keys) != 1 {
 		t.Fatalf("dlq keys = %v, want exactly 1", keys)
@@ -295,7 +257,7 @@ func TestErrorRetriesWithBackoffThenDeadLetters(t *testing.T) {
 	if payload != "hello" {
 		t.Fatalf("dlq record payload = %q, want %q", payload, "hello")
 	}
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.MessageDeadLettered)
 		return ok
 	}); n != 1 {
@@ -335,7 +297,7 @@ func TestMetaAttemptCountsTransportRedeliveries(t *testing.T) {
 		defer mu.Unlock()
 		return len(attempts) >= 3
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(attempts) == 3
@@ -369,14 +331,14 @@ func TestDecodeFailureDeadLettersImmediately(t *testing.T) {
 	if err := w.mq.Publish(context.Background(), "job", converge.Message{Kind: "job", Headers: h, Payload: []byte(`{not valid json`)}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
 			return ok && dl.Reason == converge.DeadLetterUndecodable
 		}) == 1
 	})
-	assertStable(t, func() bool { return atomic.LoadInt32(&ran) == 0 })
-	if n := w.rec.count(func(e converge.Event) bool {
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&ran) == 0 })
+	if n := w.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Err != nil
 	}); n != 1 {
@@ -429,14 +391,14 @@ func TestReceiptGuardsDeadLetter(t *testing.T) {
 			if err := w.mq.Publish(context.Background(), "job", converge.Message{Kind: c.kind, Headers: h, Payload: []byte(`"x"`)}); err != nil {
 				t.Fatal(err)
 			}
-			await(t, func() bool {
-				return w.rec.count(func(e converge.Event) bool {
+			convergetest.Await(t, func() bool {
+				return w.rec.Count(func(e converge.Event) bool {
 					dl, ok := e.(converge.MessageDeadLettered)
 					return ok && dl.Reason == c.wantReason
 				}) == 1
 			})
-			assertStable(t, func() bool { return atomic.LoadInt32(&ran) == 0 })
-			if n := w.rec.count(func(e converge.Event) bool {
+			convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&ran) == 0 })
+			if n := w.rec.Count(func(e converge.Event) bool {
 				_, ok := e.(converge.RunCompleted)
 				return ok
 			}); n != 0 {
@@ -510,7 +472,7 @@ func TestDeadLetterKVFailureNacksAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.advanceUntil(t, 200*time.Millisecond, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.MessageDeadLettered)
 			return ok
 		}) == 1
@@ -522,7 +484,7 @@ func TestDeadLetterKVFailureNacksAndRecovers(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("dlq keys = %v, want exactly 1", keys)
 	}
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.MessageDeadLettered)
 		return ok
 	}); n != 1 {
@@ -551,7 +513,7 @@ func TestQueueDepthEvents(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		select {
 		case <-entered:
 			return true
@@ -559,15 +521,15 @@ func TestQueueDepthEvents(t *testing.T) {
 			return false
 		}
 	})
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			qd, ok := e.(converge.QueueDepth)
 			return ok && qd.Depth == 1
 		}) >= 1
 	})
 	close(gate)
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			qd, ok := e.(converge.QueueDepth)
 			return ok && qd.Depth == 0
 		}) >= 1
@@ -605,19 +567,19 @@ func TestConcurrencyBounds(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return running == 2
 	})
-	await(t, func() bool { return w.stats(t, "job").QueueDepth == 3 })
-	assertStable(t, func() bool {
+	convergetest.Await(t, func() bool { return w.stats(t, "job").QueueDepth == 3 })
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return running == 2 && w.stats(t, "job").QueueDepth == 3
 	})
 	close(gate)
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return completed == 4
@@ -643,15 +605,15 @@ func TestDiscardAcksWithEvent(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
-	if n := w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	if n := w.rec.Count(func(e converge.Event) bool {
 		md, ok := e.(converge.MessageDiscarded)
 		return ok && md.Reason == "gone"
 	}); n != 1 {
 		t.Fatalf("MessageDiscarded count = %d, want 1", n)
 	}
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Err == nil
 	}); n != 1 {
@@ -698,12 +660,12 @@ func TestSnoozeRedeliversWithoutConsumingAttempt(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(attempts) == 1
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(attempts) == 1
@@ -743,14 +705,14 @@ func TestSnoozeFloorAndBackoffFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 11 })
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			bf, ok := e.(converge.BackoffFallback)
 			return ok && bf.Consecutive == 11
 		}) == 1
 	})
 	w.clock.Advance(time.Minute)
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 11 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 11 })
 	w.advanceUntil(t, 10*time.Minute, func() bool { return atomic.LoadInt32(&runs) >= 12 })
 }
 
@@ -773,10 +735,10 @@ func TestSnoozeClampedToMaxAge(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 
 	deadLettered := func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
 			return ok && dl.Reason == converge.DeadLetterMaxAge
 		}) == 1
@@ -797,7 +759,7 @@ func TestSnoozeClampedToMaxAge(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 	keys := dlqKeys(t, w, "job")
 	if len(keys) != 1 {
 		t.Fatalf("dlq keys = %v, want exactly 1", keys)
@@ -839,13 +801,13 @@ func TestSnoozeWithSpentBudgetDeadLettersImmediately(t *testing.T) {
 	w.clock.Advance(2 * time.Minute)
 	close(gate)
 
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.MessageDeadLettered)
 			return ok
 		}) == 1
 	})
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 
 	keys := dlqKeys(t, w, "job")
 	if len(keys) != 1 {
@@ -855,7 +817,7 @@ func TestSnoozeWithSpentBudgetDeadLettersImmediately(t *testing.T) {
 	if rec.Reason != converge.DeadLetterMaxAge.String() {
 		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAge.String())
 	}
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Err == nil
 	}); n != 1 {
@@ -904,8 +866,8 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	if err := w.mq.Publish(context.Background(), "job", anonMsg()); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.MessageDeadLettered)
 			return ok
 		}) == 1
@@ -913,8 +875,8 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	if err := w.mq.Publish(context.Background(), "job", anonMsg()); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.MessageDeadLettered)
 			return ok
 		}) == 2
@@ -925,13 +887,11 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 		t.Fatalf("dlq keys = %v, want exactly 1", keys)
 	}
 	var ids []string
-	w.rec.mu.Lock()
-	for _, e := range w.rec.events {
+	for _, e := range w.rec.Events() {
 		if dl, ok := e.(converge.MessageDeadLettered); ok {
 			ids = append(ids, dl.MessageID)
 		}
 	}
-	w.rec.mu.Unlock()
 	if len(ids) != 2 || ids[0] != ids[1] {
 		t.Fatalf("MessageDeadLettered MessageIDs = %v, want two identical values", ids)
 	}
@@ -962,20 +922,20 @@ func TestWrongSurfaceSignalDeadLetters(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
 			return ok && dl.Reason == converge.DeadLetterWrongSurface
 		}) == 1
 	})
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
-	if n := w.rec.count(func(e converge.Event) bool {
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	if n := w.rec.Count(func(e converge.Event) bool {
 		ws, ok := e.(converge.WrongSurfaceSignal)
 		return ok && ws.Surface == converge.SurfaceReconcile
 	}); n != 1 {
 		t.Fatalf("WrongSurfaceSignal count = %d, want 1", n)
 	}
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Err != nil
 	}); n != 1 {
@@ -1051,14 +1011,14 @@ func TestShutdownIsNeutral(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("Run returned %v, want nil", runErr)
 	}
-	if n := w1.rec.count(func(e converge.Event) bool {
+	if n := w1.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.RunCompleted)
 		return ok
 	}); n != 0 {
 		t.Fatalf("RunCompleted count = %d, want 0", n)
 	}
 
-	rec2 := &recorder{}
+	rec2 := &convergetest.Recorder{}
 	rt2, err := converge.New(converge.Options{
 		Namespace: "wt",
 		MQ:        w1.mq,
@@ -1088,7 +1048,7 @@ func TestShutdownIsNeutral(t *testing.T) {
 		t.Fatal(err)
 	}
 	w2.run(t)
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return runs2 == 1
@@ -1135,7 +1095,7 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 	clock := convergetest.NewClock(wstart)
 	pmq := &publishCountingMQ{MQ: inmem.NewMQWithClock(clock)}
 	kv := inmem.NewKVWithClock(clock)
-	rec := &recorder{}
+	rec := &convergetest.Recorder{}
 	rt, err := converge.New(converge.Options{
 		Namespace:    "wt",
 		MQ:           pmq,
@@ -1186,7 +1146,7 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "two", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { return w1.stats(t, "job").QueueDepth == 2 })
+	convergetest.Await(t, func() bool { return w1.stats(t, "job").QueueDepth == 2 })
 
 	before := pmq.publishes.Load()
 	cancel()
@@ -1216,7 +1176,7 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 		t.Fatalf("republishes during shutdown = %d, want O(1)", republishes)
 	}
 
-	rec2 := &recorder{}
+	rec2 := &convergetest.Recorder{}
 	rt2, err := converge.New(converge.Options{
 		Namespace: "wt",
 		MQ:        pmq,
@@ -1243,7 +1203,7 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 		t.Fatal(err)
 	}
 	w2.run(t)
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(attempts) == 2
@@ -1283,7 +1243,7 @@ func TestVisibilityHeartbeatExtends(t *testing.T) {
 	}
 
 	var receipt int64
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		if c := cmq.count.Load(); c > 0 {
 			receipt = c
 			return true
@@ -1295,10 +1255,10 @@ func TestVisibilityHeartbeatExtends(t *testing.T) {
 		w.advanceUntil(t, 30*time.Second, func() bool { return cmq.count.Load() >= want })
 	}
 	close(gate)
-	await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 	w.clock.Advance(5 * time.Minute)
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 }
 
 type unknownWorkerSignal struct{}
@@ -1327,7 +1287,7 @@ func TestUnknownWorkerSignalFallsBackToError(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 2 })
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Err != nil
 	}); n == 0 {
@@ -1376,17 +1336,17 @@ func TestPointerOutcomeDispatch(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "snooze-me", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return discardRuns == 1 && len(snoozeAttempts) == 1
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return discardRuns == 1 && len(snoozeAttempts) == 1
 	})
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		md, ok := e.(converge.MessageDiscarded)
 		return ok && md.Reason == "gone"
 	}); n != 1 {
@@ -1397,7 +1357,7 @@ func TestPointerOutcomeDispatch(t *testing.T) {
 		defer mu.Unlock()
 		return len(snoozeAttempts) == 2
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return discardRuns == 1 && len(snoozeAttempts) == 2
@@ -1416,7 +1376,7 @@ func newLeaseWorldPair(t *testing.T) (*world, *world, *inmem.Lease) {
 	kv := inmem.NewKVWithClock(clock)
 	lease := inmem.NewLeaseWithClock(clock)
 	build := func() *world {
-		rec := &recorder{}
+		rec := &convergetest.Recorder{}
 		rt, err := converge.New(converge.Options{
 			Namespace: "wt",
 			MQ:        mq,
@@ -1469,12 +1429,12 @@ func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return aRuns+bRuns == 3
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return aRuns+bRuns == 3
@@ -1486,7 +1446,7 @@ func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
 	if !leaderOnly {
 		t.Fatalf("expected exactly one replica to handle all 3 runs, got aRuns=%d bRuns=%d", gotA, gotB)
 	}
-	if n := wa.rec.count(leaseAcquired) + wb.rec.count(leaseAcquired); n != 1 {
+	if n := wa.rec.Count(leaseAcquired) + wb.rec.Count(leaseAcquired); n != 1 {
 		t.Fatalf("LeaseTransition{Acquired:true} count across both replicas = %d, want 1", n)
 	}
 }
@@ -1551,7 +1511,7 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	clock := convergetest.NewClock(wstart)
 	mq := inmem.NewMQWithClock(clock)
 	build := func() *world {
-		rec := &recorder{}
+		rec := &convergetest.Recorder{}
 		rt, err := converge.New(converge.Options{Namespace: "wt", MQ: mq, Observer: rec, Clock: clock})
 		if err != nil {
 			t.Fatal(err)
@@ -1657,38 +1617,38 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	if err := okTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { return atomic.LoadInt32(&okA) == 1 && atomic.LoadInt32(&okB) == 1 })
-	assertStable(t, func() bool { return atomic.LoadInt32(&okA) == 1 && atomic.LoadInt32(&okB) == 1 })
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&okA) == 1 && atomic.LoadInt32(&okB) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&okA) == 1 && atomic.LoadInt32(&okB) == 1 })
 
 	if err := failTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { return atomic.LoadInt32(&failA) == 1 && atomic.LoadInt32(&failB) == 1 })
-	assertStable(t, func() bool { return atomic.LoadInt32(&failA) == 1 && atomic.LoadInt32(&failB) == 1 })
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&failA) == 1 && atomic.LoadInt32(&failB) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&failA) == 1 && atomic.LoadInt32(&failB) == 1 })
 	failRunCompleted := func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Job == "broadcast-fail" && rc.Err != nil
 	}
-	if n := wa.rec.count(failRunCompleted); n != 1 {
+	if n := wa.rec.Count(failRunCompleted); n != 1 {
 		t.Fatalf("worldA RunCompleted{Err!=nil} count = %d, want 1", n)
 	}
-	if n := wb.rec.count(failRunCompleted); n != 1 {
+	if n := wb.rec.Count(failRunCompleted); n != 1 {
 		t.Fatalf("worldB RunCompleted{Err!=nil} count = %d, want 1", n)
 	}
 
 	if err := snoozeTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { return atomic.LoadInt32(&snoozeA) == 1 && atomic.LoadInt32(&snoozeB) == 1 })
-	assertStable(t, func() bool { return atomic.LoadInt32(&snoozeA) == 1 && atomic.LoadInt32(&snoozeB) == 1 })
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&snoozeA) == 1 && atomic.LoadInt32(&snoozeB) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&snoozeA) == 1 && atomic.LoadInt32(&snoozeB) == 1 })
 	snoozeRunCompleted := func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Job == "broadcast-snooze" && rc.Err != nil
 	}
-	if n := wa.rec.count(snoozeRunCompleted); n != 1 {
+	if n := wa.rec.Count(snoozeRunCompleted); n != 1 {
 		t.Fatalf("worldA snoozed RunCompleted{Err!=nil} count = %d, want 1", n)
 	}
-	if n := wb.rec.count(snoozeRunCompleted); n != 1 {
+	if n := wb.rec.Count(snoozeRunCompleted); n != 1 {
 		t.Fatalf("worldB snoozed RunCompleted{Err!=nil} count = %d, want 1", n)
 	}
 }
@@ -1712,10 +1672,10 @@ func TestPausedConsumesNothing(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 0 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 0 })
 	cancel()
 
-	rec2 := &recorder{}
+	rec2 := &convergetest.Recorder{}
 	rt2, err := converge.New(converge.Options{
 		Namespace: "wt",
 		MQ:        w.mq,
@@ -1738,7 +1698,7 @@ func TestPausedConsumesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	w2.run(t)
-	await(t, func() bool { return atomic.LoadInt32(&runs2) == 1 })
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs2) == 1 })
 }
 
 func TestInitialPausedResumesAndStartsConsuming(t *testing.T) {
@@ -1763,10 +1723,10 @@ func TestInitialPausedResumesAndStartsConsuming(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 0 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 0 })
 
 	e.SetPaused(false)
-	await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 }
 
 func TestPauseMidStreamStopsDeliveryThenResumeDeliversBacklog(t *testing.T) {
@@ -1812,15 +1772,15 @@ func TestPauseMidStreamStopsDeliveryThenResumeDeliversBacklog(t *testing.T) {
 
 	e.SetPaused(true)
 	close(release)
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
 
 	if err := tk.Enqueue(context.Background(), p, "two", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
 
 	e.SetPaused(false)
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
 }
 
 func TestPauseWithBlockedHandlerDrainTimeoutCancelsHandlerCtx(t *testing.T) {
@@ -1876,11 +1836,11 @@ func TestOnOneReplicaPauseReleasesLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	wa.run(t)
-	await(t, func() bool { return wa.rec.count(leaseAcquired) == 1 })
+	convergetest.Await(t, func() bool { return wa.rec.Count(leaseAcquired) == 1 })
 
 	e.SetPaused(true)
-	await(t, func() bool {
-		return wa.rec.count(func(ev converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return wa.rec.Count(func(ev converge.Event) bool {
 			lt, ok := ev.(converge.LeaseTransition)
 			return ok && !lt.Acquired
 		}) >= 1
@@ -1938,10 +1898,10 @@ func TestResumeDuringDrainDoesNotInterruptThenStartsNextCycle(t *testing.T) {
 
 	e.SetPaused(true)
 	e.SetPaused(false)
-	assertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 0 })
+	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 0 })
 
 	close(release)
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
 	mu.Lock()
 	if gotErr != nil {
 		t.Fatalf("in-flight handler ctx must not be canceled by a resume landing mid-drain, got %v", gotErr)
@@ -1951,7 +1911,7 @@ func TestResumeDuringDrainDoesNotInterruptThenStartsNextCycle(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "two", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
 }
 
 func TestSetPausedSameValueIsNoOp(t *testing.T) {
@@ -1964,14 +1924,14 @@ func TestSetPausedSameValueIsNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 	wa.run(t)
-	await(t, func() bool { return wa.rec.count(leaseAcquired) == 1 })
+	convergetest.Await(t, func() bool { return wa.rec.Count(leaseAcquired) == 1 })
 
 	e.SetPaused(false)
 	if e.Info().Paused {
 		t.Fatal("same-value SetPaused(false) must not pause")
 	}
-	assertStable(t, func() bool {
-		return wa.rec.count(leaseAcquired) == 1 && wa.rec.count(func(ev converge.Event) bool {
+	convergetest.AssertStable(t, func() bool {
+		return wa.rec.Count(leaseAcquired) == 1 && wa.rec.Count(func(ev converge.Event) bool {
 			lt, ok := ev.(converge.LeaseTransition)
 			return ok && !lt.Acquired
 		}) == 0
@@ -2017,8 +1977,8 @@ func TestRateLimitSpacesRuns(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
-	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) == 2 })
 	w.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) == 3 })
 }
@@ -2048,7 +2008,7 @@ func TestRateLimitWaitIsHeartbeatCovered(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "b", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	await(t, func() bool {
+	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return runs["a"]+runs["b"] == 1
@@ -2101,7 +2061,7 @@ func TestPanicIsRecoveredAsError(t *testing.T) {
 		defer mu.Unlock()
 		return len(attempts) >= 2
 	})
-	assertStable(t, func() bool {
+	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(attempts) == 2
@@ -2112,13 +2072,13 @@ func TestPanicIsRecoveredAsError(t *testing.T) {
 	if !reflect.DeepEqual(attempts, want) {
 		t.Fatalf("attempts = %v, want %v", attempts, want)
 	}
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Attempt == 1 && rc.Err != nil && strings.Contains(rc.Err.Error(), "boom")
 	}); n != 1 {
 		t.Fatalf("RunCompleted{Attempt:1, Err containing panic} count = %d, want 1", n)
 	}
-	if n := w.rec.count(func(e converge.Event) bool {
+	if n := w.rec.Count(func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Attempt == 2 && rc.Err == nil
 	}); n != 1 {
@@ -2156,7 +2116,7 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 	mq := inmem.NewMQWithClock(clock)
 	kv := inmem.NewKVWithClock(clock)
 	lease := &failExtendLease{inner: inmem.NewLeaseWithClock(clock)}
-	rec := &recorder{}
+	rec := &convergetest.Recorder{}
 	rt, err := converge.New(converge.Options{
 		Namespace: "wt",
 		MQ:        mq,
@@ -2205,8 +2165,8 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 			return false
 		}
 	})
-	await(t, func() bool {
-		return w.rec.count(func(e converge.Event) bool {
+	convergetest.Await(t, func() bool {
+		return w.rec.Count(func(e converge.Event) bool {
 			lt, ok := e.(converge.LeaseTransition)
 			return ok && !lt.Acquired
 		}) >= 1
@@ -2249,7 +2209,7 @@ func TestQuietFlipsFalseWhileHandlerInFlight(t *testing.T) {
 		t.Fatal("must not be quiet while a handler is in flight")
 	}
 	close(gate)
-	await(t, e.Quiet)
+	convergetest.Await(t, e.Quiet)
 }
 
 func TestHintIsAReconcileVerb(t *testing.T) {
