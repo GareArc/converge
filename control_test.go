@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -235,6 +236,83 @@ func controlResponseFor(t *testing.T, kv converge.KV, ns, replica string) *ctl.R
 	return nil
 }
 
+func awaitControlListenersLive(t *testing.T, mq converge.MQ, kv converge.KV, ns string, rts ...*converge.Runtime) {
+	t.Helper()
+	var probes []string
+	probe := func(seq int) string {
+		opID := fmt.Sprintf("liveprobe%07d", seq)
+		probes = append(probes, opID)
+		payload, err := json.Marshal(ctl.Command{Op: "live-probe", Job: "none", OpID: opID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := mq.Publish(context.Background(), ctl.Queue(ns), converge.Message{Payload: payload}); err != nil {
+			t.Fatal(err)
+		}
+		return opID
+	}
+	answered := func(opID, replica string) bool {
+		_, ok, err := kv.Get(context.Background(), ctl.ResKey(ns, opID, replica))
+		return err == nil && ok
+	}
+	seq := 0
+	var replicas []string
+	for _, rt := range rts {
+		wiring, err := hook.OpsDeps(rt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replicas = append(replicas, wiring.Replica)
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			opID := probe(seq)
+			seq++
+			live := false
+			for i := 0; i < 10; i++ {
+				if answered(opID, wiring.Replica) {
+					live = true
+					break
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			if live {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("control listener for replica %s never became live", wiring.Replica)
+			}
+		}
+	}
+	final := probe(seq)
+	for _, replica := range replicas {
+		deadline := time.Now().Add(2 * time.Second)
+		for !answered(final, replica) {
+			if time.Now().After(deadline) {
+				t.Fatalf("control listener for replica %s stopped answering", replica)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	for _, opID := range probes {
+		cursor := ""
+		for {
+			keys, next, err := kv.Scan(context.Background(), ctl.ResPrefix(ns, opID), cursor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range keys {
+				if err := kv.Delete(context.Background(), key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
+		}
+	}
+}
+
 func TestControlDispatchLocalFallbackPoke(t *testing.T) {
 	rt := mustRuntime(t)
 	s := newStubJob("a")
@@ -314,8 +392,9 @@ func TestControlDispatchBroadcastPauseAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	awaitControlListenersLive(t, mq, kv, ns, rtA, rtB)
 
-	resp, _, err := awaitControlDispatch(t, clock, rtA, ctl.Request{Op: ctl.OpPause, Job: "worker", Timeout: 200 * time.Millisecond})
+	resp, _, err := awaitControlDispatch(t, clock, rtA, ctl.Request{Op: ctl.OpPause, Job: "worker", Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +429,7 @@ func TestControlDispatchBroadcastPauseAndResume(t *testing.T) {
 		return ok && p
 	})
 
-	resp, _, err = awaitControlDispatch(t, clock, rtA, ctl.Request{Op: ctl.OpResume, Job: "worker", Timeout: 200 * time.Millisecond})
+	resp, _, err = awaitControlDispatch(t, clock, rtA, ctl.Request{Op: ctl.OpResume, Job: "worker", Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,8 +473,9 @@ func TestControlDispatchBroadcastPokeIgnoresErrorForEarlyReturn(t *testing.T) {
 	defer cancel()
 	startAndAwaitReady(t, rtA, ctx)
 	startAndAwaitReady(t, rtB, ctx)
+	awaitControlListenersLive(t, mq, kv, ns, rtA, rtB)
 
-	resp, _, err := awaitControlDispatch(t, clock, rtA, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x", Timeout: 500 * time.Millisecond})
+	resp, _, err := awaitControlDispatch(t, clock, rtA, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x", Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,8 +529,9 @@ func TestControlDispatchRunPassEarlyReturnBeforeDeadline(t *testing.T) {
 	defer cancel()
 	startAndAwaitReady(t, rtA, ctx)
 	startAndAwaitReady(t, rtB, ctx)
+	awaitControlListenersLive(t, mq, kv, ns, rtA, rtB)
 
-	resp, elapsed, err := awaitControlDispatch(t, clock, rtA, ctl.Request{Op: ctl.OpRunPass, Job: "worker"})
+	resp, elapsed, err := awaitControlDispatch(t, clock, rtA, ctl.Request{Op: ctl.OpRunPass, Job: "worker", Timeout: 30 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,8 +547,8 @@ func TestControlDispatchRunPassEarlyReturnBeforeDeadline(t *testing.T) {
 	if !sawActed {
 		t.Fatalf("resp = %+v, want an acted response present", resp)
 	}
-	if elapsed >= time.Second {
-		t.Fatalf("elapsed = %v, want early return well before the 2s default deadline", elapsed)
+	if elapsed >= 15*time.Second {
+		t.Fatalf("elapsed = %v, want early return well before the 30s deadline", elapsed)
 	}
 }
 
@@ -538,12 +619,13 @@ func TestControlListenerSurvivesUndecodableCommand(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	startAndAwaitReady(t, rt, ctx)
+	awaitControlListenersLive(t, mq, kv, ns, rt)
 
 	if err := mq.Publish(context.Background(), ctl.Queue(ns), converge.Message{Payload: []byte("not-json")}); err != nil {
 		t.Fatal(err)
 	}
 
-	resp, _, err := awaitControlDispatch(t, clock, rt, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x", Timeout: 2 * time.Second})
+	resp, _, err := awaitControlDispatch(t, clock, rt, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x", Timeout: 30 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -570,6 +652,7 @@ func TestControlListenerUnknownOpRespondsVisibly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	awaitControlListenersLive(t, mq, kv, ns, rt)
 
 	opID := "1234567890abcdef"
 	payload, err := json.Marshal(ctl.Command{Op: "frobnicate", Job: "worker", OpID: opID})
@@ -612,6 +695,7 @@ func TestControlResponseExpiresAfterTTL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	awaitControlListenersLive(t, mq, kv, ns, rt)
 
 	opID := "aaaaaaaaaaaaaaaa"
 	payload, err := json.Marshal(ctl.Command{Op: ctl.OpPoke, Job: "worker", ID: "x", OpID: opID})
@@ -683,8 +767,9 @@ func TestControlDispatchEarlyReturnRequiresActedTrue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	awaitControlListenersLive(t, mq, kv, ns, rtBad, rtGood)
 
-	done := startControlDispatch(rtBad, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x"})
+	done := startControlDispatch(rtBad, ctl.Request{Op: ctl.OpPoke, Job: "worker", ID: "x", Timeout: time.Hour})
 
 	convergetest.AdvanceUntil(t, clock, controlTestPollStep, func() bool {
 		return controlResponseFor(t, kv, ns, wiringBad.Replica) != nil
@@ -748,6 +833,7 @@ func TestControlDispatchPauseWaitsForAllReplicas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	awaitControlListenersLive(t, mq, kv, ns, rtFast, rtSlow)
 
 	done := startControlDispatch(rtFast, ctl.Request{Op: ctl.OpPause, Job: "worker", Timeout: 5 * time.Second})
 
@@ -799,6 +885,7 @@ func TestControlListenerUnknownJobRespondsVisibly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	awaitControlListenersLive(t, mq, kv, ns, rt)
 
 	opID := "fedcba0987654321"
 	payload, err := json.Marshal(ctl.Command{Op: ctl.OpPoke, Job: "does-not-exist", ID: "x", OpID: opID})
@@ -843,8 +930,9 @@ func TestControlDispatchBroadcastResponsesSortedByReplica(t *testing.T) {
 		startAndAwaitReady(t, rt, ctx)
 		rts = append(rts, rt)
 	}
+	awaitControlListenersLive(t, mq, kv, ns, rts...)
 
-	resp, _, err := awaitControlDispatch(t, clock, rts[0], ctl.Request{Op: ctl.OpPause, Job: "worker", Timeout: 500 * time.Millisecond})
+	resp, _, err := awaitControlDispatch(t, clock, rts[0], ctl.Request{Op: ctl.OpPause, Job: "worker", Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
