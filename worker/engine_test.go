@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -401,6 +403,7 @@ func TestReceiptGuardsDeadLetter(t *testing.T) {
 		{"missing schema header", func(h map[string]string) { delete(h, converge.HeaderSchemaVersion) }, "job", converge.DeadLetterSchemaVersion},
 		{"wrong schema version", func(h map[string]string) { h[converge.HeaderSchemaVersion] = "2" }, "job", converge.DeadLetterSchemaVersion},
 		{"unparseable attempt", func(h map[string]string) { h[converge.HeaderAttempt] = "nope" }, "job", converge.DeadLetterUndecodable},
+		{"attempt header overflow", func(h map[string]string) { h[converge.HeaderAttempt] = strconv.Itoa(math.MaxInt) }, "job", converge.DeadLetterUndecodable},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -748,6 +751,195 @@ func TestSnoozeFloorAndBackoffFallback(t *testing.T) {
 	w.clock.Advance(time.Minute)
 	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 11 })
 	w.advanceUntil(t, 10*time.Minute, func() bool { return atomic.LoadInt32(&runs) >= 12 })
+}
+
+func TestSnoozeClampedToMaxAge(t *testing.T) {
+	w := newWorld(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	var runs int32
+	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&runs, 1)
+		return Snooze{In: time.Hour}
+	}, HandleOpts{Retry: RetryPolicy{MaxAge: 5 * time.Minute}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+
+	deadLettered := func() bool {
+		return w.rec.count(func(e converge.Event) bool {
+			dl, ok := e.(converge.MessageDeadLettered)
+			return ok && dl.Reason == converge.DeadLetterMaxAge
+		}) == 1
+	}
+	const step = 40 * time.Second
+	const maxAdvance = 6 * time.Minute
+	var advanced time.Duration
+	deadline := time.Now().Add(2 * time.Second)
+	for !deadLettered() {
+		if advanced >= maxAdvance {
+			t.Fatalf("max-age dead-letter not observed within %s of simulated clock advance; snooze was not clamped", maxAdvance)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for max-age dead-letter")
+		}
+		w.clock.Advance(step)
+		advanced += step
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+	keys := dlqKeys(t, w, "job")
+	if len(keys) != 1 {
+		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+	}
+	rec := dlqRecordAt(t, w, keys[0])
+	if rec.Reason != converge.DeadLetterMaxAge.String() {
+		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAge.String())
+	}
+}
+
+func TestSnoozeWithSpentBudgetDeadLettersImmediately(t *testing.T) {
+	w := newWorld(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	entered := make(chan struct{})
+	gate := make(chan struct{})
+	var runs int32
+	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&runs, 1)
+		close(entered)
+		<-gate
+		return Snooze{In: time.Second}
+	}, HandleOpts{Retry: RetryPolicy{MaxAge: time.Minute}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	p, err := ProducerFrom(w.rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+	w.clock.Advance(2 * time.Minute)
+	close(gate)
+
+	await(t, func() bool {
+		return w.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.MessageDeadLettered)
+			return ok
+		}) == 1
+	})
+	assertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
+
+	keys := dlqKeys(t, w, "job")
+	if len(keys) != 1 {
+		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+	}
+	rec := dlqRecordAt(t, w, keys[0])
+	if rec.Reason != converge.DeadLetterMaxAge.String() {
+		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAge.String())
+	}
+	if n := w.rec.count(func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Err == nil
+	}); n != 1 {
+		t.Fatalf("RunCompleted{Err:nil} count = %d, want 1", n)
+	}
+}
+
+func TestRetryDelayOverflowSafe(t *testing.T) {
+	maxBackoff := time.Duration(math.MaxInt64)
+	minBackoff := maxBackoff/2 + 1
+	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(context.Context, []byte) error { return nil }, HandleOpts{
+		Retry: RetryPolicy{MinBackoff: minBackoff, MaxBackoff: maxBackoff},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := e.retryDelay(5)
+	if got <= 0 {
+		t.Fatalf("retryDelay(5) = %v, want positive", got)
+	}
+	if got > maxBackoff {
+		t.Fatalf("retryDelay(5) = %v, want <= %v", got, maxBackoff)
+	}
+}
+
+func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
+	w := newWorld(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	var ran int32
+	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&ran, 1)
+		return errors.New("boom")
+	}, HandleOpts{Retry: RetryPolicy{MaxAttempts: 1, MinBackoff: time.Second, MaxBackoff: time.Minute}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.run(t)
+	anonMsg := func() converge.Message {
+		h := map[string]string{
+			converge.HeaderSchemaVersion: "1",
+			converge.HeaderEnqueuedAt:    w.clock.Now().UTC().Format(time.RFC3339Nano),
+			converge.HeaderAttempt:       "0",
+		}
+		return converge.Message{Kind: "job", Headers: h, Payload: []byte(`"anon-payload"`)}
+	}
+	if err := w.mq.Publish(context.Background(), "job", anonMsg()); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool {
+		return w.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.MessageDeadLettered)
+			return ok
+		}) == 1
+	})
+	if err := w.mq.Publish(context.Background(), "job", anonMsg()); err != nil {
+		t.Fatal(err)
+	}
+	await(t, func() bool {
+		return w.rec.count(func(e converge.Event) bool {
+			_, ok := e.(converge.MessageDeadLettered)
+			return ok
+		}) == 2
+	})
+
+	keys := dlqKeys(t, w, "job")
+	if len(keys) != 1 {
+		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+	}
+	var ids []string
+	w.rec.mu.Lock()
+	for _, e := range w.rec.events {
+		if dl, ok := e.(converge.MessageDeadLettered); ok {
+			ids = append(ids, dl.MessageID)
+		}
+	}
+	w.rec.mu.Unlock()
+	if len(ids) != 2 || ids[0] != ids[1] {
+		t.Fatalf("MessageDeadLettered MessageIDs = %v, want two identical values", ids)
+	}
+	if !strings.HasPrefix(ids[0], "anon-") {
+		t.Fatalf("MessageID = %q, want prefix %q", ids[0], "anon-")
+	}
+	if atomic.LoadInt32(&ran) != 2 {
+		t.Fatalf("handler ran %d times, want 2", ran)
+	}
 }
 
 func TestWrongSurfaceSignalDeadLetters(t *testing.T) {

@@ -2,10 +2,13 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -290,7 +293,7 @@ func logicalBase(m converge.Message) (int, bool) {
 		return 0, true
 	}
 	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 {
+	if err != nil || n < 0 || n > math.MaxInt/2 {
 		return 0, false
 	}
 	return n, true
@@ -306,7 +309,10 @@ func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, conver
 		Headers:     maps.Clone(m.Headers),
 	}
 	if meta.MessageID == "" {
-		meta.MessageID = newID()
+		sum := sha256.New()
+		sum.Write([]byte(m.Kind))
+		sum.Write(m.Payload)
+		meta.MessageID = "anon-" + hex.EncodeToString(sum.Sum(nil)[:16])
 	}
 	if ts, err := time.Parse(time.RFC3339Nano, m.Headers[converge.HeaderEnqueuedAt]); err == nil {
 		meta.EnqueuedAt = ts
@@ -406,10 +412,13 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 func (e *engine) retryDelay(attempt int) time.Duration {
 	d := e.cfg.retry.MinBackoff
 	for i := 1; i < attempt; i++ {
-		d *= 2
-		if d >= e.cfg.retry.MaxBackoff {
+		if d >= e.cfg.retry.MaxBackoff/2 {
 			return backoff.Jitter(e.cfg.retry.MaxBackoff)
 		}
+		d *= 2
+	}
+	if d >= e.cfg.retry.MaxBackoff {
+		return backoff.Jitter(e.cfg.retry.MaxBackoff)
 	}
 	return backoff.Jitter(d)
 }
@@ -481,12 +490,21 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 		e.observeRun(meta, took, cause)
 		return
 	}
+	remaining := e.cfg.retry.MaxAge - e.deps.Clock.Now().Sub(meta.EnqueuedAt)
+	if remaining <= 0 {
+		e.observeRun(meta, took, nil)
+		e.deadLetter(sctx, d, meta, m, converge.DeadLetterMaxAge, nil)
+		return
+	}
 	snoozes, _ := strconv.Atoi(m.Headers[converge.HeaderSnoozes])
 	snoozes++
 	delay := backoff.Floor(in)
 	if snoozes > noBackoffCap {
 		delay = e.retryDelay(snoozes - noBackoffCap)
 		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.info.name, ID: meta.MessageID, Consecutive: snoozes})
+	}
+	if delay > remaining {
+		delay = remaining
 	}
 	h := maps.Clone(m.Headers)
 	if h == nil {

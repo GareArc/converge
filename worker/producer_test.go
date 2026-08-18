@@ -213,6 +213,13 @@ func TestNewProducerNilMQ(t *testing.T) {
 	}
 }
 
+func TestProducerFromNilRuntime(t *testing.T) {
+	p, err := ProducerFrom(nil)
+	if err == nil || p != nil {
+		t.Fatalf("p, err = %v, %v, want error and nil producer", p, err)
+	}
+}
+
 func TestEnqueueMisconstructedTask(t *testing.T) {
 	mq := inmem.NewMQ()
 	p, err := NewProducer(mq)

@@ -268,6 +268,7 @@ func assertConsumeStopsOnCancel(t *testing.T, queue string, run func(ctx context
 	if n := delivered.Load(); n != 1 {
 		t.Fatalf("deliver invoked %d times; want exactly 1 (none after Consume returned)", n)
 	}
+	assertNoFurtherDelivery(t, &delivered, 1)
 }
 
 func assertBroadcastStopsOnCancel(t *testing.T, mq converge.MQ, bc converge.BroadcastConsumer) {
@@ -318,6 +319,21 @@ func assertBroadcastStopsOnCancel(t *testing.T, mq converge.MQ, bc converge.Broa
 	}
 	if n := delivered.Load(); n != 1 {
 		t.Fatalf("deliver invoked %d times; want exactly 1 (none after ConsumeBroadcast returned)", n)
+	}
+	assertNoFurtherDelivery(t, &delivered, 1)
+}
+
+func assertNoFurtherDelivery(t *testing.T, delivered *atomic.Int64, before int64) {
+	t.Helper()
+	deadline := time.Now().Add(50 * time.Millisecond)
+	for {
+		if n := delivered.Load(); n != before {
+			t.Fatalf("deliver invoked after return: count went from %d to %d", before, n)
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 

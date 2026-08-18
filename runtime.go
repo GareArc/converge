@@ -51,8 +51,8 @@ func init() {
 	}
 	hook.ProducerDeps = func(rt any) (hook.ProducerWiring, error) {
 		r, ok := rt.(*Runtime)
-		if !ok {
-			return hook.ProducerWiring{}, fmt.Errorf("converge: producer: %T is not a *converge.Runtime", rt)
+		if !ok || r == nil {
+			return hook.ProducerWiring{}, fmt.Errorf("converge: producer: %T is not a usable *converge.Runtime", rt)
 		}
 		return hook.ProducerWiring{
 			MQ:    r.opts.MQ,
