@@ -143,3 +143,53 @@ The device that keeps duplicate work rare under `OnOneReplica`. An
 efficiency device, never a correctness device — correctness comes from
 idempotency and versions.
 _Avoid_: lock, distributed lock
+
+### Control plane concepts
+
+**Control queue**:
+The broadcast MQ queue every replica's control listener consumes
+(`internal/ctl.Queue`), carrying ops commands cluster-wide.
+_Avoid_: command bus, admin topic
+
+**Replica ID**:
+The random ID a `Runtime` mints for itself at construction. Ops-verb
+responses carry it so a caller sees which replica actually acted, not just
+that "a" replica did.
+_Avoid_: instance ID, pod name (deployment-specific words)
+
+**Ops verb**:
+A control-plane operation dispatched cluster-wide: poke, hint, run-pass,
+pause, or resume. Poke and hint carry the reconcile meaning defined above;
+pause and resume additionally persist a durable flag.
+_Avoid_: admin command, RPC
+
+**Durable pause flag**:
+The KV record (`internal/ctl.PausedKey`) a pause/resume verb writes and
+deletes. Every replica re-reads it at startup, so a pause survives a
+restart instead of living only in one process's memory.
+_Avoid_: soft pause, in-memory flag
+
+**Which-replica-acted response**:
+What dispatching an ops verb returns: one response per replica that
+received the command (`Replica`, `Acted`, `Err`, `At`), so the caller sees
+exactly who did the work instead of a single opaque success/failure.
+_Avoid_: broadcast ack, fire-and-forget
+
+**DLQ op**:
+A dead-letter list, requeue, or purge call. Unlike ops verbs, DLQ ops are
+direct KV/MQ data operations — never routed through the control plane —
+because any replica can read and write the same durable dead-letter
+records.
+_Avoid_: control op (that is the routed, per-replica kind)
+
+**Payload display opt-in**:
+`debughttp.OpsOpts.ShowPayloads` — dead-letter payloads may hold user data,
+so the JSON `payload` key is present only when a caller explicitly enables
+it; headers are shown either way.
+_Avoid_: redaction (nothing is masked; the field is simply absent)
+
+**Response expiry**:
+Ops-verb responses are written to KV with a short TTL, so a dispatcher
+polling for replies sees a clean, bounded set instead of an ever-growing
+history of past commands.
+_Avoid_: response log, audit trail
