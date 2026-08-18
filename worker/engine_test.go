@@ -1368,14 +1368,22 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	wa, wb := build(), build()
 
 	okTask := NewTask[string]("broadcast-ok", TaskOpts{})
-	var okA, okB int32
+	var okA, okB, okWarmA, okWarmB int32
 	if err := Handle(wa.rt, okTask, func(ctx context.Context, payload string) error {
+		if payload == "warm" {
+			atomic.AddInt32(&okWarmA, 1)
+			return nil
+		}
 		atomic.AddInt32(&okA, 1)
 		return nil
 	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Handle(wb.rt, okTask, func(ctx context.Context, payload string) error {
+		if payload == "warm" {
+			atomic.AddInt32(&okWarmB, 1)
+			return nil
+		}
 		atomic.AddInt32(&okB, 1)
 		return nil
 	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
@@ -1383,14 +1391,22 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	}
 
 	failTask := NewTask[string]("broadcast-fail", TaskOpts{})
-	var failA, failB int32
+	var failA, failB, failWarmA, failWarmB int32
 	if err := Handle(wa.rt, failTask, func(ctx context.Context, payload string) error {
+		if payload == "warm" {
+			atomic.AddInt32(&failWarmA, 1)
+			return nil
+		}
 		atomic.AddInt32(&failA, 1)
 		return errors.New("boom")
 	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Handle(wb.rt, failTask, func(ctx context.Context, payload string) error {
+		if payload == "warm" {
+			atomic.AddInt32(&failWarmB, 1)
+			return nil
+		}
 		atomic.AddInt32(&failB, 1)
 		return errors.New("boom")
 	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
@@ -1398,14 +1414,22 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	}
 
 	snoozeTask := NewTask[string]("broadcast-snooze", TaskOpts{})
-	var snoozeA, snoozeB int32
+	var snoozeA, snoozeB, snoozeWarmA, snoozeWarmB int32
 	if err := Handle(wa.rt, snoozeTask, func(ctx context.Context, payload string) error {
+		if payload == "warm" {
+			atomic.AddInt32(&snoozeWarmA, 1)
+			return nil
+		}
 		atomic.AddInt32(&snoozeA, 1)
 		return Snooze{In: time.Second}
 	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Handle(wb.rt, snoozeTask, func(ctx context.Context, payload string) error {
+		if payload == "warm" {
+			atomic.AddInt32(&snoozeWarmB, 1)
+			return nil
+		}
 		atomic.AddInt32(&snoozeB, 1)
 		return Snooze{In: time.Second}
 	}, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
@@ -1419,6 +1443,23 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	awaitLive := func(tk Task[string], a, b *int32) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for atomic.LoadInt32(a) == 0 || atomic.LoadInt32(b) == 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("broadcast subscriptions for %q never became live", tk.name)
+			}
+			if err := tk.Enqueue(context.Background(), p, "warm", EnqueueOpts{}); err != nil {
+				t.Fatal(err)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	awaitLive(okTask, &okWarmA, &okWarmB)
+	awaitLive(failTask, &failWarmA, &failWarmB)
+	awaitLive(snoozeTask, &snoozeWarmA, &snoozeWarmB)
 
 	if err := okTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
