@@ -155,6 +155,8 @@ func invocationFrom(ctx context.Context) (invocation, bool) {
 
 const consumeRetryInterval = time.Second
 
+const noBackoffCap = 10
+
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	if err := e.bind(deps); err != nil {
 		return err
@@ -409,7 +411,68 @@ func (e *engine) observeRun(meta Meta, took time.Duration, err error) {
 }
 
 func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, s sig.Signal, err error, took time.Duration) bool {
+	if s.ControlSurface() != converge.SurfaceWorker {
+		e.deps.Observer.Observe(converge.WrongSurfaceSignal{Job: e.cfg.info.name, ID: meta.MessageID, Surface: s.ControlSurface()})
+		e.observeRun(meta, took, err)
+		e.deadLetterOrDrop(sctx, d, meta, m, converge.DeadLetterWrongSurface, err)
+		return true
+	}
+	switch v := s.(type) {
+	case Discard:
+		e.discard(sctx, d, meta, v, took)
+		return true
+	case *Discard:
+		e.discard(sctx, d, meta, *v, took)
+		return true
+	case Snooze:
+		e.snooze(sctx, d, m, meta, v.In, took, err)
+		return true
+	case *Snooze:
+		e.snooze(sctx, d, m, meta, v.In, took, err)
+		return true
+	}
 	return false
+}
+
+func (e *engine) discard(sctx context.Context, d converge.Delivery, meta Meta, v Discard, took time.Duration) {
+	d.Ack(sctx)
+	e.recordSuccess()
+	e.observeRun(meta, took, nil)
+	e.deps.Observer.Observe(converge.MessageDiscarded{
+		Job:       e.cfg.info.name,
+		Queue:     e.cfg.info.queue,
+		MessageID: meta.MessageID,
+		Reason:    v.Reason,
+	})
+}
+
+func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, in time.Duration, took time.Duration, cause error) {
+	if !e.durable() {
+		e.recordFailure()
+		e.observeRun(meta, took, cause)
+		return
+	}
+	snoozes, _ := strconv.Atoi(m.Headers[converge.HeaderSnoozes])
+	snoozes++
+	delay := backoff.Floor(in)
+	if snoozes > noBackoffCap {
+		delay = e.retryDelay(snoozes - noBackoffCap)
+		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.info.name, ID: meta.MessageID, Consecutive: snoozes})
+	}
+	h := maps.Clone(m.Headers)
+	if h == nil {
+		h = map[string]string{}
+	}
+	h[converge.HeaderAttempt] = strconv.Itoa(meta.Attempt - 1)
+	h[converge.HeaderSnoozes] = strconv.Itoa(snoozes)
+	republished := converge.Message{Kind: m.Kind, Headers: h, Payload: m.Payload}
+	if err := e.mq.(converge.DelayedPublisher).PublishDelayed(sctx, e.cfg.info.queue, republished, delay); err != nil {
+		d.Nack(sctx, delay)
+		e.observeRun(meta, took, nil)
+		return
+	}
+	d.Ack(sctx)
+	e.observeRun(meta, took, nil)
 }
 
 func (e *engine) leaseLoop(ctx context.Context) error {
