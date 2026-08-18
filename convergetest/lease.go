@@ -35,10 +35,7 @@ func leaseNameMatches(held, name string) bool {
 	if held == name {
 		return true
 	}
-	for _, seg := range strings.Split(held, "/") {
-		if seg == name {
-			return true
-		}
-	}
-	return false
+	segs := strings.Split(held, "/")
+	n := len(segs)
+	return n >= 2 && segs[n-1] == "lease" && segs[n-2] == name
 }

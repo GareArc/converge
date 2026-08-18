@@ -104,10 +104,9 @@ func (h *Harness) ensureRunning(t testing.TB) bool {
 	}
 	if h.started {
 		starting := h.starting
-		rt := h.rt
 		h.mu.Unlock()
 		<-starting
-		return h.checkAlive(t, rt)
+		return h.checkAlive(t)
 	}
 	h.started = true
 	starting := make(chan struct{})
@@ -138,10 +137,10 @@ func (h *Harness) ensureRunning(t testing.TB) bool {
 		h.awaitStop(h.t)
 	})
 
-	return h.checkAlive(t, rt)
+	return h.checkAlive(t)
 }
 
-func (h *Harness) checkAlive(t testing.TB, rt *converge.Runtime) bool {
+func (h *Harness) checkAlive(t testing.TB) bool {
 	t.Helper()
 	select {
 	case <-h.done:

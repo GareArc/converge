@@ -64,6 +64,19 @@ func TestLeaseExpireDoesNotMatchPartialSegment(t *testing.T) {
 	}
 }
 
+func TestLeaseExpireDoesNotMatchNonTrailingSegment(t *testing.T) {
+	base := inmem.NewLease()
+	l := convergetest.WrapLease(base)
+	ctx := context.Background()
+	h, _, _ := l.TryAcquire(ctx, "test/converge/worker/other-job/lease", time.Hour)
+	l.Expire("worker")
+	select {
+	case <-h.Done():
+		t.Fatal("a job literally named \"worker\" must not expire another job's lease just because \"worker\" appears as a surface segment")
+	default:
+	}
+}
+
 func TestLeaseExpireLeavesOtherLeasesHeld(t *testing.T) {
 	base := inmem.NewLease()
 	l := convergetest.WrapLease(base)

@@ -264,6 +264,52 @@ func TestEngineInfoOmitsZeroSettings(t *testing.T) {
 	}
 }
 
+func TestEngineInfoRendersPinnedDisplayFormats(t *testing.T) {
+	loc := time.FixedZone("UTC+2", 2*60*60)
+	cases := []struct {
+		name   string
+		mutate func(*Spec)
+		key    string
+		want   string
+	}{
+		{
+			name:   "non-Tracker VersionSource renders as custom",
+			mutate: func(s *Spec) { s.Versions = fakeVersions{} },
+			key:    "versions",
+			want:   "custom",
+		},
+		{
+			name: "cron non-UTC location renders a loc suffix",
+			mutate: func(s *Spec) {
+				s.Triggers = []Trigger{Schedule(SingleID(), Cron("*/5 * * * *", CronOpts{Location: loc}))}
+			},
+			key:  "schedule",
+			want: "cron */5 * * * * (loc: " + loc.String() + ")",
+		},
+		{
+			name: "non-default missed-tick policy renders a missed suffix",
+			mutate: func(s *Spec) {
+				s.Triggers = []Trigger{Schedule(SingleID(), Cron("*/5 * * * *", CronOpts{MissedTick: Skip}))}
+			},
+			key:  "schedule",
+			want: "cron */5 * * * * (missed: Skip)",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := okSpec()
+			c.mutate(&s)
+			e, err := newEngine(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := e.Info().Settings[c.key]; got != c.want {
+				t.Fatalf("Settings[%q] = %q, want %q", c.key, got, c.want)
+			}
+		})
+	}
+}
+
 func TestPausedSpecDropsWakes(t *testing.T) {
 	te := startEngine(t, config{paused: true}, func(ctx context.Context, id ID) error { return nil })
 	te.e.hint(context.Background(), "a")
