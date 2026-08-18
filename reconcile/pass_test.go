@@ -249,6 +249,123 @@ func TestFirstPassOverrunSkipsWithoutMakeup(t *testing.T) {
 	assertStable(t, func() bool { return runCount(te) == 1 })
 }
 
+type blockOnSetKV struct {
+	converge.KV
+	mu      sync.Mutex
+	armKey  string
+	entered chan struct{}
+	release chan struct{}
+	closed  bool
+}
+
+func (k *blockOnSetKV) armFor(key string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.armKey = key
+	k.entered = make(chan struct{})
+	k.release = make(chan struct{})
+	k.closed = false
+}
+
+func (k *blockOnSetKV) awaitEntered(t *testing.T) {
+	t.Helper()
+	k.mu.Lock()
+	entered := k.entered
+	k.mu.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Set on the armed key was never called")
+	}
+}
+
+func (k *blockOnSetKV) releaseBlock() {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.closed {
+		return
+	}
+	k.closed = true
+	close(k.release)
+}
+
+func (k *blockOnSetKV) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+	k.mu.Lock()
+	armed := k.armKey != "" && key == k.armKey
+	var entered, release chan struct{}
+	if armed {
+		k.armKey = ""
+		entered, release = k.entered, k.release
+	}
+	k.mu.Unlock()
+	if armed {
+		close(entered)
+		<-release
+	}
+	return k.KV.Set(ctx, key, val, ttl)
+}
+
+func isPassOverrunEvent(e converge.Event) bool {
+	_, ok := e.(converge.PassOverrun)
+	return ok
+}
+
+func TestFirstPassHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T) {
+	kv := &blockOnSetKV{KV: inmem.NewKV()}
+	te := startEngineKV(t, config{single: true}, kv, func(context.Context, ID) error { return nil })
+	lastKey := te.e.key("sched", "0", "last")
+	kv.armFor(lastKey)
+	startSchedule(t, te, SingleID(), Every(time.Hour))
+	t.Cleanup(kv.releaseBlock)
+	kv.awaitEntered(t)
+
+	te.e.mu.Lock()
+	inFlight := te.e.passes > 0
+	te.e.mu.Unlock()
+	if !inFlight {
+		t.Fatal("engine must stay busy until checkOverrun completes, not just until runPass returns")
+	}
+
+	kv.releaseBlock()
+	await(t, te.e.Quiet)
+
+	te.clock.Advance(time.Hour)
+	await(t, func() bool { return runCount(te) == 2 })
+	if n := te.rec.count(isPassOverrunEvent); n != 0 {
+		t.Fatalf("boundary must not be misclassified as overrun: got %d PassOverrun events", n)
+	}
+}
+
+func TestSteadyStateHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T) {
+	kv := &blockOnSetKV{KV: inmem.NewKV()}
+	te := startEngineKV(t, config{single: true}, kv, func(context.Context, ID) error { return nil })
+	startSchedule(t, te, SingleID(), Every(time.Hour))
+	await(t, func() bool { return runCount(te) == 1 })
+	await(t, te.e.Quiet)
+
+	lastKey := te.e.key("sched", "0", "last")
+	kv.armFor(lastKey)
+	t.Cleanup(kv.releaseBlock)
+	te.clock.Advance(time.Hour)
+	kv.awaitEntered(t)
+
+	te.e.mu.Lock()
+	inFlight := te.e.passes > 0
+	te.e.mu.Unlock()
+	if !inFlight {
+		t.Fatal("engine must stay busy (steady-state pass) until checkOverrun completes")
+	}
+
+	kv.releaseBlock()
+	await(t, te.e.Quiet)
+
+	te.clock.Advance(time.Hour)
+	await(t, func() bool { return runCount(te) == 3 })
+	if n := te.rec.count(isPassOverrunEvent); n != 0 {
+		t.Fatalf("second boundary must not be misclassified as overrun: got %d PassOverrun events", n)
+	}
+}
+
 func TestErroredCadenceDoesNotPanic(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	startSchedule(t, te, SingleID(), Every(0))
