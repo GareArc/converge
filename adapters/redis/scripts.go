@@ -30,3 +30,11 @@ if redis.call('GET', KEYS[1]) == ARGV[1] then
 end
 return 1
 `)
+
+var claimDueScript = redis.NewScript(`
+local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, ARGV[3])
+for i = 1, #due do
+  redis.call('ZADD', KEYS[1], ARGV[2], due[i])
+end
+return due
+`)

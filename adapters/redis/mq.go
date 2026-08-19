@@ -1,0 +1,298 @@
+package convredis
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/GareArc/converge"
+	"github.com/redis/go-redis/v9"
+)
+
+const (
+	DefaultVisibility = 5 * time.Minute
+
+	reservedGroup   = "converge"
+	blockInterval   = 100 * time.Millisecond
+	readCount       = 16
+	consumerIDBytes = 8
+	busyGroupPrefix = "BUSYGROUP"
+	groupStartID    = "0"
+	newEntriesID    = ">"
+)
+
+const (
+	fieldKind       = "kind"
+	fieldPayload    = "payload"
+	fieldHeaders    = "headers"
+	fieldEnqueuedAt = "enq"
+)
+
+type StreamsOpts struct {
+	Clock      converge.Clock
+	Visibility time.Duration
+}
+
+func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) converge.MQ {
+	m := &streamsMQ{rdb: rdb, clock: o.Clock, visibility: o.Visibility}
+	if m.clock == nil {
+		m.clock = wallClock{}
+	}
+	if m.visibility == 0 {
+		m.visibility = DefaultVisibility
+	}
+	return m
+}
+
+type streamsMQ struct {
+	rdb        *redis.Client
+	clock      converge.Clock
+	visibility time.Duration
+}
+
+type wallClock struct{}
+
+func (wallClock) Now() time.Time                         { return time.Now() }
+func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+func streamKey(queue string) string  { return "convredis:s:" + queue }
+func pendingKey(q, g string) string  { return "convredis:p:" + q + ":" + g }
+func attemptsKey(q, g string) string { return "convredis:a:" + q + ":" + g }
+
+func dueScore(t time.Time) float64 { return float64(t.UnixMilli()) }
+
+func (m *streamsMQ) Publish(ctx context.Context, queue string, msg converge.Message) error {
+	values, err := encodeMessage(msg, m.clock.Now())
+	if err != nil {
+		return err
+	}
+	return m.rdb.XAdd(ctx, &redis.XAddArgs{Stream: streamKey(queue), Values: values}).Err()
+}
+
+func (m *streamsMQ) Consume(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
+	return m.consumeGroup(ctx, queue, reservedGroup, deliver)
+}
+
+func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliver func(converge.Delivery)) error {
+	if err := m.ensureGroup(ctx, queue, group); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return err
+	}
+	consumer, err := newConsumerID()
+	if err != nil {
+		return err
+	}
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err := m.redeliverDue(ctx, queue, group, consumer, deliver); err != nil {
+			if !pause(ctx) {
+				return ctx.Err()
+			}
+			continue
+		}
+		entries, err := m.readNew(ctx, queue, group, consumer)
+		if err == nil {
+			err = m.track(ctx, queue, group, entries)
+		}
+		if err != nil {
+			if !pause(ctx) {
+				return ctx.Err()
+			}
+			continue
+		}
+		for _, entry := range entries {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err := m.deliverEntry(ctx, queue, group, entry, deliver); err != nil {
+				break
+			}
+		}
+	}
+}
+
+func pause(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	timer := time.NewTimer(blockInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func (m *streamsMQ) ensureGroup(ctx context.Context, queue, group string) error {
+	err := m.rdb.XGroupCreateMkStream(ctx, streamKey(queue), group, groupStartID).Err()
+	if err != nil && strings.HasPrefix(err.Error(), busyGroupPrefix) {
+		return nil
+	}
+	return err
+}
+
+func (m *streamsMQ) readNew(ctx context.Context, queue, group, consumer string) ([]redis.XMessage, error) {
+	res, err := m.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
+		Group:    group,
+		Consumer: consumer,
+		Streams:  []string{streamKey(queue), newEntriesID},
+		Count:    readCount,
+		Block:    blockInterval,
+	}).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var entries []redis.XMessage
+	for _, stream := range res {
+		entries = append(entries, stream.Messages...)
+	}
+	return entries, nil
+}
+
+func (m *streamsMQ) track(ctx context.Context, queue, group string, entries []redis.XMessage) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	score := dueScore(m.clock.Now().Add(m.visibility))
+	members := make([]redis.Z, 0, len(entries))
+	for _, entry := range entries {
+		members = append(members, redis.Z{Score: score, Member: entry.ID})
+	}
+	return m.rdb.ZAdd(ctx, pendingKey(queue, group), members...).Err()
+}
+
+func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
+	now := m.clock.Now()
+	ids, err := claimDueScript.Run(ctx, m.rdb, []string{pendingKey(queue, group)},
+		dueScore(now), dueScore(now.Add(m.visibility)), readCount).StringSlice()
+	if errors.Is(err, redis.Nil) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		entries, err := m.rdb.XClaim(ctx, &redis.XClaimArgs{
+			Stream:   streamKey(queue),
+			Group:    group,
+			Consumer: consumer,
+			Messages: []string{id},
+		}).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return err
+		}
+		if len(entries) == 0 {
+			if err := m.forget(ctx, queue, group, id); err != nil {
+				return err
+			}
+			continue
+		}
+		for _, entry := range entries {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if err := m.deliverEntry(ctx, queue, group, entry, deliver); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (m *streamsMQ) deliverEntry(ctx context.Context, queue, group string, entry redis.XMessage, deliver func(converge.Delivery)) error {
+	msg, enq, err := decodeMessage(entry.Values)
+	if err != nil {
+		return nil
+	}
+	attempt, err := m.startAttempt(ctx, queue, group, entry.ID)
+	if err != nil {
+		return err
+	}
+	deliver(&streamDelivery{
+		mq:      m,
+		queue:   queue,
+		group:   group,
+		id:      entry.ID,
+		msg:     msg,
+		attempt: attempt,
+		enq:     enq,
+	})
+	return nil
+}
+
+func (m *streamsMQ) forget(ctx context.Context, queue, group, id string) error {
+	pipe := m.rdb.Pipeline()
+	pipe.ZRem(ctx, pendingKey(queue, group), id)
+	pipe.HDel(ctx, attemptsKey(queue, group), id)
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+func (m *streamsMQ) startAttempt(ctx context.Context, queue, group, id string) (int, error) {
+	pipe := m.rdb.Pipeline()
+	pipe.ZAdd(ctx, pendingKey(queue, group), redis.Z{Score: dueScore(m.clock.Now().Add(m.visibility)), Member: id})
+	attempt := pipe.HIncrBy(ctx, attemptsKey(queue, group), id, 1)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, err
+	}
+	return int(attempt.Val()), nil
+}
+
+func encodeMessage(msg converge.Message, enq time.Time) (map[string]any, error) {
+	headers, err := json.Marshal(msg.Headers)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		fieldKind:       msg.Kind,
+		fieldPayload:    string(msg.Payload),
+		fieldHeaders:    string(headers),
+		fieldEnqueuedAt: enq.UTC().Format(time.RFC3339Nano),
+	}, nil
+}
+
+func decodeMessage(values map[string]any) (converge.Message, time.Time, error) {
+	msg := converge.Message{Kind: stringField(values, fieldKind)}
+	if payload := stringField(values, fieldPayload); payload != "" {
+		msg.Payload = []byte(payload)
+	}
+	if headers := stringField(values, fieldHeaders); headers != "" {
+		if err := json.Unmarshal([]byte(headers), &msg.Headers); err != nil {
+			return converge.Message{}, time.Time{}, err
+		}
+	}
+	enq, err := time.Parse(time.RFC3339Nano, stringField(values, fieldEnqueuedAt))
+	if err != nil {
+		return converge.Message{}, time.Time{}, err
+	}
+	return msg, enq, nil
+}
+
+func stringField(values map[string]any, name string) string {
+	s, _ := values[name].(string)
+	return s
+}
+
+func newConsumerID() (string, error) {
+	buf := make([]byte, consumerIDBytes)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
