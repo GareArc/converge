@@ -295,6 +295,79 @@ func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	}
 }
 
+type duplicateScanKV struct {
+	inner converge.KV
+	calls int
+}
+
+func (k *duplicateScanKV) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	return k.inner.Get(ctx, key)
+}
+
+func (k *duplicateScanKV) SetCAS(ctx context.Context, key string, old, new []byte) (bool, error) {
+	return k.inner.SetCAS(ctx, key, old, new)
+}
+
+func (k *duplicateScanKV) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+	return k.inner.Set(ctx, key, val, ttl)
+}
+
+func (k *duplicateScanKV) Delete(ctx context.Context, key string) error {
+	return k.inner.Delete(ctx, key)
+}
+
+func (k *duplicateScanKV) Scan(ctx context.Context, prefix, cursor string) ([]string, string, error) {
+	k.calls++
+	keys, _, err := k.inner.Scan(ctx, prefix, "")
+	if err != nil {
+		return nil, "", err
+	}
+	if len(keys) == 0 {
+		return nil, "", nil
+	}
+	if k.calls == 1 {
+		return keys[:1], "page2", nil
+	}
+	return keys[:1], "", nil
+}
+
+func TestDLQListDedupesAcrossScanPages(t *testing.T) {
+	w := newWorldWith(t, worldOpts{kv: func(clock *convergetest.Clock) converge.KV {
+		return &duplicateScanKV{inner: inmem.NewKVWithClock(clock)}
+	}})
+	ctx := context.Background()
+	rec := dlqRecord{
+		Task:           "job",
+		Queue:          "job",
+		MessageID:      "id-0",
+		Attempt:        1,
+		Reason:         converge.DeadLetterMaxAttempts.String(),
+		EnqueuedAt:     w.clock.Now(),
+		DeadLetteredAt: w.clock.Now(),
+		Payload:        []byte(`"hello"`),
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "wt/converge/worker/job/dlq/id-0"
+	if err := w.kv.Set(ctx, key, raw, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	dlq, err := DLQFrom(w.rt, "job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := dlq.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("List = %v, want exactly 1 entry (Scan returned the same key on two consecutive pages)", list)
+	}
+}
+
 func TestDLQPurgeAbsentIsNil(t *testing.T) {
 	w := newWorld(t)
 	dlq, err := DLQFrom(w.rt, "job")
