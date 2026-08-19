@@ -23,6 +23,7 @@ plug in around it.
 ## Verify
 
 ```sh
+set -e
 make check                      # gofmt gate, vet, dependency gate, race tests — every module
 for m in . adapters/redis examples; do  # ./... does not cross module boundaries
   (cd "$m" && go test -race -count=2 ./...)
@@ -135,7 +136,8 @@ convergetest/   test harness (Harness/New/Options, Drain/Wake/RunPass, asserts,
 reconcile/, worker/          surface engines
 debughttp/      HTTP introspection (ReadOnlyHandler) and ops (OpsHandler) over
                 hook.Inspect / hook.ControlDispatch / worker.DLQFrom
-adapters/redis (convredis)   MQ/Lease/KV/ListTrigger over Redis Streams — separate module
+adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
+                             keys; ListTrigger over lists — separate module
 examples/                    runnable programs (tour, worker) — separate module
 bridges/                     separate modules (later plans)
 docs/superpowers/            local-only working docs — gitignored, never commit

@@ -128,6 +128,7 @@ live — continue with the [full guide](docs/guide/index.md).
 ## Verify
 
 ```sh
+set -e
 make check                      # gofmt gate, vet, dependency gate, race tests — every module
 for m in . adapters/redis examples; do  # ./... does not cross module boundaries
   (cd "$m" && go test -race -count=2 ./...)
