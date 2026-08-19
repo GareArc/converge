@@ -64,3 +64,24 @@ func (d *streamDelivery) isSettled() bool {
 	defer d.mu.Unlock()
 	return d.settled
 }
+
+type broadcastDelivery struct {
+	msg converge.Message
+	enq time.Time
+}
+
+func newBroadcastDelivery(entry redis.XMessage) (converge.Delivery, bool) {
+	msg, enq, err := decodeMessage(entry.Values)
+	if err != nil {
+		return nil, false
+	}
+	return &broadcastDelivery{msg: msg, enq: enq}, true
+}
+
+func (d *broadcastDelivery) Message() converge.Message { return d.msg }
+func (d *broadcastDelivery) Attempt() int              { return 1 }
+func (d *broadcastDelivery) EnqueuedAt() time.Time     { return d.enq }
+
+func (d *broadcastDelivery) Ack(context.Context) error                   { return nil }
+func (d *broadcastDelivery) Nack(context.Context, time.Duration) error   { return nil }
+func (d *broadcastDelivery) Extend(context.Context, time.Duration) error { return nil }

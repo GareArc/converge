@@ -27,6 +27,7 @@ const (
 	noGroupPrefix    = "NOGROUP"
 	groupStartID     = "0"
 	newEntriesID     = ">"
+	broadcastStartID = "$"
 	pendingRangeMin  = "-"
 	pendingRangeMax  = "+"
 )
@@ -102,6 +103,43 @@ func (m *streamsMQ) PublishDelayed(ctx context.Context, queue string, msg conver
 
 func (m *streamsMQ) Consume(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
 	return m.consumeGroup(ctx, queue, reservedGroup, deliver)
+}
+
+func (m *streamsMQ) ConsumeGroup(ctx context.Context, queue, group string, deliver func(converge.Delivery)) error {
+	return m.consumeGroup(ctx, queue, group, deliver)
+}
+
+func (m *streamsMQ) ConsumeBroadcast(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
+	last := broadcastStartID
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		res, err := m.rdb.XRead(ctx, &redis.XReadArgs{
+			Streams: []string{streamKey(queue), last},
+			Count:   readCount,
+			Block:   blockInterval,
+		}).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			if !pause(ctx) {
+				return ctx.Err()
+			}
+			continue
+		}
+		for _, stream := range res {
+			for _, entry := range stream.Messages {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				last = entry.ID
+				d, ok := newBroadcastDelivery(entry)
+				if !ok {
+					continue
+				}
+				deliver(d)
+			}
+		}
+	}
 }
 
 func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliver func(converge.Delivery)) error {
