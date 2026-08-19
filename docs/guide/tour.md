@@ -16,9 +16,9 @@ import (
     "time"
 
     "github.com/GareArc/converge"
+    convredis "github.com/GareArc/converge/adapters/redis"
     "github.com/GareArc/converge/debughttp"
     "github.com/GareArc/converge/reconcile"
-    convredis "github.com/GareArc/converge/adapters/redis"
     "github.com/redis/go-redis/v9"
 )
 

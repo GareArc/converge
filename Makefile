@@ -1,5 +1,5 @@
 GO ?= go
-MODULES := . adapters/redis
+MODULES := . adapters/redis examples
 
 .PHONY: test vet fmt-check depcheck cover check
 
