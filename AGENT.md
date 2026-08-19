@@ -130,7 +130,9 @@ convergetest/   test harness (Harness/New/Options, Drain/Wake/RunPass, asserts,
 reconcile/, worker/          surface engines
 debughttp/      HTTP introspection (ReadOnlyHandler) and ops (OpsHandler) over
                 hook.Inspect / hook.ControlDispatch / worker.DLQFrom
-adapters/, bridges/          separate modules (later plans)
+adapters/redis (convredis)   MQ/Lease/KV/ListTrigger over Redis Streams — separate module
+examples/                    runnable programs (tour, worker) — separate module
+bridges/                     separate modules (later plans)
 docs/superpowers/            local-only working docs — gitignored, never commit
 ```
 
