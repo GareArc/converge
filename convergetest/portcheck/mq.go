@@ -130,6 +130,18 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		d.Ack(ctx)
 	})
 
+	t.Run("extend after own ack errors", func(t *testing.T) {
+		mq, got, ctx := startConsumer(t, open)
+		mustPublish(t, mq, "q", converge.Message{Payload: []byte("a")})
+		d := recvDelivery(t, got)
+		if err := d.Ack(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Extend(ctx, time.Minute); err == nil {
+			t.Fatal("Extend after Ack must error")
+		}
+	})
+
 	t.Run("named groups each receive every message", func(t *testing.T) {
 		base := open(t)
 		gc, ok := base.(converge.GroupConsumer)

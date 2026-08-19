@@ -23,8 +23,11 @@ plug in around it.
 ## Verify
 
 ```sh
-make check                      # gofmt gate, vet, dependency gate, tests with -race
-go test -race -count=2 ./...    # what CI effectively runs; -count=2 shakes ordering assumptions
+set -e
+make check                      # gofmt gate, vet, dependency gate, race tests — every module
+for m in . adapters/redis examples; do  # ./... does not cross module boundaries
+  (cd "$m" && go test -race -count=2 ./...)
+done
 ```
 
 Every change must leave `make check` green. There is no change small enough
@@ -99,6 +102,9 @@ without external services.
   fencing) belongs in that package's own tests.
 - Capability subtests auto-skip via type assertion (`base.(converge.GroupConsumer)`)
   and via nil option hooks (`Advance == nil` skips time-dependent subtests).
+- `adapters/redis` integration tests run when `CONVREDIS_TEST_ADDR` is set
+  and **flush DB 9** of that instance on every open — point it only at a
+  disposable Redis (CI's service container, a local throwaway).
 - Tests future-proof inputs: unknown enum values, foreign types through the
   registration seam, and expired/stale handles all have explicit cases.
 
@@ -130,7 +136,10 @@ convergetest/   test harness (Harness/New/Options, Drain/Wake/RunPass, asserts,
 reconcile/, worker/          surface engines
 debughttp/      HTTP introspection (ReadOnlyHandler) and ops (OpsHandler) over
                 hook.Inspect / hook.ControlDispatch / worker.DLQFrom
-adapters/, bridges/          separate modules (later plans)
+adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
+                             keys; ListTrigger over lists — separate module
+examples/                    runnable programs (tour, worker) — separate module
+bridges/                     separate modules (later plans)
 docs/superpowers/            local-only working docs — gitignored, never commit
 ```
 

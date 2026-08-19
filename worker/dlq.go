@@ -101,6 +101,7 @@ func (q *DLQ) List(ctx context.Context) ([]DeadLetter, error) {
 	}
 	prefix := q.prefix()
 	var out []DeadLetter
+	seen := map[string]struct{}{}
 	cursor := ""
 	for {
 		keys, next, err := q.kv.Scan(ctx, prefix, cursor)
@@ -108,6 +109,10 @@ func (q *DLQ) List(ctx context.Context) ([]DeadLetter, error) {
 			return nil, err
 		}
 		for _, key := range keys {
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
 			raw, ok, err := q.kv.Get(ctx, key)
 			if err != nil {
 				return nil, err
