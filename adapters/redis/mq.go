@@ -22,7 +22,7 @@ const (
 	readCount        = 16
 	pendingPageCount = 64
 	trackAttempts    = 5
-	consumerIDBytes  = 8
+	randomIDBytes    = 8
 	busyGroupPrefix  = "BUSYGROUP"
 	noGroupPrefix    = "NOGROUP"
 	groupStartID     = "0"
@@ -73,6 +73,7 @@ func delayedKey(queue string) string { return "convredis:d:" + queue }
 func dueScore(t time.Time) float64 { return float64(t.UnixMilli()) }
 
 type delayedRecord struct {
+	Nonce   string            `json:"nonce"`
 	Kind    string            `json:"kind"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Payload []byte            `json:"payload,omitempty"`
@@ -87,7 +88,11 @@ func (m *streamsMQ) Publish(ctx context.Context, queue string, msg converge.Mess
 }
 
 func (m *streamsMQ) PublishDelayed(ctx context.Context, queue string, msg converge.Message, delay time.Duration) error {
-	raw, err := json.Marshal(delayedRecord{Kind: msg.Kind, Headers: msg.Headers, Payload: msg.Payload})
+	nonce, err := randomID()
+	if err != nil {
+		return err
+	}
+	raw, err := json.Marshal(delayedRecord{Nonce: nonce, Kind: msg.Kind, Headers: msg.Headers, Payload: msg.Payload})
 	if err != nil {
 		return err
 	}
@@ -106,7 +111,7 @@ func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliv
 		}
 		return err
 	}
-	consumer, err := newConsumerID()
+	consumer, err := randomID()
 	if err != nil {
 		return err
 	}
@@ -224,25 +229,33 @@ func (m *streamsMQ) moveDue(ctx context.Context, queue, group, consumer string, 
 	return m.redeliverDue(ctx, queue, group, consumer, deliver)
 }
 
-func (m *streamsMQ) releaseDelayed(ctx context.Context, queue string) error {
-	records, err := popDelayedScript.Run(ctx, m.rdb, []string{delayedKey(queue)},
-		dueScore(m.clock.Now()), readCount).StringSlice()
+func (m *streamsMQ) claimDue(ctx context.Context, key string, grace time.Duration) ([]string, error) {
+	now := m.clock.Now()
+	members, err := claimDueScript.Run(ctx, m.rdb, []string{key},
+		dueScore(now), dueScore(now.Add(grace)), readCount).StringSlice()
 	if errors.Is(err, redis.Nil) {
-		return nil
+		return nil, nil
 	}
-	if err != nil {
+	return members, err
+}
+
+func (m *streamsMQ) releaseDelayed(ctx context.Context, queue string) error {
+	key := delayedKey(queue)
+	records, err := m.claimDue(ctx, key, m.visibility)
+	if err != nil || len(records) == 0 {
 		return err
 	}
+	hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handoffTimeout)
+	defer cancel()
 	for _, raw := range records {
 		var rec delayedRecord
-		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
-			continue
+		if err := json.Unmarshal([]byte(raw), &rec); err == nil {
+			msg := converge.Message{Kind: rec.Kind, Headers: rec.Headers, Payload: rec.Payload}
+			if err := m.Publish(hctx, queue, msg); err != nil {
+				return err
+			}
 		}
-		msg := converge.Message{Kind: rec.Kind, Headers: rec.Headers, Payload: rec.Payload}
-		hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handoffTimeout)
-		err := m.Publish(hctx, queue, msg)
-		cancel()
-		if err != nil {
+		if err := m.rdb.ZRem(hctx, key, raw).Err(); err != nil {
 			return err
 		}
 	}
@@ -275,12 +288,7 @@ func (m *streamsMQ) reconcilePending(ctx context.Context, queue, group string) e
 }
 
 func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
-	now := m.clock.Now()
-	ids, err := claimDueScript.Run(ctx, m.rdb, []string{pendingKey(queue, group)},
-		dueScore(now), dueScore(now.Add(m.visibility)), readCount).StringSlice()
-	if errors.Is(err, redis.Nil) {
-		return nil
-	}
+	ids, err := m.claimDue(ctx, pendingKey(queue, group), m.visibility)
 	if err != nil {
 		return err
 	}
@@ -389,8 +397,8 @@ func stringField(values map[string]any, name string) string {
 	return s
 }
 
-func newConsumerID() (string, error) {
-	buf := make([]byte, consumerIDBytes)
+func randomID() (string, error) {
+	buf := make([]byte, randomIDBytes)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}

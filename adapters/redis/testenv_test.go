@@ -8,12 +8,19 @@ import (
 
 	"github.com/GareArc/converge/convergetest"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/alicebob/miniredis/v2/server"
 	"github.com/redis/go-redis/v9"
 )
 
 const realAddrEnv = "CONVREDIS_TEST_ADDR"
 
 func openMini(t *testing.T) (*redis.Client, *convergetest.Clock, func(d time.Duration)) {
+	t.Helper()
+	_, client, clock, advance := openMiniServer(t)
+	return client, clock, advance
+}
+
+func openMiniServer(t *testing.T) (*miniredis.Miniredis, *redis.Client, *convergetest.Clock, func(d time.Duration)) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -23,7 +30,19 @@ func openMini(t *testing.T) (*redis.Client, *convergetest.Clock, func(d time.Dur
 		mr.FastForward(d)
 		clock.Advance(d)
 	}
-	return client, clock, advance
+	return mr, client, clock, advance
+}
+
+func failCommand(t *testing.T, mr *miniredis.Miniredis, name string) func() {
+	t.Helper()
+	mr.Server().SetPreHook(func(c *server.Peer, cmd string, args ...string) bool {
+		if cmd != name {
+			return false
+		}
+		c.WriteError("ERR injected failure")
+		return true
+	})
+	return func() { mr.Server().SetPreHook(nil) }
 }
 
 func openReal(t *testing.T) *redis.Client {
