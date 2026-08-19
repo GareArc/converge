@@ -35,6 +35,8 @@ queue machinery.
 The order inside that move is the whole pattern: **commit the inbox row
 first, acknowledge the foreign message second.** Acking first turns a crash
 between the two into a lost message; acking after the commit turns the same
-crash into a duplicate row — so give the table a unique constraint on a
-stable message ID (or an equivalent idempotency key) and let duplicate
-inserts collapse into no-ops.
+crash into a duplicate row — so key the table on a stable message ID (or an
+equivalent idempotency key) and make the insert conflict-safe
+(`INSERT … ON CONFLICT DO NOTHING`, or a duplicate-key error treated as
+success): the duplicate collapses into a no-op instead of an error, and the
+retry still acknowledges.

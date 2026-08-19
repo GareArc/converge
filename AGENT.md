@@ -24,8 +24,9 @@ plug in around it.
 
 ```sh
 make check                      # gofmt gate, vet, dependency gate, race tests — every module
-go test -race -count=2 ./...    # per module (., adapters/redis, examples); ./... does not cross
-                                # module boundaries, workspace or not
+for m in . adapters/redis examples; do  # ./... does not cross module boundaries
+  (cd "$m" && go test -race -count=2 ./...)
+done
 ```
 
 Every change must leave `make check` green. There is no change small enough
