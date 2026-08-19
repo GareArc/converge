@@ -14,6 +14,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	testGroup      = "converge"
+	testStreamKey  = "convredis:s:q"
+	testPendingKey = "convredis:p:q:" + testGroup
+)
+
 func TestMQPortMiniredis(t *testing.T) {
 	var advance func(d time.Duration)
 	portcheck.MQ(t, func(t *testing.T) converge.MQ {
@@ -109,6 +115,38 @@ func TestStreamsMQReadBatchSurvivesCancelMidBatch(t *testing.T) {
 	}
 }
 
+func TestStreamsMQReclaimsPendingEntryThatWasNeverTracked(t *testing.T) {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	if err := f.client.XGroupCreateMkStream(f.ctx, testStreamKey, testGroup, "0").Err(); err != nil {
+		t.Fatal(err)
+	}
+	streams, err := f.client.XReadGroup(f.ctx, &redis.XReadGroupArgs{
+		Group:    testGroup,
+		Consumer: "rogue",
+		Streams:  []string{testStreamKey, ">"},
+		Count:    1,
+	}).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := streams[0].Messages[0].ID
+	if n, err := f.client.ZCard(f.ctx, testPendingKey).Result(); err != nil || n != 0 {
+		t.Fatalf("pending set holds %d entries (err %v), want an untracked pending entry", n, err)
+	}
+
+	got := f.consume(t)
+	f.awaitTracked(t, id)
+	f.advance(time.Minute + time.Second)
+	d := recvDelivery(t, got)
+	if string(d.Message().Payload) != "a" {
+		t.Fatalf("got %q, want a", d.Message().Payload)
+	}
+	if err := d.Ack(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStreamsMQRecoversFromDeletedStream(t *testing.T) {
 	f := newStreamsMQ(t)
 	got := f.consume(t)
@@ -116,7 +154,7 @@ func TestStreamsMQRecoversFromDeletedStream(t *testing.T) {
 	if err := recvDelivery(t, got).Ack(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.client.Del(f.ctx, "convredis:s:q").Err(); err != nil {
+	if err := f.client.Del(f.ctx, testStreamKey).Err(); err != nil {
 		t.Fatal(err)
 	}
 	f.publish(t, converge.Message{Payload: []byte("b")})
@@ -163,6 +201,20 @@ func (f *streamsMQFixture) consume(t *testing.T) chan converge.Delivery {
 	got := make(chan converge.Delivery, 16)
 	go f.mq.Consume(f.ctx, "q", func(d converge.Delivery) { got <- d })
 	return got
+}
+
+func (f *streamsMQFixture) awaitTracked(t *testing.T, id string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := f.client.ZScore(f.ctx, testPendingKey, id).Err(); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("entry %s was never tracked in %s", id, testPendingKey)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 func recvDelivery(t *testing.T, ch chan converge.Delivery) converge.Delivery {

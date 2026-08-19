@@ -16,15 +16,19 @@ import (
 const (
 	DefaultVisibility = 5 * time.Minute
 
-	reservedGroup   = "converge"
-	blockInterval   = 100 * time.Millisecond
-	readCount       = 16
-	trackAttempts   = 5
-	consumerIDBytes = 8
-	busyGroupPrefix = "BUSYGROUP"
-	noGroupPrefix   = "NOGROUP"
-	groupStartID    = "0"
-	newEntriesID    = ">"
+	reservedGroup    = "converge"
+	blockInterval    = 100 * time.Millisecond
+	handoffTimeout   = 5 * time.Second
+	readCount        = 16
+	pendingPageCount = 64
+	trackAttempts    = 5
+	consumerIDBytes  = 8
+	busyGroupPrefix  = "BUSYGROUP"
+	noGroupPrefix    = "NOGROUP"
+	groupStartID     = "0"
+	newEntriesID     = ">"
+	pendingRangeMin  = "-"
+	pendingRangeMax  = "+"
 )
 
 const (
@@ -64,8 +68,15 @@ func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) 
 func streamKey(queue string) string  { return "convredis:s:" + queue }
 func pendingKey(q, g string) string  { return "convredis:p:" + q + ":" + g }
 func attemptsKey(q, g string) string { return "convredis:a:" + q + ":" + g }
+func delayedKey(queue string) string { return "convredis:d:" + queue }
 
 func dueScore(t time.Time) float64 { return float64(t.UnixMilli()) }
+
+type delayedRecord struct {
+	Kind    string            `json:"kind"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Payload []byte            `json:"payload,omitempty"`
+}
 
 func (m *streamsMQ) Publish(ctx context.Context, queue string, msg converge.Message) error {
 	values, err := encodeMessage(msg, m.clock.Now())
@@ -73,6 +84,15 @@ func (m *streamsMQ) Publish(ctx context.Context, queue string, msg converge.Mess
 		return err
 	}
 	return m.rdb.XAdd(ctx, &redis.XAddArgs{Stream: streamKey(queue), Values: values}).Err()
+}
+
+func (m *streamsMQ) PublishDelayed(ctx context.Context, queue string, msg converge.Message, delay time.Duration) error {
+	raw, err := json.Marshal(delayedRecord{Kind: msg.Kind, Headers: msg.Headers, Payload: msg.Payload})
+	if err != nil {
+		return err
+	}
+	due := m.clock.Now().Add(delay)
+	return m.rdb.ZAdd(ctx, delayedKey(queue), redis.Z{Score: dueScore(due), Member: string(raw)}).Err()
 }
 
 func (m *streamsMQ) Consume(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
@@ -94,7 +114,7 @@ func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliv
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err := m.redeliverDue(ctx, queue, group, consumer, deliver); err != nil {
+		if err := m.moveDue(ctx, queue, group, consumer, deliver); err != nil {
 			if !m.resume(ctx, queue, group, err) {
 				return ctx.Err()
 			}
@@ -192,6 +212,66 @@ func (m *streamsMQ) track(ctx context.Context, queue, group string, entries []re
 		members = append(members, redis.Z{Score: score, Member: entry.ID})
 	}
 	return m.rdb.ZAdd(ctx, pendingKey(queue, group), members...).Err()
+}
+
+func (m *streamsMQ) moveDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
+	if err := m.releaseDelayed(ctx, queue); err != nil {
+		return err
+	}
+	if err := m.reconcilePending(ctx, queue, group); err != nil {
+		return err
+	}
+	return m.redeliverDue(ctx, queue, group, consumer, deliver)
+}
+
+func (m *streamsMQ) releaseDelayed(ctx context.Context, queue string) error {
+	records, err := popDelayedScript.Run(ctx, m.rdb, []string{delayedKey(queue)},
+		dueScore(m.clock.Now()), readCount).StringSlice()
+	if errors.Is(err, redis.Nil) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, raw := range records {
+		var rec delayedRecord
+		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
+			continue
+		}
+		msg := converge.Message{Kind: rec.Kind, Headers: rec.Headers, Payload: rec.Payload}
+		hctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), handoffTimeout)
+		err := m.Publish(hctx, queue, msg)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *streamsMQ) reconcilePending(ctx context.Context, queue, group string) error {
+	pending, err := m.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: streamKey(queue),
+		Group:  group,
+		Start:  pendingRangeMin,
+		End:    pendingRangeMax,
+		Count:  pendingPageCount,
+	}).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	score := dueScore(m.clock.Now().Add(m.visibility))
+	members := make([]redis.Z, 0, len(pending))
+	for _, entry := range pending {
+		members = append(members, redis.Z{Score: score, Member: entry.ID})
+	}
+	return m.rdb.ZAddNX(ctx, pendingKey(queue, group), members...).Err()
 }
 
 func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
