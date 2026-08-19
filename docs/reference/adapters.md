@@ -74,8 +74,11 @@ re-scores due members forward by one `visibility` window (the "claim"),
 transient publish error between the `XADD` and the `ZREM` leaves the record
 in the ZSET, still re-scored into the future — it will be claimed and
 re-published again after the grace window elapses. The contract this gives
-you: **at most one duplicate delayed delivery after a grace window, never a
-lost one.**
+you: **duplicates are possible, loss is not.** Each cycle publishes the
+claimed record at most once, but while the `ZREM` keeps failing, every
+grace window can add another copy — the duplicate count is not globally
+bounded. Consumers must be idempotent, as everywhere under at-least-once
+delivery.
 
 **NOGROUP recovery replays the backlog, bluntly.** If the stream or the
 consumer group vanishes out from under the adapter — `DEL`, `FLUSHDB`,

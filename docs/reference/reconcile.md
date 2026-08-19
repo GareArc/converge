@@ -83,7 +83,8 @@ type Version uint64
 type VersionSource interface {
     Latest(ctx context.Context, id ID) (Version, error)
 }
-func NewTracker(kv converge.KV, namespace string) *Tracker // namespace must equal Spec.Name
+func NewTracker(kv converge.KV, namespace string) *Tracker // non-empty, no "/"; registration
+                                                           // requires it to equal Spec.Name
 func (t *Tracker) MarkChanged(ctx context.Context, id ID) (Version, error)
 func (t *Tracker) Latest(ctx context.Context, id ID) (Version, error)
 func (t *Tracker) MarkApplied(ctx context.Context, id ID, v Version) error

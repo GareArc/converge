@@ -23,8 +23,9 @@ plug in around it.
 ## Verify
 
 ```sh
-make check                      # gofmt gate, vet, dependency gate, tests with -race
-go test -race -count=2 ./...    # what CI effectively runs; -count=2 shakes ordering assumptions
+make check                      # gofmt gate, vet, dependency gate, race tests — every module
+go test -race -count=2 ./...    # per module (., adapters/redis, examples); ./... does not cross
+                                # module boundaries, workspace or not
 ```
 
 Every change must leave `make check` green. There is no change small enough
@@ -99,6 +100,9 @@ without external services.
   fencing) belongs in that package's own tests.
 - Capability subtests auto-skip via type assertion (`base.(converge.GroupConsumer)`)
   and via nil option hooks (`Advance == nil` skips time-dependent subtests).
+- `adapters/redis` integration tests run when `CONVREDIS_TEST_ADDR` is set
+  and **flush DB 9** of that instance on every open — point it only at a
+  disposable Redis (CI's service container, a local throwaway).
 - Tests future-proof inputs: unknown enum values, foreign types through the
   registration seam, and expired/stale handles all have explicit cases.
 

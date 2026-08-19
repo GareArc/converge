@@ -31,3 +31,10 @@ table (that move is the only lossy step, kept tiny), and a reconciler
 converges the table — processing each row exactly like the outbox drain
 above. You get durability and retries from the table, not from hand-rolled
 queue machinery.
+
+The order inside that move is the whole pattern: **commit the inbox row
+first, acknowledge the foreign message second.** Acking first turns a crash
+between the two into a lost message; acking after the commit turns the same
+crash into a duplicate row — so give the table a unique constraint on a
+stable message ID (or an equivalent idempotency key) and let duplicate
+inserts collapse into no-ops.

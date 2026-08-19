@@ -16,8 +16,14 @@ if _, err := tracker.MarkChanged(ctx, id); err != nil {
 }
 
 // reconciler side — the order is a RULE, not a style choice:
-v, _ := tracker.Latest(ctx, id)           // 1. read the version FIRST
-cfg, _ := loadTruth(ctx, id)              // 2. then read truth
+v, err := tracker.Latest(ctx, id)         // 1. read the version FIRST
+if err != nil {
+    return err
+}
+cfg, err := loadTruth(ctx, id)            // 2. then read truth
+if err != nil {
+    return err
+}
 apply(ctx, cfg, v)                        // 3. pass v as the guard on writes
 return tracker.MarkApplied(ctx, id, v)    // 4. refused with ErrOutdated if
                                           //    the version moved past v

@@ -25,7 +25,7 @@ type InvitePayload struct {
 Producer service (API):
 
 ```go
-prod, err := worker.NewProducer(convredis.NewStreamsMQ(rdb))
+prod, err := worker.NewProducer(convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{}))
 
 err = jobs.SendInvite.Enqueue(ctx, prod, jobs.InvitePayload{
     Email: req.Email, InviterID: uid, WorkspaceID: wsID,

@@ -2,7 +2,7 @@
 
 ## Runtime lifecycle
 
-```
+```text
 converge.New(Options)              declare the world: ports, default MQ. Immutable after.
 reconcile.Register / worker.Handle declare the jobs — from anywhere, until Run
 rt.Run(ctx)                        go. Blocks. Cancel → stop intake → drain → release leases

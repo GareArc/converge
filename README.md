@@ -128,8 +128,9 @@ live — continue with the [full guide](docs/guide/index.md).
 ## Verify
 
 ```sh
-make check                      # gofmt gate, vet, dependency gate, tests with -race
-go test -race -count=2 ./...    # what CI effectively runs; -count=2 shakes ordering assumptions
+make check                      # gofmt gate, vet, dependency gate, race tests — every module
+go test -race -count=2 ./...    # per module (., adapters/redis, examples); ./... does not cross
+                                # module boundaries, workspace or not
 ```
 
 Every change must leave `make check` green.

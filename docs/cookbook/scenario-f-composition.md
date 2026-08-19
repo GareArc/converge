@@ -8,7 +8,7 @@ func main() {
 
     rt, err := converge.New(converge.Options{
         Namespace: "enterprise-server", // isolates this service's leases/KV/queues
-        MQ:        convredis.NewStreamsMQ(rdb),
+        MQ:        convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{}),
         Lease:     convredis.NewLease(rdb),
         KV:        convredis.NewKV(rdb),
         Observer:  convotel.NewObserver(meter),
