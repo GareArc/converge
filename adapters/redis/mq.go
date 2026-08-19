@@ -364,7 +364,10 @@ func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer str
 func (m *streamsMQ) deliverEntry(ctx context.Context, queue, group string, entry redis.XMessage, deliver func(converge.Delivery)) error {
 	msg, enq, err := decodeMessage(entry.Values)
 	if err != nil {
-		return nil
+		if err := m.rdb.XAck(ctx, streamKey(queue), group, entry.ID).Err(); err != nil {
+			return err
+		}
+		return m.forget(ctx, queue, group, entry.ID)
 	}
 	attempt, err := m.startAttempt(ctx, queue, group, entry.ID)
 	if err != nil {

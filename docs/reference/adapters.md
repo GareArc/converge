@@ -99,6 +99,14 @@ depends on, so the stream itself only grows; there is no trim option yet.
 Operators should plan for unbounded Redis Streams growth per queue until a
 real consumer motivates a trim/retention knob.
 
+**Undecodable entries are settled, not retried.** An entry a converge
+publisher did not write — a foreign producer using the same stream, or a
+corrupted record — cannot be decoded into a `converge.Message`, so it can
+never reach a handler or the worker surface's dead-letter path. Retrying it
+forever would only burn a reclaim per visibility window, so the adapter
+acks it and drops its bookkeeping on first contact. Converge streams are
+not a place for foreign writers; anything they add is discarded.
+
 #### EnqueuedAt divergence
 
 The Redis adapter stamps a delayed message's `converge.enqueued-at` header

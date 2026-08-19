@@ -193,6 +193,35 @@ func TestStreamsMQDelayedReleaseRetriesAfterFailedPublish(t *testing.T) {
 	}
 }
 
+func TestStreamsMQSettlesUndecodableEntries(t *testing.T) {
+	f := newStreamsMQ(t)
+	if err := f.client.XAdd(f.ctx, &redis.XAddArgs{
+		Stream: testStreamKey,
+		Values: map[string]any{"foreign": "x"},
+	}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	f.publish(t, converge.Message{Payload: []byte("a")})
+
+	got := f.consume(t)
+	d := recvDelivery(t, got)
+	if string(d.Message().Payload) != "a" {
+		t.Fatalf("got %q, want a", d.Message().Payload)
+	}
+	if err := d.Ack(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	f.advance(time.Minute + time.Second)
+	assertNoDelivery(t, got)
+	if n, err := f.client.ZCard(f.ctx, testPendingKey).Result(); err != nil || n != 0 {
+		t.Fatalf("pending set holds %d entries (err %v), want 0 after settling the foreign entry", n, err)
+	}
+	if p, err := f.client.XPending(f.ctx, testStreamKey, testGroup).Result(); err != nil || p.Count != 0 {
+		t.Fatalf("PEL holds %+v (err %v), want no pending entries after settling the foreign entry", p, err)
+	}
+}
+
 func TestStreamsMQRecoversFromDeletedStream(t *testing.T) {
 	f := newStreamsMQ(t)
 	got := f.consume(t)
