@@ -8,6 +8,14 @@ jobs:
     strategy:
       matrix:
         go: ['1.25', '1.26']
+        redis: ['redis:6.2-alpine', 'redis:7-alpine']
+    services:
+      redis:
+        image: ${{ matrix.redis }}
+        ports:
+          - 6379:6379
+    env:
+      CONVREDIS_TEST_ADDR: localhost:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

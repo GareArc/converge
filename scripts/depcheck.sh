@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 allow='^(github\.com/GareArc/converge(/|$)|github\.com/robfig/cron/v3(/|$))'
-bad=$(GOWORK=off go list -deps ./... | awk -F/ '$1 ~ /\./' | grep -Ev "$allow" || true)
+bad=$(GOWORK=off go list -deps -test ./... | sed -E 's/ \[.*\]$//; s/(\.test|_test)$//' | awk -F/ '$1 ~ /\./' | grep -Ev "$allow" || true)
 if [ -n "$bad" ]; then
   echo "disallowed core dependencies:" >&2
   echo "$bad" >&2
