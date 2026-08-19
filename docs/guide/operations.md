@@ -53,17 +53,25 @@ on the bare trailing slash.
 `OpsHandler` exposes: poke an ID, run a full pass now (backfills, incident
 recovery), pause/resume, and DLQ list / requeue / purge. Control operations
 are **routed through KV/MQ so they act cluster-wide** — pausing a job pauses
-it everywhere, poking reaches the leaseholder, and the response reports
-which replica acted. They are not per-replica no-ops behind a load balancer.
+it everywhere, and the response reports which replica(s) acted. They are not
+per-replica no-ops behind a load balancer.
 
-**Not every ops verb waits for every replica.** Poke, hint, and run-pass are
-*early-return* ops: because only one replica can meaningfully act (the
-leaseholder), dispatch returns as soon as **any** replica reports it acted,
-rather than waiting out the full response-collection timeout — the response
-you get back is the first acting replica's, not a roster of every replica.
-Pause and resume are not early-return: because a durable pause must be
-authoritative cluster-wide, their dispatch waits (up to the timeout) and
-returns one response per replica that answered.
+**Poke and hint don't need the leaseholder; run-pass does.** `Poke` and
+`Hint` only require the job's wake queue to be bound, which is true for
+every running replica — leaseholder or standby. Under `OnOneReplica`, that
+means **every** replica reports `Acted: true` for a poke or hint: the wake
+is enqueued locally on whichever replica received the command, but it's
+still only the leaseholder's dispatch loop that actually runs the work.
+Run-pass is different — `RunPassNow` is gated on the replica currently
+holding the lease, so only the leaseholder reports `Acted: true`; standbys
+report an error. All three (poke, hint, run-pass) are *early-return*
+dispatches: rather than waiting out the full response-collection timeout,
+dispatch returns as soon as any acting response has been observed, along
+with whatever other responses were already collected in that same polling
+round — not necessarily one from every replica. Pause and resume are not
+early-return: because a durable pause must be authoritative cluster-wide,
+their dispatch waits (up to the timeout) and returns one response per
+replica that answered.
 
 ### Pause and resume
 
@@ -88,11 +96,17 @@ event or a metric. Pair converge with your own backend monitoring
 Redis is down.
 
 **Steady-state cost of an idle Redis-backed consumer.** With the shipped
-[Redis adapter](../reference/adapters.md), an idle consumer performs roughly
-20 Redis round trips per second at its 100ms poll cadence (an `XPENDING`
-call, a claim script, and an `XREADGROUP` call, every 100ms). Under load,
-each batch of up to 16 delivered messages adds one further `XPENDING` call
-and one further claim-script call; delayed (snoozed/scheduled-retry)
-messages drain at up to 16 per poll iteration, roughly 160 messages/second
-per consumer. Size Redis connection and CPU budgets accordingly for
+[Redis adapter](../reference/adapters.md), every consume iteration issues
+**four** Redis round trips, whether or not there's any work: the
+delayed-release claim script (against the delayed ZSET), the `XPENDING`
+call that drives PEL reconciliation, the redelivery claim script (against
+the pending ZSET), and the `XREADGROUP` call that reads new entries — all
+four run every pass through the loop, not just when there's a due delayed
+message or a due redelivery. At the 100ms poll cadence (roughly 10
+iterations/second), that's **~40 Redis round trips per second per idle
+consumer**. Under load, each batch of up to 16 delivered messages adds one
+further `XPENDING`-driven reconciliation cost and one further redelivery
+claim-script cost per batch; delayed (snoozed/scheduled-retry) messages
+drain at up to 16 per poll iteration, roughly 160 messages/second per
+consumer. Size Redis connection and CPU budgets accordingly for
 consumer-heavy deployments.

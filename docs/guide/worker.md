@@ -34,11 +34,13 @@ are two different numbers, and the difference matters for retry logic:
   resets to one — the logical attempt is what survives that reset, carried
   forward in the `converge.attempt` header.
 
-If the `converge.attempt` header is corrupt or unparseable, the guard that
-caps consecutive no-backoff Snooze loops (see
-[Outcome values](concepts.md#outcome-values)) self-heals: the count resets
-rather than failing the message, so a corrupted header costs at most one
-extra loop, never a stuck message.
+The no-backoff Snooze loop guard (see
+[Outcome values](concepts.md#outcome-values)) is tracked in its own header,
+`converge.snoozes` — separate from `converge.attempt`. If `converge.snoozes`
+is missing or unparseable, the guard self-heals: it's read with a
+best-effort parse that falls back to zero rather than failing the message,
+so a corrupted or absent header costs at most one extra no-backoff loop,
+never a stuck message.
 
 ## Run modes
 
