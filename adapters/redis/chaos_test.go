@@ -111,6 +111,26 @@ func awaitKV(t *testing.T, kv converge.KV, key string, timeout time.Duration) bo
 	}
 }
 
+func awaitKVOrChildExit(t *testing.T, kv converge.KV, key string, timeout time.Duration, childDone <-chan error) bool {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		_, ok, err := kv.Get(context.Background(), key)
+		if err == nil && ok {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case werr := <-childDone:
+			t.Fatalf("convredis: chaos child exited before writing its pass-start marker: %v", werr)
+			return false
+		case <-time.After(chaosPollInterval):
+		}
+	}
+}
+
 func TestChaosChild(t *testing.T) {
 	if os.Getenv(envChaosChild) != "1" {
 		t.Skip("convredis: not invoked as a chaos child process")
@@ -164,7 +184,7 @@ func TestChaosKillLeaderHandoff(t *testing.T) {
 	})
 
 	passStartKey := chaosPassStartKey(ns)
-	if !awaitKV(t, kv, passStartKey, chaosChildReadyCap) {
+	if !awaitKVOrChildExit(t, kv, passStartKey, chaosChildReadyCap, childDone) {
 		t.Fatalf("convredis: chaos child never wrote its pass-start marker within %s", chaosChildReadyCap)
 	}
 
