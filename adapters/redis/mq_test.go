@@ -3,6 +3,7 @@ package convredis_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	convredis "github.com/GareArc/converge/adapters/redis"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/convergetest/portcheck"
+	"github.com/redis/go-redis/v9"
 )
 
 func TestMQPortMiniredis(t *testing.T) {
@@ -28,55 +30,145 @@ func TestMQPortRealRedis(t *testing.T) {
 }
 
 func TestStreamsMQDeliveryCarriesHeadersAndEnqueuedAt(t *testing.T) {
-	mq, clock, ctx := startStreamsMQ(t)
+	f := newStreamsMQ(t)
 	msg := converge.Message{
 		Kind:    "k",
 		Headers: map[string]string{converge.HeaderMessageID: "m-1"},
 		Payload: []byte("p"),
 	}
-	if err := mq.Publish(ctx, "q", msg); err != nil {
-		t.Fatal(err)
-	}
-	d := firstDelivery(t, ctx, mq)
+	f.publish(t, msg)
+	d := recvDelivery(t, f.consume(t))
 	if got := d.Message().Headers[converge.HeaderMessageID]; got != "m-1" {
 		t.Fatalf("header = %q, want m-1", got)
 	}
-	if !d.EnqueuedAt().Equal(clock.Now()) {
-		t.Fatalf("EnqueuedAt = %v, want the publishing clock time %v", d.EnqueuedAt(), clock.Now())
+	if !d.EnqueuedAt().Equal(f.clock.Now()) {
+		t.Fatalf("EnqueuedAt = %v, want the publishing clock time %v", d.EnqueuedAt(), f.clock.Now())
 	}
-	if err := d.Ack(ctx); err != nil {
+	if err := d.Ack(f.ctx); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestStreamsMQExtendAfterAck(t *testing.T) {
-	mq, _, ctx := startStreamsMQ(t)
-	if err := mq.Publish(ctx, "q", converge.Message{Payload: []byte("a")}); err != nil {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	d := recvDelivery(t, f.consume(t))
+	if err := d.Ack(f.ctx); err != nil {
 		t.Fatal(err)
 	}
-	d := firstDelivery(t, ctx, mq)
-	if err := d.Ack(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := d.Extend(ctx, time.Minute); !errors.Is(err, convredis.ErrSettled) {
+	if err := d.Extend(f.ctx, time.Minute); !errors.Is(err, convredis.ErrSettled) {
 		t.Fatalf("Extend after Ack = %v, want ErrSettled", err)
 	}
 }
 
-func startStreamsMQ(t *testing.T) (converge.MQ, *convergetest.Clock, context.Context) {
-	t.Helper()
-	client, clock, _ := openMini(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	return convredis.NewStreamsMQ(client, convredis.StreamsOpts{Clock: clock, Visibility: time.Minute}), clock, ctx
+func TestStreamsMQReadBatchSurvivesCancelMidBatch(t *testing.T) {
+	f := newStreamsMQ(t)
+	const batch = 4
+	for i := range batch {
+		f.publish(t, converge.Message{Payload: []byte{byte(i)}})
+	}
+
+	cctx, stop := context.WithCancel(f.ctx)
+	first := make(chan converge.Delivery, 1)
+	stopped := make(chan struct{})
+	var once sync.Once
+	go func() {
+		defer close(stopped)
+		f.mq.Consume(cctx, "q", func(d converge.Delivery) {
+			once.Do(func() {
+				first <- d
+				stop()
+			})
+		})
+	}()
+	delivered := recvDelivery(t, first)
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Consume did not return after cancel")
+	}
+	if err := delivered.Ack(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	f.advance(time.Minute + time.Second)
+	got := f.consume(t)
+	seen := map[byte]bool{}
+	for range batch - 1 {
+		d := recvDelivery(t, got)
+		seen[d.Message().Payload[0]] = true
+		if err := d.Ack(f.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(seen) != batch-1 {
+		t.Fatalf("reclaimed %d distinct messages, want %d", len(seen), batch-1)
+	}
+	if seen[delivered.Message().Payload[0]] {
+		t.Fatal("acked message was redelivered")
+	}
 }
 
-func firstDelivery(t *testing.T, ctx context.Context, mq converge.MQ) converge.Delivery {
+func TestStreamsMQRecoversFromDeletedStream(t *testing.T) {
+	f := newStreamsMQ(t)
+	got := f.consume(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	if err := recvDelivery(t, got).Ack(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.Del(f.ctx, "convredis:s:q").Err(); err != nil {
+		t.Fatal(err)
+	}
+	f.publish(t, converge.Message{Payload: []byte("b")})
+	d := recvDelivery(t, got)
+	if string(d.Message().Payload) != "b" {
+		t.Fatalf("got %q, want b", d.Message().Payload)
+	}
+	if err := d.Ack(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type streamsMQFixture struct {
+	mq      converge.MQ
+	client  *redis.Client
+	clock   *convergetest.Clock
+	advance func(d time.Duration)
+	ctx     context.Context
+}
+
+func newStreamsMQ(t *testing.T) *streamsMQFixture {
 	t.Helper()
-	got := make(chan converge.Delivery, 1)
-	go mq.Consume(ctx, "q", func(d converge.Delivery) { got <- d })
+	client, clock, advance := openMini(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return &streamsMQFixture{
+		mq:      convredis.NewStreamsMQ(client, convredis.StreamsOpts{Clock: clock, Visibility: time.Minute}),
+		client:  client,
+		clock:   clock,
+		advance: advance,
+		ctx:     ctx,
+	}
+}
+
+func (f *streamsMQFixture) publish(t *testing.T, msg converge.Message) {
+	t.Helper()
+	if err := f.mq.Publish(f.ctx, "q", msg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *streamsMQFixture) consume(t *testing.T) chan converge.Delivery {
+	t.Helper()
+	got := make(chan converge.Delivery, 16)
+	go f.mq.Consume(f.ctx, "q", func(d converge.Delivery) { got <- d })
+	return got
+}
+
+func recvDelivery(t *testing.T, ch chan converge.Delivery) converge.Delivery {
+	t.Helper()
 	select {
-	case d := <-got:
+	case d := <-ch:
 		return d
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for a delivery")

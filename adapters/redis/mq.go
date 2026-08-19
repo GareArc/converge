@@ -19,8 +19,10 @@ const (
 	reservedGroup   = "converge"
 	blockInterval   = 100 * time.Millisecond
 	readCount       = 16
+	trackAttempts   = 5
 	consumerIDBytes = 8
 	busyGroupPrefix = "BUSYGROUP"
+	noGroupPrefix   = "NOGROUP"
 	groupStartID    = "0"
 	newEntriesID    = ">"
 )
@@ -93,20 +95,20 @@ func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliv
 			return ctx.Err()
 		}
 		if err := m.redeliverDue(ctx, queue, group, consumer, deliver); err != nil {
-			if !pause(ctx) {
+			if !m.resume(ctx, queue, group, err) {
 				return ctx.Err()
 			}
 			continue
 		}
 		entries, err := m.readNew(ctx, queue, group, consumer)
-		if err == nil {
-			err = m.track(ctx, queue, group, entries)
-		}
 		if err != nil {
-			if !pause(ctx) {
+			if !m.resume(ctx, queue, group, err) {
 				return ctx.Err()
 			}
 			continue
+		}
+		if err := m.trackBatch(ctx, queue, group, entries); err != nil && ctx.Err() != nil {
+			return ctx.Err()
 		}
 		for _, entry := range entries {
 			if ctx.Err() != nil {
@@ -117,6 +119,13 @@ func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliv
 			}
 		}
 	}
+}
+
+func (m *streamsMQ) resume(ctx context.Context, queue, group string, err error) bool {
+	if strings.HasPrefix(err.Error(), noGroupPrefix) && m.ensureGroup(ctx, queue, group) == nil {
+		return true
+	}
+	return pause(ctx)
 }
 
 func pause(ctx context.Context) bool {
@@ -160,6 +169,17 @@ func (m *streamsMQ) readNew(ctx context.Context, queue, group, consumer string) 
 		entries = append(entries, stream.Messages...)
 	}
 	return entries, nil
+}
+
+func (m *streamsMQ) trackBatch(ctx context.Context, queue, group string, entries []redis.XMessage) error {
+	err := m.track(ctx, queue, group, entries)
+	for attempt := 1; err != nil && attempt < trackAttempts; attempt++ {
+		if !pause(ctx) {
+			return ctx.Err()
+		}
+		err = m.track(ctx, queue, group, entries)
+	}
+	return err
 }
 
 func (m *streamsMQ) track(ctx context.Context, queue, group string, entries []redis.XMessage) error {
