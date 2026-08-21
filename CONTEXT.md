@@ -115,6 +115,13 @@ leave the logical attempt untouched. Capped by `Retry.MaxAge`, never by
 `Retry.MaxAttempts`.
 _Avoid_: delay, reschedule
 
+**Envelope**:
+The `converge.*` header protocol on a worker message — seeded once at
+enqueue, folded on snooze and neutral republish so the logical attempt
+survives, reset to fresh (attempt zero, no snoozes) by a requeue. One
+module owns every read and write of these headers.
+_Avoid_: wire format, raw headers
+
 **Dead-letter (DLQ)**:
 Worker-only: a message moved aside after its retry budget or age is
 exhausted, kept with its final error. Revived only by an ops requeue.
