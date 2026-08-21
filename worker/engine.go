@@ -2,13 +2,10 @@ package worker
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -351,7 +348,7 @@ func (e *engine) receive(ictx, hctx context.Context, d converge.Delivery, slots 
 	case slots <- struct{}{}:
 	case <-ictx.Done():
 		e.setDepth(-1)
-		e.neutral(d, m)
+		e.neutral(context.WithoutCancel(ictx), d, m)
 		return
 	}
 	wg.Add(1)
@@ -371,45 +368,25 @@ func (e *engine) setDepth(delta int) {
 	e.deps.Observer.Observe(converge.QueueDepth{Job: e.cfg.info.name, Queue: e.cfg.info.queue, Depth: depth})
 }
 
-func logicalBase(m converge.Message) (int, bool) {
-	raw, ok := m.Headers[converge.HeaderAttempt]
-	if !ok {
-		return 0, true
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 || n > math.MaxInt/2 {
-		return 0, false
-	}
-	return n, true
-}
-
 func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, converge.DeadLetterReason) {
+	env := newEnvelope(d, m)
+	attempt, ok := env.attempt()
 	meta := Meta{
 		Task:        e.cfg.info.name,
 		Queue:       e.cfg.info.queue,
-		MessageID:   m.Headers[converge.HeaderMessageID],
+		MessageID:   env.messageID(),
+		Attempt:     attempt,
 		MaxAttempts: e.cfg.retry.MaxAttempts,
-		EnqueuedAt:  d.EnqueuedAt(),
+		EnqueuedAt:  env.enqueuedAt(),
 		Headers:     maps.Clone(m.Headers),
 	}
-	if meta.MessageID == "" {
-		sum := sha256.New()
-		sum.Write([]byte(m.Kind))
-		sum.Write(m.Payload)
-		meta.MessageID = "anon-" + hex.EncodeToString(sum.Sum(nil)[:16])
-	}
-	if ts, err := time.Parse(time.RFC3339Nano, m.Headers[converge.HeaderEnqueuedAt]); err == nil {
-		meta.EnqueuedAt = ts
-	}
-	base, ok := logicalBase(m)
-	meta.Attempt = base + d.Attempt()
 	if !e.durable() {
 		return meta, converge.DeadLetterReason{}
 	}
 	if m.Kind != e.cfg.info.name {
 		return meta, converge.DeadLetterWrongKind
 	}
-	if m.Headers[converge.HeaderSchemaVersion] != strconv.Itoa(e.cfg.info.version) {
+	if env.schemaVersion() != strconv.Itoa(e.cfg.info.version) {
 		return meta, converge.DeadLetterSchemaVersion
 	}
 	if !ok {
@@ -437,7 +414,7 @@ func (e *engine) process(hctx context.Context, d converge.Delivery, m converge.M
 	}
 	if err := e.limit.Wait(hctx); err != nil {
 		close(stopHB)
-		e.neutral(d, m)
+		e.neutral(sctx, d, m)
 		return
 	}
 	start := e.deps.Clock.Now()
@@ -478,7 +455,7 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		}
 	}
 	if hctx.Err() != nil {
-		e.neutral(d, m)
+		e.neutral(sctx, d, m)
 		return
 	}
 	e.recordFailure()
@@ -580,8 +557,8 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 		e.deadLetter(sctx, d, meta, m, converge.DeadLetterMaxAge, nil)
 		return
 	}
-	snoozes, _ := strconv.Atoi(m.Headers[converge.HeaderSnoozes])
-	snoozes++
+	env := newEnvelope(d, m)
+	snoozes := env.snoozes() + 1
 	delay := backoff.Floor(in)
 	if snoozes > noBackoffCap {
 		delay = e.retryDelay(snoozes - noBackoffCap)
@@ -590,13 +567,7 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 	if delay > remaining {
 		delay = remaining
 	}
-	h := maps.Clone(m.Headers)
-	if h == nil {
-		h = map[string]string{}
-	}
-	h[converge.HeaderAttempt] = strconv.Itoa(meta.Attempt - 1)
-	h[converge.HeaderSnoozes] = strconv.Itoa(snoozes)
-	republished := converge.Message{Kind: m.Kind, Headers: h, Payload: m.Payload}
+	republished := env.forSnooze()
 	if err := e.mq.(converge.DelayedPublisher).PublishDelayed(sctx, e.cfg.info.queue, republished, delay); err != nil {
 		d.Nack(sctx, delay)
 		e.observeRun(meta, took, nil)
@@ -717,23 +688,16 @@ func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta,
 	})
 }
 
-func (e *engine) neutral(d converge.Delivery, m converge.Message) {
+func (e *engine) neutral(ctx context.Context, d converge.Delivery, m converge.Message) {
 	if !e.durable() {
 		return
 	}
-	ctx := context.Background()
-	base, ok := logicalBase(m)
-	if !ok {
+	env := newEnvelope(d, m)
+	if _, ok := env.attempt(); !ok {
 		d.Nack(ctx, 0)
 		return
 	}
-	h := maps.Clone(m.Headers)
-	if h == nil {
-		h = map[string]string{}
-	}
-	h[converge.HeaderAttempt] = strconv.Itoa(base + d.Attempt() - 1)
-	republished := converge.Message{Kind: m.Kind, Headers: h, Payload: m.Payload}
-	if err := e.mq.Publish(ctx, e.cfg.info.queue, republished); err != nil {
+	if err := e.mq.Publish(ctx, e.cfg.info.queue, env.forNeutral()); err != nil {
 		d.Nack(ctx, 0)
 		return
 	}
