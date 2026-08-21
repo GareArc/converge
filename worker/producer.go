@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/GareArc/converge"
@@ -79,11 +76,6 @@ func (t Task[T]) Enqueue(ctx context.Context, p *Producer, payload T, o EnqueueO
 	if o.Delay < 0 {
 		return fmt.Errorf("worker: task %q: Delay must not be negative", t.name)
 	}
-	for k := range o.Headers {
-		if strings.HasPrefix(k, converge.HeaderPrefix) {
-			return fmt.Errorf("worker: task %q: header %q uses the reserved %q prefix", t.name, k, converge.HeaderPrefix)
-		}
-	}
 	mq, err := p.resolve(t.queue)
 	if err != nil {
 		return err
@@ -92,15 +84,10 @@ func (t Task[T]) Enqueue(ctx context.Context, p *Producer, payload T, o EnqueueO
 	if err != nil {
 		return fmt.Errorf("worker: task %q: encode: %w", t.name, err)
 	}
-	h := maps.Clone(o.Headers)
-	if h == nil {
-		h = map[string]string{}
+	m, err := seedMessage(t.name, t.version, p.clock.Now(), o.Headers, raw)
+	if err != nil {
+		return fmt.Errorf("worker: task %q: %w", t.name, err)
 	}
-	h[converge.HeaderMessageID] = newID()
-	h[converge.HeaderSchemaVersion] = strconv.Itoa(t.version)
-	h[converge.HeaderEnqueuedAt] = p.clock.Now().UTC().Format(time.RFC3339Nano)
-	h[converge.HeaderAttempt] = "0"
-	m := converge.Message{Kind: t.name, Headers: h, Payload: raw}
 	if o.Delay > 0 {
 		dp, ok := mq.(converge.DelayedPublisher)
 		if !ok {
