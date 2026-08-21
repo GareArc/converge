@@ -2,8 +2,6 @@ package worker
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -111,10 +109,4 @@ func (t Task[T]) Enqueue(ctx context.Context, p *Producer, payload T, o EnqueueO
 		return dp.PublishDelayed(ctx, t.queue, m, o.Delay)
 	}
 	return mq.Publish(ctx, t.queue, m)
-}
-
-func newID() string {
-	var b [16]byte
-	rand.Read(b[:])
-	return hex.EncodeToString(b[:])
 }
