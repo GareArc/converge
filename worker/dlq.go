@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"strings"
 	"time"
 
@@ -88,11 +87,11 @@ func (q *DLQ) prefix() string {
 func (q *DLQ) key(messageID string) string { return q.prefix() + messageID }
 
 func toDeadLetter(id string, raw []byte) DeadLetter {
-	var rec dlqRecord
+	var rec DeadLetter
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return DeadLetter{MessageID: id, Reason: reasonUndecodableRecord, Error: err.Error()}
 	}
-	return DeadLetter(rec)
+	return rec
 }
 
 func (q *DLQ) List(ctx context.Context) ([]DeadLetter, error) {
@@ -168,7 +167,7 @@ func (q *DLQ) Requeue(ctx context.Context, messageID string) error {
 	if !ok {
 		return ErrDeadLetterNotFound
 	}
-	var rec dlqRecord
+	var rec DeadLetter
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return fmt.Errorf("worker: job %q: requeue %q: %w", q.job, messageID, err)
 	}
@@ -176,14 +175,7 @@ func (q *DLQ) Requeue(ctx context.Context, messageID string) error {
 	if err != nil {
 		return err
 	}
-	headers := maps.Clone(rec.Headers)
-	if headers == nil {
-		headers = map[string]string{}
-	}
-	delete(headers, converge.HeaderAttempt)
-	delete(headers, converge.HeaderSnoozes)
-	headers[converge.HeaderEnqueuedAt] = q.clock.Now().UTC().Format(time.RFC3339Nano)
-	msg := converge.Message{Kind: rec.Task, Headers: headers, Payload: rec.Payload}
+	msg := requeueMessage(rec, q.clock.Now())
 	if err := mq.Publish(ctx, rec.Queue, msg); err != nil {
 		return err
 	}

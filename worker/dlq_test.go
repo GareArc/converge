@@ -230,8 +230,8 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 	if _, ok := second.Headers[converge.HeaderSnoozes]; ok {
 		t.Fatal("snoozes header must be stripped on requeue")
 	}
-	if _, ok := second.Headers[converge.HeaderAttempt]; ok {
-		t.Fatal("attempt header must be stripped on requeue")
+	if got := second.Headers[converge.HeaderAttempt]; got != "0" {
+		t.Fatalf("attempt header on requeue = %q, want %q (requeue resets to base attempt, not absence)", got, "0")
 	}
 	if keys := dlqKeys(t, w, "job"); len(keys) != 0 {
 		t.Fatalf("dlq keys after requeue = %v, want none", keys)
@@ -246,7 +246,7 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 
 func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	w := newWorld(t)
-	rec := dlqRecord{
+	rec := DeadLetter{
 		Task:           "job",
 		Queue:          "job",
 		MessageID:      "anon-deadbeef",
@@ -284,8 +284,8 @@ func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	if _, ok := m.Headers[converge.HeaderMessageID]; ok {
 		t.Fatalf("republished message has message-id header %q, want none", m.Headers[converge.HeaderMessageID])
 	}
-	if _, ok := m.Headers[converge.HeaderAttempt]; ok {
-		t.Fatal("attempt header must be stripped")
+	if got := m.Headers[converge.HeaderAttempt]; got != "0" {
+		t.Fatalf("attempt header = %q, want %q (requeue resets to base attempt, not absence)", got, "0")
 	}
 	if got := string(m.Payload); got != `"hello"` {
 		t.Fatalf("payload = %q, want %q", got, `"hello"`)
@@ -336,7 +336,7 @@ func TestDLQListDedupesAcrossScanPages(t *testing.T) {
 		return &duplicateScanKV{inner: inmem.NewKVWithClock(clock)}
 	}})
 	ctx := context.Background()
-	rec := dlqRecord{
+	rec := DeadLetter{
 		Task:           "job",
 		Queue:          "job",
 		MessageID:      "id-0",
@@ -383,7 +383,7 @@ func TestDLQPurgeAllReturnsCount(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := dlqRecord{
+		rec := DeadLetter{
 			Task:           "job",
 			Queue:          "job",
 			MessageID:      fmt.Sprintf("id-%d", i),
@@ -458,7 +458,7 @@ func TestDLQRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 		cmq = convergetest.WrapMQ(inmem.NewMQWithClock(clock))
 		return cmq
 	}})
-	rec := dlqRecord{
+	rec := DeadLetter{
 		Task:           "job",
 		Queue:          "job",
 		MessageID:      "msg-1",
@@ -513,7 +513,7 @@ func TestDLQListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
 	ctx := context.Background()
 	const total = 150
 	for i := 0; i < total; i++ {
-		rec := dlqRecord{
+		rec := DeadLetter{
 			Task:           "job",
 			Queue:          "job",
 			MessageID:      fmt.Sprintf("id-%03d", i),
@@ -608,7 +608,7 @@ func TestDLQPurgeAllPartialFailureReturnsCountAndError(t *testing.T) {
 	}
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := dlqRecord{
+		rec := DeadLetter{
 			Task:           "job",
 			Queue:          "job",
 			MessageID:      fmt.Sprintf("id-%d", i),
@@ -649,7 +649,7 @@ func TestDLQRequeueNoMQErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	rec := dlqRecord{
+	rec := DeadLetter{
 		Task:           "job",
 		Queue:          "job",
 		MessageID:      "msg-1",

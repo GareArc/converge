@@ -133,13 +133,13 @@ func dlqKeys(t *testing.T, w *world, job string) []string {
 	return keys
 }
 
-func dlqRecordAt(t *testing.T, w *world, key string) dlqRecord {
+func dlqRecordAt(t *testing.T, w *world, key string) DeadLetter {
 	t.Helper()
 	raw, ok, err := w.kv.Get(context.Background(), key)
 	if err != nil || !ok {
 		t.Fatalf("get dlq record %q: ok=%v err=%v", key, ok, err)
 	}
-	var rec dlqRecord
+	var rec DeadLetter
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		t.Fatal(err)
 	}

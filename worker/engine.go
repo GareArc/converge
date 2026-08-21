@@ -630,19 +630,6 @@ func (e *engine) extendLoop(ctx context.Context, d converge.Delivery, stop <-cha
 	}
 }
 
-type dlqRecord struct {
-	Task           string            `json:"task"`
-	Queue          string            `json:"queue"`
-	MessageID      string            `json:"message_id"`
-	Attempt        int               `json:"attempt"`
-	Reason         string            `json:"reason"`
-	Error          string            `json:"error,omitempty"`
-	EnqueuedAt     time.Time         `json:"enqueued_at"`
-	DeadLetteredAt time.Time         `json:"dead_lettered_at"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	Payload        []byte            `json:"payload,omitempty"`
-}
-
 func (e *engine) deadLetterOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason converge.DeadLetterReason, cause error) {
 	e.recordFailure()
 	if !e.durable() {
@@ -652,7 +639,7 @@ func (e *engine) deadLetterOrDrop(ctx context.Context, d converge.Delivery, meta
 }
 
 func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason converge.DeadLetterReason, cause error) {
-	rec := dlqRecord{
+	rec := DeadLetter{
 		Task:           e.cfg.info.name,
 		Queue:          e.cfg.info.queue,
 		MessageID:      meta.MessageID,
