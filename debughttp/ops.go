@@ -26,16 +26,8 @@ type verbResponse struct {
 }
 
 type deadLetterView struct {
-	Task           string            `json:"task"`
-	Queue          string            `json:"queue"`
-	MessageID      string            `json:"message_id"`
-	Attempt        int               `json:"attempt"`
-	Reason         string            `json:"reason"`
-	Error          string            `json:"error,omitempty"`
-	EnqueuedAt     time.Time         `json:"enqueued_at"`
-	DeadLetteredAt time.Time         `json:"dead_lettered_at"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	Payload        json.RawMessage   `json:"payload,omitempty"`
+	worker.DeadLetter
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 type dlqListResponse struct {
@@ -116,17 +108,7 @@ func ensureWorkerJob(w http.ResponseWriter, rt *converge.Runtime, job string) bo
 }
 
 func newDeadLetterView(dl worker.DeadLetter, showPayload bool) (deadLetterView, error) {
-	v := deadLetterView{
-		Task:           dl.Task,
-		Queue:          dl.Queue,
-		MessageID:      dl.MessageID,
-		Attempt:        dl.Attempt,
-		Reason:         dl.Reason,
-		Error:          dl.Error,
-		EnqueuedAt:     dl.EnqueuedAt,
-		DeadLetteredAt: dl.DeadLetteredAt,
-		Headers:        dl.Headers,
-	}
+	v := deadLetterView{DeadLetter: dl}
 	if !showPayload {
 		return v, nil
 	}
