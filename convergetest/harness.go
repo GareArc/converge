@@ -51,7 +51,7 @@ func New(t testing.TB) *Harness {
 		Clock: clock,
 		MQ:    WrapMQ(inmem.NewMQWithClock(clock)),
 		KV:    inmem.NewKVWithClock(clock),
-		Lease: WrapLease(inmem.NewLeaseWithClock(clock)),
+		Lease: WrapLease(inmem.NewLeaseWithClock(clock), "test"),
 		t:     t,
 		rec:   &Recorder{},
 		done:  make(chan struct{}),

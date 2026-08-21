@@ -2,21 +2,22 @@ package convergetest
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 var _ converge.Lease = (*Lease)(nil)
 
 type Lease struct {
-	base *inmem.Lease
+	base      *inmem.Lease
+	namespace string
 }
 
-func WrapLease(base *inmem.Lease) *Lease {
-	return &Lease{base: base}
+func WrapLease(base *inmem.Lease, namespace string) *Lease {
+	return &Lease{base: base, namespace: namespace}
 }
 
 func (l *Lease) TryAcquire(ctx context.Context, name string, ttl time.Duration) (converge.LeaseHandle, bool, error) {
@@ -24,18 +25,14 @@ func (l *Lease) TryAcquire(ctx context.Context, name string, ttl time.Duration) 
 }
 
 func (l *Lease) Expire(name string) {
+	targets := map[string]struct{}{
+		name:                                   {},
+		keys.WorkerLease(l.namespace, name):    {},
+		keys.ReconcileLease(l.namespace, name): {},
+	}
 	for _, held := range l.base.Names() {
-		if leaseNameMatches(held, name) {
+		if _, ok := targets[held]; ok {
 			l.base.Expire(held)
 		}
 	}
-}
-
-func leaseNameMatches(held, name string) bool {
-	if held == name {
-		return true
-	}
-	segs := strings.Split(held, "/")
-	n := len(segs)
-	return n >= 2 && segs[n-1] == "lease" && segs[n-2] == name
 }

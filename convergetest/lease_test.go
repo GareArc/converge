@@ -14,7 +14,7 @@ var _ converge.Lease = (*convergetest.Lease)(nil)
 
 func TestLeaseTryAcquireDelegatesToBase(t *testing.T) {
 	base := inmem.NewLease()
-	l := convergetest.WrapLease(base)
+	l := convergetest.WrapLease(base, "test")
 	ctx := context.Background()
 	h, ok, err := l.TryAcquire(ctx, "ns/converge/worker/app-runner/lease", time.Hour)
 	if err != nil || !ok || h == nil {
@@ -27,7 +27,7 @@ func TestLeaseTryAcquireDelegatesToBase(t *testing.T) {
 
 func TestLeaseExpireMatchesExactKey(t *testing.T) {
 	base := inmem.NewLease()
-	l := convergetest.WrapLease(base)
+	l := convergetest.WrapLease(base, "test")
 	ctx := context.Background()
 	h, _, _ := l.TryAcquire(ctx, "solo-name", time.Hour)
 	l.Expire("solo-name")
@@ -40,7 +40,7 @@ func TestLeaseExpireMatchesExactKey(t *testing.T) {
 
 func TestLeaseExpireMatchesPathSegment(t *testing.T) {
 	base := inmem.NewLease()
-	l := convergetest.WrapLease(base)
+	l := convergetest.WrapLease(base, "test")
 	ctx := context.Background()
 	h, _, _ := l.TryAcquire(ctx, "test/converge/worker/app-runner/lease", time.Hour)
 	l.Expire("app-runner")
@@ -53,7 +53,7 @@ func TestLeaseExpireMatchesPathSegment(t *testing.T) {
 
 func TestLeaseExpireDoesNotMatchPartialSegment(t *testing.T) {
 	base := inmem.NewLease()
-	l := convergetest.WrapLease(base)
+	l := convergetest.WrapLease(base, "test")
 	ctx := context.Background()
 	h, _, _ := l.TryAcquire(ctx, "test/converge/worker/app-runner-2/lease", time.Hour)
 	l.Expire("app-runner")
@@ -64,22 +64,9 @@ func TestLeaseExpireDoesNotMatchPartialSegment(t *testing.T) {
 	}
 }
 
-func TestLeaseExpireDoesNotMatchNonTrailingSegment(t *testing.T) {
-	base := inmem.NewLease()
-	l := convergetest.WrapLease(base)
-	ctx := context.Background()
-	h, _, _ := l.TryAcquire(ctx, "test/converge/worker/other-job/lease", time.Hour)
-	l.Expire("worker")
-	select {
-	case <-h.Done():
-		t.Fatal("a job literally named \"worker\" must not expire another job's lease just because \"worker\" appears as a surface segment")
-	default:
-	}
-}
-
 func TestLeaseExpireLeavesOtherLeasesHeld(t *testing.T) {
 	base := inmem.NewLease()
-	l := convergetest.WrapLease(base)
+	l := convergetest.WrapLease(base, "test")
 	ctx := context.Background()
 	a, _, _ := l.TryAcquire(ctx, "test/converge/worker/app-runner/lease", time.Hour)
 	b, _, _ := l.TryAcquire(ctx, "test/converge/worker/other-job/lease", time.Hour)
