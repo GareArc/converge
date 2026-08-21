@@ -12,6 +12,7 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
+	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/mw"
 	"github.com/GareArc/converge/internal/pausegate"
 	"github.com/GareArc/converge/internal/sig"
@@ -530,16 +531,12 @@ func (e *engine) record(kind finishKind) {
 }
 
 func (e *engine) key(parts ...string) string {
-	elems := make([]string, 0, len(parts)+4)
-	if e.deps.Namespace != "" {
-		elems = append(elems, e.deps.Namespace)
-	}
-	elems = append(elems, "converge", "reconcile", e.cfg.name)
-	elems = append(elems, parts...)
-	return strings.Join(elems, "/")
+	return keys.Reconcile(e.deps.Namespace, e.cfg.name, parts...)
 }
 
-func (e *engine) parkKey(id ID) string { return e.key("parked", string(id)) }
+func (e *engine) parkKey(id ID) string {
+	return keys.ReconcileParked(e.deps.Namespace, e.cfg.name, string(id))
+}
 
 func (e *engine) durableParks() bool {
 	return e.deps.KV != nil && e.cfg.runMode != converge.OnAllReplicas
@@ -566,7 +563,7 @@ func (e *engine) loadParked(ctx context.Context) {
 	if !e.durableParks() {
 		return
 	}
-	prefix := e.parkKey("")
+	prefix := keys.ReconcileParkedPrefix(e.deps.Namespace, e.cfg.name)
 	cursor := ""
 	for {
 		keys, next, err := e.deps.KV.Scan(ctx, prefix, cursor)
@@ -637,7 +634,7 @@ func (e *engine) leaseInterval() time.Duration {
 }
 
 func (e *engine) leaseLoop(ctx context.Context) error {
-	name := e.key("lease")
+	name := keys.ReconcileLease(e.deps.Namespace, e.cfg.name)
 	retry := e.leaseInterval()
 	for {
 		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)

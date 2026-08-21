@@ -10,6 +10,7 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 type DeadLetter struct {
@@ -75,16 +76,9 @@ func (q *DLQ) requireKV() error {
 	return nil
 }
 
-func (q *DLQ) prefix() string {
-	elems := make([]string, 0, 4)
-	if q.namespace != "" {
-		elems = append(elems, q.namespace)
-	}
-	elems = append(elems, "converge", "worker", q.job, "dlq")
-	return strings.Join(elems, "/") + "/"
-}
+func (q *DLQ) prefix() string { return keys.WorkerDLQPrefix(q.namespace, q.job) }
 
-func (q *DLQ) key(messageID string) string { return q.prefix() + messageID }
+func (q *DLQ) key(messageID string) string { return keys.WorkerDLQ(q.namespace, q.job, messageID) }
 
 func toDeadLetter(id string, raw []byte) DeadLetter {
 	var rec DeadLetter

@@ -8,13 +8,13 @@ import (
 	"maps"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
 	"github.com/GareArc/converge/internal/durfmt"
+	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/mw"
 	"github.com/GareArc/converge/internal/pausegate"
 	"github.com/GareArc/converge/internal/sig"
@@ -109,16 +109,12 @@ func (e *engine) awaitUnpaused(ctx context.Context) bool {
 func (e *engine) durable() bool { return e.cfg.runMode != converge.OnAllReplicas }
 
 func (e *engine) key(parts ...string) string {
-	elems := make([]string, 0, len(parts)+4)
-	if e.deps.Namespace != "" {
-		elems = append(elems, e.deps.Namespace)
-	}
-	elems = append(elems, "converge", "worker", e.cfg.info.name)
-	elems = append(elems, parts...)
-	return strings.Join(elems, "/")
+	return keys.Worker(e.deps.Namespace, e.cfg.info.name, parts...)
 }
 
-func (e *engine) dlqKey(id string) string { return e.key("dlq", id) }
+func (e *engine) dlqKey(id string) string {
+	return keys.WorkerDLQ(e.deps.Namespace, e.cfg.info.name, id)
+}
 
 func (e *engine) Stats() converge.JobStats {
 	e.mu.Lock()
@@ -578,7 +574,7 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 }
 
 func (e *engine) leaseLoop(ctx context.Context) {
-	name := e.key("lease")
+	name := keys.WorkerLease(e.deps.Namespace, e.cfg.info.name)
 	retry := e.deps.LeaseTTL / 3
 	e.markReady()
 	for {
