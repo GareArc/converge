@@ -304,7 +304,11 @@ func (m *streamsMQ) reconcilePending(ctx context.Context, queue, group string) e
 		if len(pending) < pendingPageCount {
 			return nil
 		}
-		start = nextEntryID(pending[len(pending)-1].ID)
+		next := nextEntryID(pending[len(pending)-1].ID)
+		if !entryIDAdvanced(next, start) {
+			return nil
+		}
+		start = next
 	}
 }
 
@@ -318,6 +322,34 @@ func nextEntryID(id string) string {
 		return id
 	}
 	return ms + "-" + strconv.FormatUint(n+1, 10)
+}
+
+func entryIDAdvanced(next, start string) bool {
+	nms, nseq, nok := entryIDParts(next)
+	sms, sseq, sok := entryIDParts(start)
+	if !nok || !sok {
+		return next > start
+	}
+	if nms != sms {
+		return nms > sms
+	}
+	return nseq > sseq
+}
+
+func entryIDParts(id string) (ms, seq uint64, ok bool) {
+	m, s, found := strings.Cut(id, "-")
+	if !found {
+		return 0, 0, false
+	}
+	msVal, err := strconv.ParseUint(m, 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	seqVal, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return msVal, seqVal, true
 }
 
 func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {

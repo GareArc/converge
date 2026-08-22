@@ -18,16 +18,12 @@ func TestStreamsMQReconcilesDeepPEL(t *testing.T) {
 	ctx := context.Background()
 	clock := convergetest.NewClock(time.Unix(1700000000, 0))
 
-	mq := NewStreamsMQ(client, StreamsOpts{Clock: clock, Visibility: time.Minute})
-	m, ok := mq.(*streamsMQ)
-	if !ok {
-		t.Fatal("NewStreamsMQ must return *streamsMQ")
-	}
+	m := &streamsMQ{rdb: client, clock: clock, visibility: time.Minute}
 
 	const queue = "q"
-	const total = 80
+	const total = 2*pendingPageCount + 1
 	for i := 0; i < total; i++ {
-		if err := mq.Publish(ctx, queue, converge.Message{Payload: []byte{byte(i)}}); err != nil {
+		if err := m.Publish(ctx, queue, converge.Message{Payload: []byte{byte(i)}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -54,5 +50,27 @@ func TestStreamsMQReconcilesDeepPEL(t *testing.T) {
 
 	if n, err := client.ZCard(ctx, pendingKey(queue, reservedGroup)).Result(); err != nil || n != total {
 		t.Fatalf("pending set holds %d entries (err %v), want %d after reconcile", n, err, total)
+	}
+}
+
+func TestEntryIDAdvanced(t *testing.T) {
+	cases := []struct {
+		name        string
+		next, start string
+		want        bool
+	}{
+		{"first page from range start", "1700000000000-4", pendingRangeMin, true},
+		{"ordinary increment", "1700000000000-73", "1700000000000-9", true},
+		{"digit width does not confuse the comparison", "1700000000000-100", "1700000000000-99", true},
+		{"ms rollover", "1700000000001-0", "1700000000000-63", true},
+		{"uint64 seq overflow wraps backward", "1700000000000-0", "1700000000000-18446744073709551615", false},
+		{"equal is not advanced", "1700000000000-9", "1700000000000-9", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := entryIDAdvanced(c.next, c.start); got != c.want {
+				t.Fatalf("entryIDAdvanced(%q, %q) = %v, want %v", c.next, c.start, got, c.want)
+			}
+		})
 	}
 }

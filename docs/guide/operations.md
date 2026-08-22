@@ -123,7 +123,11 @@ delayed-release claim script (against the delayed ZSET), the `XPENDING`
 call that drives PEL reconciliation, the redelivery claim script (against
 the pending ZSET), and the `XREADGROUP` call that reads new entries — all
 four run every pass through the loop, not just when there's a due delayed
-message or a due redelivery. At the 100ms poll cadence (roughly 10
+message or a due redelivery. The reconciliation pass is paginated at
+`pendingPageCount` entries per page: the "one `XPENDING` call" above is the
+idle-PEL case, and a deeper PEL costs one further `XPENDING`/`ZADD NX`
+round-trip pair per additional page of PEL depth, every iteration, until
+the whole PEL has been walked. At the 100ms poll cadence (roughly 10
 iterations/second), that's **~40 Redis round trips per second per idle
 consumer**. Under load, each batch of up to 16 delivered messages adds one
 further `XPENDING`-driven reconciliation cost and one further redelivery

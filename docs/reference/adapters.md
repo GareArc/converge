@@ -43,18 +43,18 @@ One stream per queue. `Consume` is `ConsumeGroup` against the reserved group
 `converge`; `ConsumeGroup` is a real consumer group (`XGROUP CREATE ... 0
 MKSTREAM`); `ConsumeBroadcast` is a per-subscriber `XREAD` from `$`.
 
-**Visibility is adapter-managed, not idle-time-based.** `StreamsOpts.Visibility`
-defaults to `DefaultVisibility` whenever it is zero or negative — only a
-strictly positive duration overrides the default. On delivery, the adapter
-scores the entry into a pending ZSET at `Clock.Now() + visibility`; `Extend`
-re-scores; `Ack` removes it. Every re-score is attempt-guarded: a handle
-whose entry was reclaimed or acked cannot postpone the live attempt — its
-`Extend` reports the loss, its `Nack` is a no-op. Redelivery claims due
-members from that ZSET (via a guarded Lua script so concurrent consumers
-never double-claim) and hands them to the stream with `XCLAIM` — never
-`XAUTOCLAIM` and never Redis's own idle-time bookkeeping. The same
-`visibility` window doubles as the retry grace for delayed-message release
-(below).
+**Visibility is adapter-managed, not idle-time-based.**
+`StreamsOpts.Visibility` defaults to `DefaultVisibility` whenever it is
+zero or negative — only a strictly positive duration overrides the
+default. On delivery, the adapter scores the entry into a pending ZSET at
+`Clock.Now() + visibility`; `Extend` re-scores; `Ack` removes it.
+Handle-driven re-scores are attempt-guarded: a handle whose entry was
+reclaimed or acked cannot postpone the live attempt — its `Extend` reports
+the loss, its `Nack` is a no-op. Redelivery claims due members from that
+ZSET (via a guarded Lua script so concurrent consumers never double-claim)
+and hands them to the stream with `XCLAIM` — never `XAUTOCLAIM` and never
+Redis's own idle-time bookkeeping. The same `visibility` window doubles as
+the retry grace for delayed-message release (below).
 
 **A PEL-reconciliation pass walks the entire PEL every consume iteration,
 paginated.** The adapter lists the group's pending entries list (`XPENDING`)
