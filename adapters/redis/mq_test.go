@@ -150,8 +150,9 @@ func TestStreamsMQReadBatchSurvivesCancelMidBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.advance(time.Minute + time.Second)
 	got := f.consume(t)
+	f.awaitPendingCount(t, batch-1)
+	f.advance(time.Minute + time.Second)
 	seen := map[byte]bool{}
 	for range batch - 1 {
 		d := recvDelivery(t, got)
@@ -351,6 +352,20 @@ func (f *streamsMQFixture) awaitTracked(t *testing.T, id string) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("entry %s was never tracked in %s", id, testPendingKey)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func (f *streamsMQFixture) awaitPendingCount(t *testing.T, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if n, err := f.client.ZCard(f.ctx, testPendingKey).Result(); err == nil && n == int64(want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s never reached %d entries", testPendingKey, want)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}

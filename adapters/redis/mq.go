@@ -22,7 +22,6 @@ const (
 	handoffTimeout   = 5 * time.Second
 	readCount        = 16
 	pendingPageCount = 64
-	trackAttempts    = 5
 	randomIDBytes    = 8
 	busyGroupPrefix  = "BUSYGROUP"
 	noGroupPrefix    = "NOGROUP"
@@ -171,9 +170,6 @@ func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliv
 			}
 			continue
 		}
-		if err := m.trackBatch(ctx, queue, group, entries); err != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
 		for _, entry := range entries {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -235,29 +231,6 @@ func (m *streamsMQ) readNew(ctx context.Context, queue, group, consumer string) 
 	return entries, nil
 }
 
-func (m *streamsMQ) trackBatch(ctx context.Context, queue, group string, entries []redis.XMessage) error {
-	err := m.track(ctx, queue, group, entries)
-	for attempt := 1; err != nil && attempt < trackAttempts; attempt++ {
-		if !pause(ctx) {
-			return ctx.Err()
-		}
-		err = m.track(ctx, queue, group, entries)
-	}
-	return err
-}
-
-func (m *streamsMQ) track(ctx context.Context, queue, group string, entries []redis.XMessage) error {
-	if len(entries) == 0 {
-		return nil
-	}
-	score := dueScore(m.clock.Now().Add(m.visibility))
-	members := make([]redis.Z, 0, len(entries))
-	for _, entry := range entries {
-		members = append(members, redis.Z{Score: score, Member: entry.ID})
-	}
-	return m.rdb.ZAdd(ctx, pendingKey(queue, group), members...).Err()
-}
-
 func (m *streamsMQ) moveDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
 	if err := m.releaseDelayed(ctx, queue); err != nil {
 		return err
@@ -302,28 +275,49 @@ func (m *streamsMQ) releaseDelayed(ctx context.Context, queue string) error {
 }
 
 func (m *streamsMQ) reconcilePending(ctx context.Context, queue, group string) error {
-	pending, err := m.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: streamKey(queue),
-		Group:  group,
-		Start:  pendingRangeMin,
-		End:    pendingRangeMax,
-		Count:  pendingPageCount,
-	}).Result()
-	if errors.Is(err, redis.Nil) {
-		return nil
+	start := pendingRangeMin
+	for {
+		pending, err := m.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
+			Stream: streamKey(queue),
+			Group:  group,
+			Start:  start,
+			End:    pendingRangeMax,
+			Count:  pendingPageCount,
+		}).Result()
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if len(pending) == 0 {
+			return nil
+		}
+		score := dueScore(m.clock.Now().Add(m.visibility))
+		members := make([]redis.Z, 0, len(pending))
+		for _, entry := range pending {
+			members = append(members, redis.Z{Score: score, Member: entry.ID})
+		}
+		if err := m.rdb.ZAddNX(ctx, pendingKey(queue, group), members...).Err(); err != nil {
+			return err
+		}
+		if len(pending) < pendingPageCount {
+			return nil
+		}
+		start = nextEntryID(pending[len(pending)-1].ID)
 	}
+}
+
+func nextEntryID(id string) string {
+	ms, seq, ok := strings.Cut(id, "-")
+	if !ok {
+		return id
+	}
+	n, err := strconv.ParseUint(seq, 10, 64)
 	if err != nil {
-		return err
+		return id
 	}
-	if len(pending) == 0 {
-		return nil
-	}
-	score := dueScore(m.clock.Now().Add(m.visibility))
-	members := make([]redis.Z, 0, len(pending))
-	for _, entry := range pending {
-		members = append(members, redis.Z{Score: score, Member: entry.ID})
-	}
-	return m.rdb.ZAddNX(ctx, pendingKey(queue, group), members...).Err()
+	return ms + "-" + strconv.FormatUint(n+1, 10)
 }
 
 func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
