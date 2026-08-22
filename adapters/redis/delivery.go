@@ -30,27 +30,30 @@ func (d *streamDelivery) Attempt() int              { return d.attempt }
 func (d *streamDelivery) EnqueuedAt() time.Time     { return d.enq }
 
 func (d *streamDelivery) Ack(ctx context.Context) error {
-	if err := d.mq.rdb.XAck(ctx, streamKey(d.queue), d.group, d.id).Err(); err != nil {
+	if err := d.mq.ack(ctx, d.queue, d.group, d.id); err != nil {
 		return err
 	}
 	d.settle()
-	return d.mq.forget(ctx, d.queue, d.group, d.id)
+	return nil
 }
 
 func (d *streamDelivery) Nack(ctx context.Context, redeliverAfter time.Duration) error {
-	return d.reschedule(ctx, redeliverAfter)
+	_, err := d.mq.deferTo(ctx, d.queue, d.group, d.id, d.attempt, redeliverAfter)
+	return err
 }
 
 func (d *streamDelivery) Extend(ctx context.Context, visibility time.Duration) error {
 	if d.isSettled() {
 		return ErrSettled
 	}
-	return d.reschedule(ctx, visibility)
-}
-
-func (d *streamDelivery) reschedule(ctx context.Context, after time.Duration) error {
-	due := d.mq.clock.Now().Add(after)
-	return d.mq.rdb.ZAdd(ctx, pendingKey(d.queue, d.group), redis.Z{Score: dueScore(due), Member: d.id}).Err()
+	applied, err := d.mq.deferTo(ctx, d.queue, d.group, d.id, d.attempt, visibility)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return ErrSettled
+	}
+	return nil
 }
 
 func (d *streamDelivery) settle() {

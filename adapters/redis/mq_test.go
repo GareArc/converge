@@ -69,6 +69,42 @@ func TestStreamsMQExtendAfterAck(t *testing.T) {
 	}
 }
 
+func TestStreamsMQStaleExtendDoesNotPostponeRedelivery(t *testing.T) {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	got := f.consume(t)
+	stale := recvDelivery(t, got)
+	if stale.Attempt() != 1 {
+		t.Fatalf("Attempt = %d, want 1", stale.Attempt())
+	}
+
+	f.advance(time.Minute + time.Second)
+	live := recvDelivery(t, got)
+	if live.Attempt() != 2 {
+		t.Fatalf("reclaimed Attempt = %d, want 2", live.Attempt())
+	}
+
+	if err := stale.Extend(f.ctx, time.Hour); !errors.Is(err, convredis.ErrSettled) {
+		t.Fatalf("Extend on a stale handle = %v, want ErrSettled", err)
+	}
+
+	f.advance(time.Minute + time.Second)
+	next := recvDelivery(t, got)
+	if next.Attempt() != 3 {
+		t.Fatalf("Attempt after a stale extend = %d, want 3", next.Attempt())
+	}
+	if err := next.Ack(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := stale.Nack(f.ctx, time.Hour); err != nil {
+		t.Fatalf("Nack on a stale handle = %v, want nil", err)
+	}
+	if n, err := f.client.ZCard(f.ctx, testPendingKey).Result(); err != nil || n != 0 {
+		t.Fatalf("pending set holds %d entries (err %v), want 0 after a stale nack", n, err)
+	}
+}
+
 func TestStreamsMQReadBatchSurvivesCancelMidBatch(t *testing.T) {
 	f := newStreamsMQ(t)
 	const batch = 4

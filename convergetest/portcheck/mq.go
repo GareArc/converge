@@ -142,6 +142,27 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		}
 	})
 
+	t.Run("stale extend does not postpone the successor's redelivery", func(t *testing.T) {
+		if o.Advance == nil || o.Visibility == 0 {
+			t.Skip("needs clock control and a known visibility window")
+		}
+		mq, got, ctx := startConsumer(t, open)
+		mustPublish(t, mq, "q", converge.Message{Payload: []byte("a")})
+		stale := recvDelivery(t, got)
+		o.Advance(o.Visibility + time.Second)
+		live := recvDelivery(t, got)
+		if live.Attempt() != 2 {
+			t.Fatalf("reclaimed Attempt = %d, want 2", live.Attempt())
+		}
+		_ = stale.Extend(ctx, 10*o.Visibility)
+		o.Advance(o.Visibility + time.Second)
+		next := recvDelivery(t, got)
+		if next.Attempt() != 3 {
+			t.Fatalf("Attempt after a stale extend = %d, want 3", next.Attempt())
+		}
+		next.Ack(ctx)
+	})
+
 	t.Run("named groups each receive every message", func(t *testing.T) {
 		base := open(t)
 		gc, ok := base.(converge.GroupConsumer)
