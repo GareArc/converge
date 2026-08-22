@@ -38,7 +38,7 @@ func TestLeaseExpireMatchesExactKey(t *testing.T) {
 	}
 }
 
-func TestLeaseExpireMatchesPathSegment(t *testing.T) {
+func TestLeaseExpireMatchesWorkerLeaseCandidate(t *testing.T) {
 	base := inmem.NewLease()
 	l := convergetest.WrapLease(base, "test")
 	ctx := context.Background()
@@ -47,7 +47,20 @@ func TestLeaseExpireMatchesPathSegment(t *testing.T) {
 	select {
 	case <-h.Done():
 	default:
-		t.Fatal("Expire must close Done when the bare job name matches a path segment")
+		t.Fatal("Expire must close Done when the bare job name matches the built WorkerLease key")
+	}
+}
+
+func TestLeaseExpireMatchesReconcileLeaseCandidate(t *testing.T) {
+	base := inmem.NewLease()
+	l := convergetest.WrapLease(base, "test")
+	ctx := context.Background()
+	h, _, _ := l.TryAcquire(ctx, "test/converge/reconcile/app-runner/lease", time.Hour)
+	l.Expire("app-runner")
+	select {
+	case <-h.Done():
+	default:
+		t.Fatal("Expire must close Done when the bare job name matches the built ReconcileLease key")
 	}
 }
 

@@ -26,19 +26,19 @@ rt.Run(ctx)                        go. Blocks. Cancel → stop intake → drain 
 ## Keyspace
 
 For operators inspecting a backend directly, every key converge writes is
-built by `internal/keys`, namespaced by `Options.Namespace` (`{ns}`, omitted
-when empty):
+built by `internal/keys`, namespaced by `Options.Namespace` (`{ns}`, cleanly
+omitted when empty for every key below except `Tracker` — see its note):
 
 | Key | Purpose |
 |---|---|
 | `{ns}/converge/ctl` | ops-verb request queue |
 | `{ns}/converge/ctl/res/{opID}/{replica}` | one replica's response to ops verb `{opID}` |
 | `{ns}/converge/ctl/paused/{job}` | durable pause flag for `{job}` |
-| `{ns}/converge/worker/{job}/lease` | worker job's leaseholder lock |
+| `{ns}/converge/worker/{job}/lease` | worker job's held lease |
 | `{ns}/converge/worker/{job}/dlq/{messageID}` | dead-lettered message record |
-| `{ns}/converge/reconcile/{job}/lease` | reconcile job's leaseholder lock |
+| `{ns}/converge/reconcile/{job}/lease` | reconcile job's held lease |
 | `{ns}/converge/reconcile/{job}/parked/{id}` | parked ID's record |
-| `converge/tracker/{ns}/{id}` | last-seen version for parked-ID revival — `{ns}` sits after the fixed `tracker` segment, not as a leading prefix like the keys above |
+| `converge/tracker/{ns}/{id}` | last-seen version for parked-ID revival — `{ns}` sits after the fixed `tracker` segment, not as a leading prefix like the keys above, and is not cleanly omitted when empty: `Tracker` concatenates the namespace raw, so an empty namespace yields a literal double slash, `converge/tracker//{id}` |
 
 `adapters/redis` additionally namespaces its own bookkeeping (streams,
 pending ZSETs, attempts) under a fixed `convredis:` prefix — see
