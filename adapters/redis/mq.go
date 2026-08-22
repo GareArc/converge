@@ -384,10 +384,14 @@ func (m *streamsMQ) deliverEntry(ctx context.Context, queue, group string, entry
 }
 
 func (m *streamsMQ) ack(ctx context.Context, queue, group, id string) error {
-	if err := m.rdb.XAck(ctx, streamKey(queue), group, id).Err(); err != nil {
+	if err := m.ackStream(ctx, queue, group, id); err != nil {
 		return err
 	}
 	return m.forget(ctx, queue, group, id)
+}
+
+func (m *streamsMQ) ackStream(ctx context.Context, queue, group, id string) error {
+	return m.rdb.XAck(ctx, streamKey(queue), group, id).Err()
 }
 
 func (m *streamsMQ) deferTo(ctx context.Context, queue, group, id string, attempt int, after time.Duration) (bool, error) {

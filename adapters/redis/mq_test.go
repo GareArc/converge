@@ -69,6 +69,21 @@ func TestStreamsMQExtendAfterAck(t *testing.T) {
 	}
 }
 
+func TestStreamsMQAckSettlesTheHandleWhenCleanupFails(t *testing.T) {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	d := recvDelivery(t, f.consume(t))
+	restore := failCommand(t, f.mr, "HDEL")
+	defer restore()
+
+	if err := d.Ack(f.ctx); err == nil {
+		t.Fatal("Ack = nil, want the failed bookkeeping cleanup reported")
+	}
+	if err := d.Extend(f.ctx, time.Hour); !errors.Is(err, convredis.ErrSettled) {
+		t.Fatalf("Extend after an acked delivery whose cleanup failed = %v, want ErrSettled", err)
+	}
+}
+
 func TestStreamsMQStaleExtendDoesNotPostponeRedelivery(t *testing.T) {
 	f := newStreamsMQ(t)
 	f.publish(t, converge.Message{Payload: []byte("a")})
