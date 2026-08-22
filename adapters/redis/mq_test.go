@@ -37,6 +37,23 @@ func TestMQPortRealRedis(t *testing.T) {
 	}, portcheck.MQOptions{})
 }
 
+func TestStreamsMQNegativeVisibilityDefaults(t *testing.T) {
+	_, client, clock, advance := openMiniServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mq := convredis.NewStreamsMQ(client, convredis.StreamsOpts{Clock: clock, Visibility: -time.Second})
+
+	if err := mq.Publish(ctx, "q", converge.Message{Payload: []byte("a")}); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan converge.Delivery, 16)
+	go mq.Consume(ctx, "q", func(d converge.Delivery) { got <- d })
+	recvDelivery(t, got)
+
+	advance(time.Minute)
+	assertNoDelivery(t, got)
+}
+
 func TestStreamsMQDeliveryCarriesHeadersAndEnqueuedAt(t *testing.T) {
 	f := newStreamsMQ(t)
 	msg := converge.Message{

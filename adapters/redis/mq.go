@@ -49,7 +49,7 @@ func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) converge.MQ {
 	if m.clock == nil {
 		m.clock = wallClock{}
 	}
-	if m.visibility == 0 {
+	if m.visibility <= 0 {
 		m.visibility = DefaultVisibility
 	}
 	return m
