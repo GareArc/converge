@@ -530,3 +530,61 @@ func TestRuntimeReturnsAttachedRuntime(t *testing.T) {
 		t.Fatalf("Runtime(t) = %p, want %p (the attached runtime)", got, rt)
 	}
 }
+
+func TestDrainWithCustomMQDegradesToHookQuietWithoutPanicking(t *testing.T) {
+	h := convergetest.NewWith(t, convergetest.Options{
+		MQ: func(clock *convergetest.Clock) converge.MQ {
+			return inmem.NewMQWithClock(clock)
+		},
+	})
+	if h.MQ != nil {
+		t.Fatalf("h.MQ = %v, want nil when a custom MQ constructor is supplied", h.MQ)
+	}
+	rt, err := converge.New(h.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = reconcile.Register(rt, reconcile.Spec{
+		Name: "steady",
+		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+			return nil
+		}),
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
+				return nil, nil
+			}), reconcile.Every(time.Hour)),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+}
+
+func TestAssertEnqueuedWithCustomMQFatalsInsteadOfPanicking(t *testing.T) {
+	fake := &fakeTB{}
+	t.Cleanup(fake.runCleanups)
+	h := convergetest.NewWith(fake, convergetest.Options{
+		MQ: func(clock *convergetest.Clock) converge.MQ {
+			return inmem.NewMQWithClock(clock)
+		},
+	})
+	rt, err := converge.New(h.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk := worker.NewTask[string]("send-invite", worker.TaskOpts{})
+	if err := worker.Handle(rt, tk, func(context.Context, string) error { return nil }, worker.HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.AssertEnqueued(fake, tk, "alice@example.com")
+
+	msgs := fake.messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected AssertEnqueued with a custom MQ to Fatalf instead of panicking")
+	}
+	if !strings.Contains(msgs[0], "custom MQ constructor") || !strings.Contains(msgs[0], "Await") {
+		t.Fatalf("Fatalf message = %q, want mention of the custom MQ constructor and Await", msgs[0])
+	}
+}

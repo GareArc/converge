@@ -62,6 +62,10 @@ func (h *Harness) AssertEnqueued(t testing.TB, task TaskRef, want any) {
 	if !h.ensureRunning(t) {
 		return
 	}
+	if h.MQ == nil {
+		t.Fatalf("convergetest: AssertEnqueued: this harness was built with a custom MQ constructor, so the recording MQ that AssertEnqueued needs does not exist; express the condition through Await instead")
+		return
+	}
 	payload, err := task.Encode(want)
 	if err != nil {
 		t.Fatalf("convergetest: AssertEnqueued: encode want: %v", err)

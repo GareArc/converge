@@ -79,9 +79,12 @@ harness's own fake `*Clock`, so a custom port still runs on harness time.
   fields — `h.MQ` a recording wrapper, `h.KV` the raw port — exist only for
   the default ports the harness builds itself; when you hand it a custom
   `MQ` or `KV`, the harness isn't holding that port, so it never fabricates
-  a stand-in for one it doesn't own. Consequence: **`Drain`'s quiet check
-  degrades to `hook.Quiet(rt)` alone** with a custom `MQ`, since
-  `h.MQ.Idle()` is unavailable. Express MQ-idle conditions through
+  a stand-in for one it doesn't own. Two consequences follow, both by
+  design rather than by crash: **`Drain`'s quiet check degrades to
+  `hook.Quiet(rt)` alone** with a custom `MQ`, since `h.MQ.Idle()` is
+  unavailable; and **`h.AssertEnqueued` fails the test with a clear message**
+  instead of a nil-pointer panic, since it needs `h.MQ`'s recorded
+  publishes. Express both MQ-idle and was-it-enqueued conditions through
   `convergetest.Await` instead when testing over a custom `MQ`.
 - **`h.Runtime(t) *converge.Runtime`** returns the attached runtime,
   lazy-starting it like any other verb — useful when a surface (`debughttp`,
