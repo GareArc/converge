@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
-	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/wiring"
 )
 
 type Producer struct {
@@ -29,34 +29,25 @@ func NewProducer(mq converge.MQ) (*Producer, error) {
 }
 
 func ProducerFrom(rt *converge.Runtime) (*Producer, error) {
-	w, err := hook.ProducerDeps(rt)
+	w, err := wiring.ProducerFor(rt)
 	if err != nil {
 		return nil, err
 	}
-	p := &Producer{clock: wallClock{}}
-	if m, ok := w.MQ.(converge.MQ); ok && m != nil {
-		p.mq = m
-	}
-	if c, ok := w.Clock.(converge.Clock); ok && c != nil {
-		p.clock = c
-	}
-	p.queueMQ = func(queue string) converge.MQ {
-		if m, ok := w.QueueMQ(queue).(converge.MQ); ok {
-			return m
-		}
-		return nil
+	p := &Producer{mq: w.MQ, clock: wallClock{}, queueMQ: w.QueueMQ}
+	if w.Clock != nil {
+		p.clock = w.Clock
 	}
 	return p, nil
 }
 
-func (p *Producer) resolve(queue string) (converge.MQ, error) {
-	if p.queueMQ != nil {
-		if m := p.queueMQ(queue); m != nil {
+func resolveQueue(queueMQ func(string) converge.MQ, def converge.MQ, queue string) (converge.MQ, error) {
+	if queueMQ != nil {
+		if m := queueMQ(queue); m != nil {
 			return m, nil
 		}
 	}
-	if p.mq != nil {
-		return p.mq, nil
+	if def != nil {
+		return def, nil
 	}
 	return nil, fmt.Errorf("worker: queue %q: no handler binding and no default Options.MQ", queue)
 }
@@ -76,7 +67,7 @@ func (t Task[T]) Enqueue(ctx context.Context, p *Producer, payload T, o EnqueueO
 	if o.Delay < 0 {
 		return fmt.Errorf("worker: task %q: Delay must not be negative", t.name)
 	}
-	mq, err := p.resolve(t.queue)
+	mq, err := resolveQueue(p.queueMQ, p.mq, t.queue)
 	if err != nil {
 		return err
 	}

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
-	"github.com/GareArc/converge/internal/hook"
 	"github.com/GareArc/converge/internal/keys"
+	"github.com/GareArc/converge/internal/wiring"
 )
 
 type DeadLetter struct {
@@ -40,31 +40,16 @@ type DLQ struct {
 }
 
 func DLQFrom(rt *converge.Runtime, job string) (*DLQ, error) {
-	w, err := hook.OpsDeps(rt)
+	w, err := wiring.OpsFor(rt)
 	if err != nil {
 		return nil, err
 	}
 	if job == "" {
 		return nil, errors.New("worker: DLQFrom needs a job name")
 	}
-	q := &DLQ{clock: wallClock{}, namespace: w.Namespace, job: job}
-	if kv, ok := w.KV.(converge.KV); ok && kv != nil {
-		q.kv = kv
-	}
-	if m, ok := w.MQ.(converge.MQ); ok && m != nil {
-		q.mq = m
-	}
-	if c, ok := w.Clock.(converge.Clock); ok && c != nil {
-		q.clock = c
-	}
-	q.queueMQ = func(queue string) converge.MQ {
-		if w.QueueMQ == nil {
-			return nil
-		}
-		if m, ok := w.QueueMQ(queue).(converge.MQ); ok {
-			return m
-		}
-		return nil
+	q := &DLQ{kv: w.KV, mq: w.MQ, clock: wallClock{}, namespace: w.Namespace, job: job, queueMQ: w.QueueMQ}
+	if w.Clock != nil {
+		q.clock = w.Clock
 	}
 	return q, nil
 }
@@ -137,18 +122,6 @@ func (q *DLQ) Get(ctx context.Context, messageID string) (DeadLetter, error) {
 	return toDeadLetter(messageID, raw), nil
 }
 
-func (q *DLQ) resolveQueue(queue string) (converge.MQ, error) {
-	if q.queueMQ != nil {
-		if m := q.queueMQ(queue); m != nil {
-			return m, nil
-		}
-	}
-	if q.mq != nil {
-		return q.mq, nil
-	}
-	return nil, fmt.Errorf("worker: queue %q: no handler binding and no default Options.MQ", queue)
-}
-
 func (q *DLQ) Requeue(ctx context.Context, messageID string) error {
 	if err := q.requireKV(); err != nil {
 		return err
@@ -165,7 +138,7 @@ func (q *DLQ) Requeue(ctx context.Context, messageID string) error {
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return fmt.Errorf("worker: job %q: requeue %q: %w", q.job, messageID, err)
 	}
-	mq, err := q.resolveQueue(rec.Queue)
+	mq, err := resolveQueue(q.queueMQ, q.mq, rec.Queue)
 	if err != nil {
 		return err
 	}

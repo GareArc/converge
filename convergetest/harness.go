@@ -9,6 +9,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/wiring"
 )
 
 var epoch = time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
@@ -129,10 +130,9 @@ func (h *Harness) Options() converge.Options {
 		LeaseTTL:     h.leaseTTL,
 		DrainTimeout: h.drainTimeout,
 	}
-	out := hook.AttachOptions(o, h.attach)
-	opts, ok := out.(converge.Options)
-	if !ok {
-		h.t.Fatalf("convergetest: internal: AttachOptions returned %T, want converge.Options", out)
+	opts, err := wiring.Attach(o, h.attach)
+	if err != nil {
+		h.t.Fatalf("convergetest: internal: %v", err)
 		return o
 	}
 	return opts
