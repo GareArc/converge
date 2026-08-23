@@ -2,11 +2,15 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/internal/keys"
 )
@@ -63,7 +67,9 @@ func TestKVParkStoreRoundTrip(t *testing.T) {
 	if !s.enabled() {
 		t.Fatal("a KV park store is enabled")
 	}
-	s.clear(ctx, "a")
+	if err := s.clear(ctx, "a"); err != nil {
+		t.Fatalf("clearing an absent mark = %v, want nil", err)
+	}
 	s.mark(ctx, "a", 42)
 	if v, ok := s.read(ctx, "a"); !ok || v != 42 {
 		t.Fatalf("read after mark = (%d, %v), want (42, true)", v, ok)
@@ -72,7 +78,9 @@ func TestKVParkStoreRoundTrip(t *testing.T) {
 	if err != nil || !ok || string(raw) != "42" {
 		t.Fatalf("stored mark = (%q, %v, %v), want (\"42\", true, nil)", raw, ok, err)
 	}
-	s.clear(ctx, "a")
+	if err := s.clear(ctx, "a"); err != nil {
+		t.Fatalf("clear = %v, want nil", err)
+	}
 	if v, ok := s.read(ctx, "a"); ok {
 		t.Fatalf("read after clear = (%d, %v), want absent", v, ok)
 	}
@@ -101,6 +109,121 @@ func TestKVParkStoreScanVisitsMarkedIDs(t *testing.T) {
 	}
 }
 
+const pokeClearDeadline = 2 * time.Second
+
+type failingDeleteKV struct {
+	converge.KV
+	mu       sync.Mutex
+	key      string
+	fails    int
+	attempts int
+}
+
+func (k *failingDeleteKV) arm(key string, fails int) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.key, k.fails, k.attempts = key, fails, 0
+}
+
+func (k *failingDeleteKV) deletes() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.attempts
+}
+
+func (k *failingDeleteKV) Delete(ctx context.Context, key string) error {
+	k.mu.Lock()
+	if key != k.key {
+		k.mu.Unlock()
+		return k.KV.Delete(ctx, key)
+	}
+	k.attempts++
+	down := k.fails > 0
+	if down {
+		k.fails--
+	}
+	k.mu.Unlock()
+	if down {
+		return errors.New("kv unavailable")
+	}
+	return k.KV.Delete(ctx, key)
+}
+
+func newParkClearEngine(t *testing.T, kv converge.KV, clock *convergetest.Clock, deadLetterAfter int) *engine {
+	t.Helper()
+	e := &engine{
+		cfg: config{
+			name:            "job",
+			concurrency:     1,
+			deadLetterAfter: deadLetterAfter,
+			rec:             Func(func(context.Context, ID) error { return nil }),
+		},
+		ready: make(chan struct{}),
+	}
+	if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &convergetest.Recorder{}, Clock: clock}); err != nil {
+		t.Fatal(err)
+	}
+	return e
+}
+
+func TestActivationClearRetriesThroughInfraError(t *testing.T) {
+	ctx := context.Background()
+	clock := convergetest.NewClock(wqStart)
+	kv := &failingDeleteKV{KV: inmem.NewKVWithClock(clock)}
+	e := newParkClearEngine(t, kv, clock, 0)
+	key := parkKey(e, "a")
+	if err := kv.Set(ctx, key, []byte("0"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Poke("a"); err != nil {
+		t.Fatal(err)
+	}
+	kv.arm(key, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		e.loadParked(ctx)
+	}()
+	convergetest.AdvanceUntil(t, clock, time.Second, func() bool { return kv.deletes() == 2 })
+	<-done
+	if _, ok, err := kv.Get(ctx, key); err != nil || ok {
+		t.Fatalf("the retried clear must remove the mark: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestPokeClearDoesNotRetry(t *testing.T) {
+	ctx := context.Background()
+	clock := convergetest.NewClock(wqStart)
+	kv := &failingDeleteKV{KV: inmem.NewKVWithClock(clock)}
+	e := newParkClearEngine(t, kv, clock, 1)
+	key := parkKey(e, "a")
+	if err := kv.Set(ctx, key, []byte("0"), 0); err != nil {
+		t.Fatal(err)
+	}
+	e.queue.wake("a", wakeHint)
+	mustPop(t, e.queue, clock, "a")
+	if res := e.queue.finish("a", finishFailure, 0); !res.parked {
+		t.Fatalf("finish = %+v, want parked", res)
+	}
+	kv.arm(key, 1)
+	poked := make(chan error, 1)
+	go func() { poked <- e.Poke("a") }()
+	select {
+	case err := <-poked:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(pokeClearDeadline):
+		t.Fatal("poke must not retry the mark clear")
+	}
+	if n := kv.deletes(); n != 1 {
+		t.Fatalf("poke attempted the clear %d times, want 1", n)
+	}
+	if _, ok, err := kv.Get(ctx, key); err != nil || !ok {
+		t.Fatalf("a one-shot clear leaves the failed mark: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestNoopParkStoreIsInert(t *testing.T) {
 	ctx := context.Background()
 	var s parkStore = noopParkStore{}
@@ -111,7 +234,9 @@ func TestNoopParkStoreIsInert(t *testing.T) {
 	if v, ok := s.read(ctx, "a"); ok || v != 0 {
 		t.Fatalf("read = (%d, %v), want absent", v, ok)
 	}
-	s.clear(ctx, "a")
+	if err := s.clear(ctx, "a"); err != nil {
+		t.Fatalf("clear = %v, want nil", err)
+	}
 	visits := 0
 	s.scan(ctx, func(ID) { visits++ })
 	if visits != 0 {

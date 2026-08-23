@@ -13,7 +13,7 @@ type parkStore interface {
 	enabled() bool
 	read(ctx context.Context, id ID) (Version, bool)
 	mark(ctx context.Context, id ID, v Version)
-	clear(ctx context.Context, id ID)
+	clear(ctx context.Context, id ID) error
 	scan(ctx context.Context, visit func(ID))
 }
 
@@ -26,6 +26,17 @@ func (e *engine) newParkStore(deps converge.JobDeps) parkStore {
 		namespace: deps.Namespace,
 		job:       e.cfg.name,
 		retry:     e.pauseOnInfraError,
+	}
+}
+
+func (e *engine) clearPark(ctx context.Context, id ID) {
+	for {
+		if err := e.parks.clear(ctx, id); err == nil {
+			return
+		}
+		if !e.pauseOnInfraError(ctx) {
+			return
+		}
 	}
 }
 
@@ -73,8 +84,8 @@ func (s *kvParkStore) mark(ctx context.Context, id ID, v Version) {
 	}
 }
 
-func (s *kvParkStore) clear(ctx context.Context, id ID) {
-	s.kv.Delete(ctx, s.key(id))
+func (s *kvParkStore) clear(ctx context.Context, id ID) error {
+	return s.kv.Delete(ctx, s.key(id))
 }
 
 func (s *kvParkStore) scan(ctx context.Context, visit func(ID)) {
@@ -106,6 +117,6 @@ func (noopParkStore) read(context.Context, ID) (Version, bool) { return 0, false
 
 func (noopParkStore) mark(context.Context, ID, Version) {}
 
-func (noopParkStore) clear(context.Context, ID) {}
+func (noopParkStore) clear(context.Context, ID) error { return nil }
 
 func (noopParkStore) scan(context.Context, func(ID)) {}

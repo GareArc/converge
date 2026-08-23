@@ -330,7 +330,7 @@ func (e *engine) tryRevive(ctx context.Context, q *wakeQueue, id ID) bool {
 	if err != nil || latest <= marked {
 		return false
 	}
-	e.parks.clear(ctx, id)
+	e.clearPark(ctx, id)
 	return q.wake(id, wakeVersion) == wakeRevived
 }
 
@@ -555,7 +555,7 @@ func (e *engine) loadParked(ctx context.Context) {
 	e.parks.scan(ctx, func(id ID) {
 		switch e.queue.restorePark(id) {
 		case restoreBusy:
-			e.parks.clear(ctx, id)
+			e.clearPark(ctx, id)
 		case restoreOverflow:
 			e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
 		}
