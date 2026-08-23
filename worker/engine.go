@@ -217,8 +217,6 @@ func invocationFrom(ctx context.Context) (invocation, bool) {
 
 const consumeRetryInterval = time.Second
 
-const noBackoffCap = 10
-
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	if err := e.bind(deps); err != nil {
 		return err
@@ -463,21 +461,11 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		e.deadLetter(sctx, d, meta, m, converge.DeadLetterMaxAttempts, err)
 		return
 	}
-	d.Nack(sctx, e.retryDelay(meta.Attempt))
+	d.Nack(sctx, e.retryCurve().Delay(meta.Attempt))
 }
 
-func (e *engine) retryDelay(attempt int) time.Duration {
-	d := e.cfg.retry.MinBackoff
-	for i := 1; i < attempt; i++ {
-		if d >= e.cfg.retry.MaxBackoff/2 {
-			return backoff.Jitter(e.cfg.retry.MaxBackoff)
-		}
-		d *= 2
-	}
-	if d >= e.cfg.retry.MaxBackoff {
-		return backoff.Jitter(e.cfg.retry.MaxBackoff)
-	}
-	return backoff.Jitter(d)
+func (e *engine) retryCurve() backoff.Curve {
+	return backoff.Curve{Min: e.cfg.retry.MinBackoff, Max: e.cfg.retry.MaxBackoff}
 }
 
 func (e *engine) recordSuccess() {
@@ -556,8 +544,8 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 	env := newEnvelope(d, m)
 	snoozes := env.snoozes() + 1
 	delay := backoff.Floor(in)
-	if snoozes > noBackoffCap {
-		delay = e.retryDelay(snoozes - noBackoffCap)
+	if snoozes > backoff.NoBackoffCap {
+		delay = e.retryCurve().Delay(snoozes - backoff.NoBackoffCap)
 		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.info.name, ID: meta.MessageID, Consecutive: snoozes})
 	}
 	if delay > remaining {
@@ -654,7 +642,7 @@ func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta,
 		err = e.deps.KV.Set(ctx, e.dlqKey(meta.MessageID), raw, 0)
 	}
 	if err != nil {
-		d.Nack(ctx, e.retryDelay(meta.Attempt))
+		d.Nack(ctx, e.retryCurve().Delay(meta.Attempt))
 		return
 	}
 	d.Ack(ctx)

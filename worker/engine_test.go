@@ -773,12 +773,12 @@ func TestRetryDelayOverflowSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := e.retryDelay(5)
+	got := e.retryCurve().Delay(5)
 	if got <= 0 {
-		t.Fatalf("retryDelay(5) = %v, want positive", got)
+		t.Fatalf("retryCurve().Delay(5) = %v, want positive", got)
 	}
 	if got > maxBackoff {
-		t.Fatalf("retryDelay(5) = %v, want <= %v", got, maxBackoff)
+		t.Fatalf("retryCurve().Delay(5) = %v, want <= %v", got, maxBackoff)
 	}
 }
 

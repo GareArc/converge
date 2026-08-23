@@ -11,6 +11,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/internal/backoff"
 	"github.com/GareArc/converge/internal/keys"
 )
 
@@ -672,8 +673,8 @@ func TestBackoffFallbackReportsTrueTripCount(t *testing.T) {
 	})
 	for _, e := range te.rec.Events() {
 		if bf, ok := e.(converge.BackoffFallback); ok {
-			if bf.Consecutive != noBackoffLimit+1 {
-				t.Fatalf("BackoffFallback.Consecutive = %d, want %d", bf.Consecutive, noBackoffLimit+1)
+			if bf.Consecutive != backoff.NoBackoffCap+1 {
+				t.Fatalf("BackoffFallback.Consecutive = %d, want %d", bf.Consecutive, backoff.NoBackoffCap+1)
 			}
 			return
 		}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/internal/backoff"
 	"github.com/GareArc/converge/internal/pausegate"
 )
 
@@ -70,10 +71,7 @@ const (
 	finishForcePark
 )
 
-const (
-	wakeQueueBound = 65536
-	noBackoffLimit = 10
-)
+const wakeQueueBound = 65536
 
 type wakePolicy struct {
 	deadLetterAfter int
@@ -379,7 +377,7 @@ func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishRe
 		return q.applyFailure(id, st, now)
 	case finishDelay:
 		st.noBackoff++
-		if st.noBackoff > noBackoffLimit {
+		if st.noBackoff > backoff.NoBackoffCap {
 			st.noBackoff = 0
 			st.fallbacks++
 			res := q.applyFallback(id, st, now)

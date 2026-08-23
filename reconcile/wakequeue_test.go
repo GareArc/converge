@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge/convergetest"
+	"github.com/GareArc/converge/internal/backoff"
 )
 
 var wqStart = time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
@@ -203,7 +204,7 @@ func TestReviveResetsFailureCount(t *testing.T) {
 func TestDelayFloorsAndFallsBackAfterLimit(t *testing.T) {
 	q, clock := newTestQueue(0, false)
 	q.wake("x", wakeHint)
-	for i := 0; i < noBackoffLimit; i++ {
+	for i := 0; i < backoff.NoBackoffCap; i++ {
 		mustPop(t, q, clock, "x")
 		res := q.finish("x", finishDelay, 0)
 		if res.fallback {
@@ -229,7 +230,7 @@ func TestDelayFloorsAndFallsBackAfterLimit(t *testing.T) {
 func TestSuccessResetsNoBackoffStreak(t *testing.T) {
 	q, clock := newTestQueue(0, false)
 	q.wake("x", wakeHint)
-	for i := 0; i < noBackoffLimit-1; i++ {
+	for i := 0; i < backoff.NoBackoffCap-1; i++ {
 		mustPop(t, q, clock, "x")
 		q.finish("x", finishDelay, 0)
 		clock.Advance(250 * time.Millisecond)

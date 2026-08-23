@@ -23,17 +23,6 @@ const (
 	backoffMax = 15 * time.Minute
 )
 
-func backoffAfter(consecutiveFails int) time.Duration {
-	d := backoffMin
-	for i := 1; i < consecutiveFails; i++ {
-		d *= 2
-		if d >= backoffMax {
-			return backoff.Jitter(backoffMax)
-		}
-	}
-	return backoff.Jitter(d)
-}
-
 type config struct {
 	name             string
 	rec              Reconciler
@@ -86,10 +75,11 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 	e.handler = mw.Chain(mws, final)
 	e.limit = tokenbucket.New(e.cfg.rateLimit, deps.Clock)
 	e.parks = e.newParkStore(deps)
+	curve := backoff.Curve{Min: backoffMin, Max: backoffMax}
 	e.mu.Lock()
 	e.queue = newWakeQueue(deps.Clock, wakePolicy{
 		deadLetterAfter: e.cfg.deadLetterAfter,
-		backoff:         backoffAfter,
+		backoff:         curve.Delay,
 		floor:           backoff.Floor,
 	}, e.paused)
 	e.mu.Unlock()
@@ -486,7 +476,7 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 		e.deps.Observer.Observe(converge.WrongSurfaceSignal{Job: e.cfg.name, ID: string(id), Surface: wrong})
 	}
 	if res.fallback {
-		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.name, ID: string(id), Consecutive: noBackoffLimit + 1})
+		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.name, ID: string(id), Consecutive: backoff.NoBackoffCap + 1})
 	}
 	if res.parked {
 		e.deps.Observer.Observe(converge.IDParked{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})

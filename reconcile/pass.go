@@ -14,6 +14,8 @@ const (
 	pageRetryMax        = time.Minute
 )
 
+var pageRetryCurve = backoff.Curve{Min: triggerRestartMin, Max: pageRetryMax}
+
 func boundaries(c Cadence, last, now time.Time) []time.Time {
 	var out []time.Time
 	t := last
@@ -135,22 +137,22 @@ func (e *engine) markBusy() func() {
 func (e *engine) runPass(ctx context.Context, q *wakeQueue, st *scheduleTrigger, cursorKey string) bool {
 	defer e.markBusy()()
 	cursor := e.readString(ctx, cursorKey)
-	retry := triggerRestartMin
+	attempt := 0
 	for {
 		ids, next, err := st.source.page(ctx, cursor)
 		if ctx.Err() != nil {
 			return false
 		}
 		if err != nil {
+			attempt++
 			select {
 			case <-ctx.Done():
 				return false
-			case <-e.deps.Clock.After(backoff.Jitter(retry)):
+			case <-e.deps.Clock.After(pageRetryCurve.Delay(attempt)):
 			}
-			retry = min(retry*2, pageRetryMax)
 			continue
 		}
-		retry = triggerRestartMin
+		attempt = 0
 		for _, id := range ids {
 			e.hintVia(ctx, q, id)
 		}
@@ -167,7 +169,7 @@ func (e *engine) pauseOnInfraError(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case <-e.deps.Clock.After(backoff.Jitter(triggerRestartMin)):
+	case <-e.deps.Clock.After(triggerRestartCurve.Delay(1)):
 		return true
 	}
 }
