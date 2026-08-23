@@ -54,6 +54,7 @@ type engine struct {
 	deps      converge.JobDeps
 	limit     *tokenbucket.Bucket
 	handler   converge.Handler
+	parks     parkStore
 	ready     chan struct{}
 	readyOnce sync.Once
 
@@ -84,6 +85,7 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 	}
 	e.handler = mw.Chain(mws, final)
 	e.limit = tokenbucket.New(e.cfg.rateLimit, deps.Clock)
+	e.parks = e.newParkStore(deps)
 	e.mu.Lock()
 	e.queue = newWakeQueue(deps.Clock, wakePolicy{
 		deadLetterAfter: e.cfg.deadLetterAfter,
@@ -112,8 +114,8 @@ func (e *engine) Poke(id string) error {
 		id = ""
 	}
 	res := q.wake(ID(id), wakePoke)
-	if res == wakeRevived && e.durableParks() {
-		e.deps.KV.Delete(context.Background(), e.parkKey(ID(id)))
+	if res == wakeRevived {
+		e.parks.clear(context.Background(), ID(id))
 	}
 	e.report(ID(id), res)
 	return nil
@@ -316,7 +318,7 @@ func (e *engine) tryRevive(ctx context.Context, q *wakeQueue, id ID) bool {
 	if e.cfg.versions == nil {
 		return false
 	}
-	marked, ok := e.parkedVersion(ctx, id)
+	marked, ok := e.parks.read(ctx, id)
 	if !ok {
 		return false
 	}
@@ -324,17 +326,8 @@ func (e *engine) tryRevive(ctx context.Context, q *wakeQueue, id ID) bool {
 	if err != nil || latest <= marked {
 		return false
 	}
-	e.deleteKey(ctx, e.parkKey(id))
+	e.parks.clear(ctx, id)
 	return q.wake(id, wakeVersion) == wakeRevived
-}
-
-func (e *engine) parkedVersion(ctx context.Context, id ID) (Version, bool) {
-	raw := e.readString(ctx, e.parkKey(id))
-	n, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return Version(n), true
 }
 
 func (e *engine) report(id ID, res wakeResult) {
@@ -537,16 +530,8 @@ func (e *engine) key(parts ...string) string {
 	return keys.Reconcile(e.deps.Namespace, e.cfg.name, parts...)
 }
 
-func (e *engine) parkKey(id ID) string {
-	return keys.ReconcileParked(e.deps.Namespace, e.cfg.name, string(id))
-}
-
-func (e *engine) durableParks() bool {
-	return e.deps.KV != nil && e.cfg.runMode != converge.OnAllReplicas
-}
-
 func (e *engine) parkOrRevive(ctx context.Context, id ID, snap versionSnapshot) {
-	if !e.durableParks() {
+	if !e.parks.enabled() {
 		return
 	}
 	if e.cfg.versions != nil && snap.known {
@@ -559,37 +544,18 @@ func (e *engine) parkOrRevive(ctx context.Context, id ID, snap versionSnapshot) 
 	if e.cfg.versions != nil && snap.known && snap.v == 0 {
 		e.deps.Observer.Observe(converge.VersionZero{Job: e.cfg.name, ID: string(id)})
 	}
-	e.writeString(ctx, e.parkKey(id), strconv.FormatUint(uint64(snap.v), 10))
+	e.parks.mark(ctx, id, snap.v)
 }
 
 func (e *engine) loadParked(ctx context.Context) {
-	if !e.durableParks() {
-		return
-	}
-	prefix := keys.ReconcileParkedPrefix(e.deps.Namespace, e.cfg.name)
-	cursor := ""
-	for {
-		keys, next, err := e.deps.KV.Scan(ctx, prefix, cursor)
-		if err != nil {
-			if !e.pauseOnInfraError(ctx) {
-				return
-			}
-			continue
+	e.parks.scan(ctx, func(id ID) {
+		switch e.queue.restorePark(id) {
+		case restoreBusy:
+			e.parks.clear(ctx, id)
+		case restoreOverflow:
+			e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
 		}
-		for _, k := range keys {
-			id := ID(strings.TrimPrefix(k, prefix))
-			switch e.queue.restorePark(id) {
-			case restoreBusy:
-				e.deleteKey(ctx, k)
-			case restoreOverflow:
-				e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
-			}
-		}
-		if next == "" {
-			return
-		}
-		cursor = next
-	}
+	})
 }
 
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {

@@ -11,11 +11,16 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 func advanceUntil(t *testing.T, te *testEngine, step time.Duration, cond func() bool) {
 	t.Helper()
 	convergetest.AdvanceUntil(t, te.clock, step, cond)
+}
+
+func parkKey(e *engine, id ID) string {
+	return keys.ReconcileParked(e.deps.Namespace, e.cfg.name, string(id))
 }
 
 type testEngine struct {
@@ -689,7 +694,7 @@ func TestNoVersionZeroWhenProducerMarked(t *testing.T) {
 			return ok
 		}) == 0
 	})
-	raw, ok, err := kv.Get(context.Background(), te.e.parkKey("a"))
+	raw, ok, err := kv.Get(context.Background(), parkKey(te.e, "a"))
 	if err != nil || !ok || string(raw) != "1" {
 		t.Fatalf("mark = %q, %v, %v; want \"1\"", raw, ok, err)
 	}
@@ -736,7 +741,7 @@ func TestVersionAdvanceRevivesParked(t *testing.T) {
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
 	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
 	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		_, ok, err := kv.Get(ctx, parkKey(te.e, "a"))
 		return err == nil && !ok
 	})
 }
@@ -784,7 +789,7 @@ func TestMidRunVersionBumpStillRevives(t *testing.T) {
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
 	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
 	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		_, ok, err := kv.Get(ctx, parkKey(te.e, "a"))
 		return err == nil && !ok
 	})
 	if n := te.rec.Count(func(e converge.Event) bool {
@@ -813,18 +818,18 @@ func TestInvalidMarkBlocksVersionRevival(t *testing.T) {
 	te.e.hint(ctx, "a")
 	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
 	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		_, ok, err := kv.Get(ctx, parkKey(te.e, "a"))
 		return err == nil && ok
 	})
 	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Delete(ctx, te.e.parkKey("a")); err != nil {
+	if err := kv.Delete(ctx, parkKey(te.e, "a")); err != nil {
 		t.Fatal(err)
 	}
 	te.e.hint(ctx, "a")
 	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
-	if err := kv.Set(ctx, te.e.parkKey("a"), []byte("junk"), 0); err != nil {
+	if err := kv.Set(ctx, parkKey(te.e, "a"), []byte("junk"), 0); err != nil {
 		t.Fatal(err)
 	}
 	te.e.hint(ctx, "a")
@@ -840,14 +845,14 @@ func TestActivationClearsMarkForActiveID(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := kv.Set(ctx, e.parkKey("a"), []byte("0"), 0); err != nil {
+	if err := kv.Set(ctx, parkKey(e, "a"), []byte("0"), 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Poke("a"); err != nil {
 		t.Fatal(err)
 	}
 	e.loadParked(ctx)
-	if _, ok, err := kv.Get(ctx, e.parkKey("a")); err != nil || ok {
+	if _, ok, err := kv.Get(ctx, parkKey(e, "a")); err != nil || ok {
 		t.Fatalf("mark for an already-queued id must be cleared at activation: ok=%v err=%v", ok, err)
 	}
 	if c := e.queue.counts(); c.parked != 0 || c.depth != 1 {
@@ -861,7 +866,7 @@ func TestOnAllReplicasParksInMemoryOnly(t *testing.T) {
 	})
 	te.e.hint(context.Background(), "a")
 	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
-	keys, _, err := te.e.deps.KV.Scan(context.Background(), te.e.parkKey(""), "")
+	keys, _, err := te.e.deps.KV.Scan(context.Background(), parkKey(te.e, ""), "")
 	if err != nil {
 		t.Fatal(err)
 	}
