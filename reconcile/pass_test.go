@@ -757,10 +757,14 @@ func TestSchedulePageRetryBacksOffAndResetsOnSuccess(t *testing.T) {
 		defer mu.Unlock()
 		return calls
 	}
+	const failuresBeforeSuccess = 5
 	steps := []struct {
 		fail bool
 		next string
 	}{
+		{fail: true},
+		{fail: true},
+		{fail: true},
 		{fail: true},
 		{fail: true},
 		{fail: false, next: "cursor2"},
@@ -779,22 +783,19 @@ func TestSchedulePageRetryBacksOffAndResetsOnSuccess(t *testing.T) {
 	})
 	startSchedule(t, te, src, Every(time.Hour))
 
-	attempt1Cap := pageRetryCurve.Min
-	attempt2Floor := pageRetryCurve.Min
-	attempt2Cap := 2 * pageRetryCurve.Min
+	retryStep := pageRetryCurve.Min
+	escalationFloor := 8 * pageRetryCurve.Min
+	resetBudget := 8 * pageRetryCurve.Min
 
-	convergetest.Await(t, func() bool { return callCount() >= 1 })
+	start := te.clock.Now()
+	advanceUntil(t, te, retryStep, func() bool { return callCount() > failuresBeforeSuccess })
+	if waited := te.clock.Now().Sub(start); waited < escalationFloor {
+		t.Fatalf("%d failing pages retried within %v, want the attempt counter to grow the delay past %v", failuresBeforeSuccess, waited, escalationFloor)
+	}
 
-	te.clock.Advance(attempt1Cap)
-	convergetest.Await(t, func() bool { return callCount() >= 2 })
-
-	te.clock.Advance(attempt2Floor - time.Millisecond)
-	convergetest.AssertStable(t, func() bool { return callCount() < 3 })
-	te.clock.Advance(attempt2Cap - attempt2Floor + time.Millisecond)
-	convergetest.Await(t, func() bool { return callCount() >= 3 })
-
-	convergetest.Await(t, func() bool { return callCount() >= 4 })
-
-	te.clock.Advance(attempt1Cap)
-	convergetest.Await(t, func() bool { return callCount() >= 5 })
+	resumed := te.clock.Now()
+	advanceUntil(t, te, retryStep, func() bool { return callCount() >= len(steps) })
+	if waited := te.clock.Now().Sub(resumed); waited > resetBudget {
+		t.Fatalf("the retry after a successful page waited %v, want at most %v (a successful page must reset the attempt counter)", waited, resetBudget)
+	}
 }
