@@ -48,13 +48,14 @@ MKSTREAM`); `ConsumeBroadcast` is a per-subscriber `XREAD` from `$`.
 zero or negative — only a strictly positive duration overrides the
 default. On delivery, the adapter scores the entry into a pending ZSET at
 `Clock.Now() + visibility`; `Extend` re-scores; `Ack` removes it.
-Handle-driven re-scores are attempt-guarded: a handle whose entry was
-reclaimed or acked cannot postpone the live attempt — its `Extend` reports
-the loss, its `Nack` is a no-op. Redelivery claims due members from that
-ZSET (via a guarded Lua script so concurrent consumers never double-claim)
-and hands them to the stream with `XCLAIM` — never `XAUTOCLAIM` and never
-Redis's own idle-time bookkeeping. The same `visibility` window doubles as
-the retry grace for delayed-message release (below).
+Handle-driven settlement is attempt-guarded: a handle whose entry was
+reclaimed or acked cannot disturb the live attempt — its `Extend` reports
+the loss, its `Nack` and `Ack` are no-ops. Redelivery claims due members
+from that ZSET (via a guarded Lua script so concurrent consumers never
+double-claim) and hands them to the stream with `XCLAIM` — never
+`XAUTOCLAIM` and never Redis's own idle-time bookkeeping. The same
+`visibility` window doubles as the retry grace for delayed-message
+release (below).
 
 **A PEL-reconciliation pass walks the entire PEL every consume iteration,
 paginated.** The adapter lists the group's pending entries list (`XPENDING`)
@@ -99,10 +100,11 @@ backlog" contract the port guarantees for any late-created group, applied to
 the recovery case. An operator who destroys a group on a live queue should
 expect a full replay.
 
-**Streams are unbounded in v1.** `Ack` is `XACK` plus bookkeeping cleanup
-(`ZREM`/`HDEL` on the adapter's own pending/attempts keys) — it never
-issues `XDEL`. Backlog retention is the contract a late-created group
-depends on, so the stream itself only grows; there is no trim option yet.
+**Streams are unbounded in v1.** `Ack` is an attempt-guarded `XACK` plus
+bookkeeping cleanup (`ZREM`/`HDEL` on the adapter's own pending/attempts
+keys) — it never issues `XDEL`. Backlog retention is the contract a
+late-created group depends on, so the stream itself only grows; there is no
+trim option yet.
 Operators should plan for unbounded Redis Streams growth per queue until a
 real consumer motivates a trim/retention knob.
 

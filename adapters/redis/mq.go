@@ -420,6 +420,16 @@ func (m *streamsMQ) ackStream(ctx context.Context, queue, group, id string) erro
 	return m.rdb.XAck(ctx, streamKey(queue), group, id).Err()
 }
 
+func (m *streamsMQ) ackAttempt(ctx context.Context, queue, group, id string, attempt int) (bool, error) {
+	n, err := ackScript.Run(ctx, m.rdb,
+		[]string{attemptsKey(queue, group), streamKey(queue)},
+		id, strconv.Itoa(attempt), group).Int()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 func (m *streamsMQ) deferTo(ctx context.Context, queue, group, id string, attempt int, after time.Duration) (bool, error) {
 	n, err := deferScript.Run(ctx, m.rdb,
 		[]string{pendingKey(queue, group), attemptsKey(queue, group)},

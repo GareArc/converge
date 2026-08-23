@@ -30,8 +30,12 @@ func (d *streamDelivery) Attempt() int              { return d.attempt }
 func (d *streamDelivery) EnqueuedAt() time.Time     { return d.enq }
 
 func (d *streamDelivery) Ack(ctx context.Context) error {
-	if err := d.mq.ackStream(ctx, d.queue, d.group, d.id); err != nil {
+	applied, err := d.mq.ackAttempt(ctx, d.queue, d.group, d.id, d.attempt)
+	if err != nil {
 		return err
+	}
+	if !applied {
+		return nil
 	}
 	d.settle()
 	return d.mq.forget(ctx, d.queue, d.group, d.id)

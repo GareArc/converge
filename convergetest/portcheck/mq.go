@@ -154,13 +154,42 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		if live.Attempt() != 2 {
 			t.Fatalf("reclaimed Attempt = %d, want 2", live.Attempt())
 		}
-		_ = stale.Extend(ctx, 10*o.Visibility)
+		if err := stale.Extend(ctx, 10*o.Visibility); err == nil {
+			t.Fatal("Extend on a stale handle must report the loss")
+		}
 		o.Advance(o.Visibility + time.Second)
 		next := recvDelivery(t, got)
 		if next.Attempt() != 3 {
 			t.Fatalf("Attempt after a stale extend = %d, want 3", next.Attempt())
 		}
-		next.Ack(ctx)
+		if err := next.Ack(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("stale ack does not settle the successor", func(t *testing.T) {
+		if o.Advance == nil || o.Visibility == 0 {
+			t.Skip("needs clock control and a known visibility window")
+		}
+		mq, got, ctx := startConsumer(t, open)
+		mustPublish(t, mq, "q", converge.Message{Payload: []byte("a")})
+		stale := recvDelivery(t, got)
+		o.Advance(o.Visibility + time.Second)
+		live := recvDelivery(t, got)
+		if live.Attempt() != 2 {
+			t.Fatalf("reclaimed Attempt = %d, want 2", live.Attempt())
+		}
+		if err := stale.Ack(ctx); err != nil {
+			t.Fatalf("Ack on a stale handle = %v, want nil", err)
+		}
+		o.Advance(o.Visibility + time.Second)
+		next := recvDelivery(t, got)
+		if next.Attempt() != 3 {
+			t.Fatalf("Attempt after a stale ack = %d, want 3", next.Attempt())
+		}
+		if err := next.Ack(ctx); err != nil {
+			t.Fatal(err)
+		}
 	})
 
 	t.Run("named groups each receive every message", func(t *testing.T) {
