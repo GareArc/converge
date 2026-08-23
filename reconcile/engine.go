@@ -299,16 +299,15 @@ func versionsSetting(v VersionSource) string {
 }
 
 func (e *engine) hint(ctx context.Context, id ID) {
-	q := e.wakeQueueRef()
-	if q == nil {
-		return
-	}
-	e.hintVia(ctx, q, id)
+	e.hintVia(ctx, e.wakeQueueRef(), id)
 }
 
 func (e *engine) hintVia(ctx context.Context, q *wakeQueue, id ID) {
 	if id == "" && !e.cfg.single {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
+		return
+	}
+	if q == nil {
 		return
 	}
 	res := q.wake(id, wakeHint)

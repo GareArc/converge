@@ -354,6 +354,25 @@ func TestHintWhenNotRunningIsDropped(t *testing.T) {
 	e.hint(context.Background(), "a")
 }
 
+func TestEmptyIDHintAfterTeardownStillReportsDiscard(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	rec := &convergetest.Recorder{}
+	e := &engine{cfg: config{name: "job", concurrency: 1, rec: Func(func(context.Context, ID) error { return nil })}, ready: make(chan struct{})}
+	if err := e.bindCore(converge.JobDeps{KV: inmem.NewKVWithClock(clock), Observer: rec, Clock: clock}); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	e.queue = nil
+	e.mu.Unlock()
+	e.hint(context.Background(), "")
+	if n := rec.Count(func(ev converge.Event) bool {
+		wd, ok := ev.(converge.WakeDiscarded)
+		return ok && wd.Reason == converge.DiscardEmptyID
+	}); n != 1 {
+		t.Fatalf("empty-id hint after teardown = %d DiscardEmptyID events, want 1", n)
+	}
+}
+
 func TestPokeBeforeBindFails(t *testing.T) {
 	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
 	if err := e.Poke("x"); err == nil {
