@@ -43,7 +43,7 @@ func Await(t testing.TB, cond func() bool) {
 	pollUntil(t, pollSpec{
 		deadline: awaitDeadline,
 		step:     pollStep,
-		fail:     func() { t.Fatalf("convergetest: condition never became true") },
+		fail:     func() { t.Helper(); t.Fatalf("convergetest: condition never became true") },
 	}, cond)
 }
 
@@ -53,7 +53,7 @@ func AdvanceUntil(t testing.TB, c *Clock, step time.Duration, cond func() bool) 
 		deadline: awaitDeadline,
 		step:     pollStep,
 		advance:  func() { c.Advance(step) },
-		fail:     func() { t.Fatalf("convergetest: condition never became true while advancing") },
+		fail:     func() { t.Helper(); t.Fatalf("convergetest: condition never became true while advancing") },
 	}, cond)
 }
 

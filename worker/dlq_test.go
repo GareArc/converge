@@ -227,7 +227,7 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 		t.Fatalf("requeued message id = %q, want %q", second.MessageID, firstMessageID)
 	}
 	if second.Attempt != 1 {
-		t.Fatalf("requeued attempt = %d, want 1 (attempt header must be stripped)", second.Attempt)
+		t.Fatalf("requeued attempt = %d, want 1 (attempt header must be re-seeded)", second.Attempt)
 	}
 	if !second.EnqueuedAt.Equal(wantEnqueuedAt) {
 		t.Fatalf("requeued enqueued-at = %v, want %v", second.EnqueuedAt, wantEnqueuedAt)

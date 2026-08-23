@@ -85,16 +85,13 @@ func registerReconcileJob(t *testing.T, rt *converge.Runtime, name string) {
 
 func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	registerReconcileJob(t, rt, "license-refresh")
 
 	tk := worker.NewTask[string]("send-invite", worker.TaskOpts{})
 	var mu sync.Mutex
 	var handled int
-	err = worker.Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := worker.Handle(rt, tk, func(ctx context.Context, payload string) error {
 		mu.Lock()
 		handled++
 		mu.Unlock()
@@ -187,10 +184,7 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 
 func TestReadOnlyJobRowJSONKeysPinned(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	registerReconcileJob(t, rt, "job")
 
 	h := debughttp.ReadOnlyHandler(rt)
@@ -210,10 +204,7 @@ func TestReadOnlyJobRowJSONKeysPinned(t *testing.T) {
 
 func TestReadOnlySingleJobGet(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	registerReconcileJob(t, rt, "job")
 
 	h := debughttp.ReadOnlyHandler(rt)
@@ -254,10 +245,7 @@ func TestReadOnlySingleJobGet(t *testing.T) {
 
 func TestReadOnlyUnknownJob404(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodGet, "/debug/jobs/nope")
 	if rec.Code != http.StatusNotFound {
@@ -273,10 +261,7 @@ func TestReadOnlyUnknownJob404(t *testing.T) {
 
 func TestReadOnlyHasNoMutatingRoutes(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	registerReconcileJob(t, rt, "job")
 	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodPost, "/debug/jobs/job/poke?id=x")
@@ -287,10 +272,7 @@ func TestReadOnlyHasNoMutatingRoutes(t *testing.T) {
 
 func TestReadOnlyWrongMethod405(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	registerReconcileJob(t, rt, "job")
 	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodPost, "/debug/jobs")
@@ -301,10 +283,7 @@ func TestReadOnlyWrongMethod405(t *testing.T) {
 
 func TestReadOnlyUnknownPath404(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodGet, "/debug/jobs/a/b/c")
 	if rec.Code != http.StatusNotFound {
@@ -323,10 +302,7 @@ func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-			rt, err := converge.New(w.Options())
-			if err != nil {
-				t.Fatal(err)
-			}
+			rt := w.Build(t)
 			registerReconcileJob(t, rt, "license-refresh")
 
 			outer := http.NewServeMux()
@@ -357,10 +333,7 @@ func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
 
 func TestOpsHandlerServesReadOnlyRoutesWithParity(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	registerReconcileJob(t, rt, "job")
 	ro := debughttp.ReadOnlyHandler(rt)
 	ops := debughttp.OpsHandler(rt, debughttp.OpsOpts{})

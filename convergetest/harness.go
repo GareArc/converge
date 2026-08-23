@@ -257,7 +257,7 @@ func (h *Harness) waitForStop(t testing.TB) error {
 		deadline: stopDeadline,
 		step:     pollStep,
 		advance:  func() { h.Clock.Advance(stopAdvance) },
-		fail:     func() { t.Fatalf("convergetest: Run never returned") },
+		fail:     func() { t.Helper(); t.Fatalf("convergetest: Run never returned") },
 	}, func() bool {
 		select {
 		case <-h.done:
@@ -330,6 +330,7 @@ func (h *Harness) Drain(t testing.TB) {
 		deadline: drainDeadline,
 		step:     pollStep,
 		fail: func() {
+			t.Helper()
 			t.Fatalf("convergetest: Drain: never quiet after %s; stats=%+v", drainDeadline, rt.Stats())
 		},
 	}, func() bool {
@@ -360,6 +361,7 @@ func (h *Harness) RunPass(t testing.TB, job string) {
 		deadline: runPassDeadline,
 		step:     pollStep,
 		fail: func() {
+			t.Helper()
 			t.Fatalf("convergetest: RunPass(%q): %v", job, lastErr)
 		},
 	}, func() bool {

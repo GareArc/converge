@@ -36,14 +36,11 @@ func eventCount(events []converge.Event, match func(converge.Event) bool) int {
 
 func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	var mu sync.Mutex
 	workspaces := []string{"ws_1", "ws_2", "ws_3"}
 	synced := map[reconcile.ID]int{}
-	err = reconcile.Register(rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "workspace-credentials",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
@@ -90,13 +87,10 @@ func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 
 func TestTenMinuteTourPeriodic(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	var mu sync.Mutex
 	calls := 0
-	err = reconcile.Periodic(rt, "license-refresh", reconcile.Every(time.Hour), func(ctx context.Context) error {
+	err := reconcile.Periodic(rt, "license-refresh", reconcile.Every(time.Hour), func(ctx context.Context) error {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
@@ -129,11 +123,8 @@ func (foreignSignal) ControlSurface() converge.Surface { return converge.Surface
 
 func TestForeignSignalParksImmediatelyEndToEnd(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = reconcile.Register(rt, reconcile.Spec{
+	rt := h.Build(t)
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "confused",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			return foreignSignal{}
@@ -170,13 +161,10 @@ func TestForeignSignalParksImmediatelyEndToEnd(t *testing.T) {
 
 func TestMalformedHintsCountedAndDropped(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	var mu sync.Mutex
 	var got []reconcile.ID
-	err = reconcile.Register(rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "member-sync",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
@@ -300,13 +288,10 @@ func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 
 func TestPokeRevivesParkedID(t *testing.T) {
 	h := convergetest.NewWith(t, convergetest.Options{Namespace: "it"})
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	var mu sync.Mutex
 	healed := false
-	err = reconcile.Register(rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name:            "flaky",
 		DeadLetterAfter: 1,
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
@@ -347,10 +332,7 @@ func TestPokeRevivesParkedID(t *testing.T) {
 
 func TestUnknownJobPokeFails(t *testing.T) {
 	h := convergetest.NewWith(t, convergetest.Options{Namespace: "it"})
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	if err := reconcile.Periodic(rt, "only-job", reconcile.Every(time.Hour), func(context.Context) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -362,10 +344,7 @@ func TestUnknownJobPokeFails(t *testing.T) {
 
 func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	tr := reconcile.NewTracker(h.KV, "deploy")
 	ctx := context.Background()
 	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
@@ -374,7 +353,7 @@ func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
 	var mu sync.Mutex
 	var applied []reconcile.Version
 	raceOnce := true
-	err = reconcile.Register(rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name:     "deploy",
 		Versions: tr,
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
@@ -430,10 +409,7 @@ func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
 
 func TestScenarioBParkedRevivesOnMarkChanged(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	tr := reconcile.NewTracker(h.KV, "deploy")
 	ctx := context.Background()
 	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
@@ -442,7 +418,7 @@ func TestScenarioBParkedRevivesOnMarkChanged(t *testing.T) {
 	var mu sync.Mutex
 	broken := true
 	converged := false
-	err = reconcile.Register(rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name:            "deploy",
 		Versions:        tr,
 		DeadLetterAfter: 2,

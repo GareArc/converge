@@ -635,13 +635,14 @@ func TestDrivingVerbAfterStopFatalsNamingCause(t *testing.T) {
 
 type crashJob struct {
 	ready chan struct{}
+	rt    *converge.Runtime
 }
 
 func (j *crashJob) Name() string { return "crash" }
 
 func (j *crashJob) Run(context.Context, converge.JobDeps) error {
 	close(j.ready)
-	time.Sleep(50 * time.Millisecond)
+	<-j.rt.Ready()
 	return errors.New("boom: simulated crash")
 }
 
@@ -666,7 +667,7 @@ func TestRuntimeExitedEarlyFatalsWithCrashWording(t *testing.T) {
 	t.Cleanup(fake.runCleanups)
 	h := convergetest.NewWith(fake, convergetest.Options{})
 	rt := h.Build(fake)
-	if err := hook.RegisterJob(rt, &crashJob{ready: make(chan struct{})}); err != nil {
+	if err := hook.RegisterJob(rt, &crashJob{ready: make(chan struct{}), rt: rt}); err != nil {
 		t.Fatal(err)
 	}
 	h.Runtime(fake)

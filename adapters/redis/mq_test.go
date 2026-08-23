@@ -3,6 +3,7 @@ package convredis_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -168,7 +169,10 @@ func TestStreamsMQReadBatchSurvivesCancelMidBatch(t *testing.T) {
 	}
 
 	got := f.consume(t)
-	f.awaitPendingCount(t, batch-1)
+	f.await(t, fmt.Sprintf("%s never reached %d entries", testPendingKey, batch-1), func() bool {
+		n, err := f.client.ZCard(f.ctx, testPendingKey).Result()
+		return err == nil && n == int64(batch-1)
+	})
 	f.advance(time.Minute + time.Second)
 	seen := map[byte]bool{}
 	for range batch - 1 {
@@ -207,7 +211,9 @@ func TestStreamsMQReclaimsPendingEntryThatWasNeverTracked(t *testing.T) {
 	}
 
 	got := f.consume(t)
-	f.awaitTracked(t, id)
+	f.await(t, fmt.Sprintf("entry %s was never tracked in %s", id, testPendingKey), func() bool {
+		return f.client.ZScore(f.ctx, testPendingKey, id).Err() == nil
+	})
 	f.advance(time.Minute + time.Second)
 	d := recvDelivery(t, got)
 	if string(d.Message().Payload) != "a" {
@@ -360,29 +366,12 @@ func (f *streamsMQFixture) consume(t *testing.T) chan converge.Delivery {
 	return got
 }
 
-func (f *streamsMQFixture) awaitTracked(t *testing.T, id string) {
+func (f *streamsMQFixture) await(t *testing.T, msg string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if err := f.client.ZScore(f.ctx, testPendingKey, id).Err(); err == nil {
-			return
-		}
+	for !cond() {
 		if time.Now().After(deadline) {
-			t.Fatalf("entry %s was never tracked in %s", id, testPendingKey)
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
-func (f *streamsMQFixture) awaitPendingCount(t *testing.T, want int) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if n, err := f.client.ZCard(f.ctx, testPendingKey).Result(); err == nil && n == int64(want) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s never reached %d entries", testPendingKey, want)
+			t.Fatal(msg)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}

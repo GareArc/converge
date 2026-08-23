@@ -22,6 +22,7 @@ func (h *Harness) AssertReconciled(t testing.TB, job, id string) {
 		deadline: awaitDeadline,
 		step:     pollStep,
 		fail: func() {
+			t.Helper()
 			events := h.rec.Events()
 			t.Fatalf("convergetest: AssertReconciled(%q, %q): not observed; saw %d event(s): %+v", job, id, len(events), events)
 		},
@@ -44,6 +45,7 @@ func (h *Harness) AssertParked(t testing.TB, job, id string) {
 		deadline: awaitDeadline,
 		step:     pollStep,
 		fail: func() {
+			t.Helper()
 			events := h.rec.Events()
 			t.Fatalf("convergetest: AssertParked(%q, %q): not observed; saw %d event(s): %+v", job, id, len(events), events)
 		},
@@ -77,6 +79,7 @@ func (h *Harness) AssertEnqueued(t testing.TB, task TaskRef, want any) {
 		deadline: awaitDeadline,
 		step:     pollStep,
 		fail: func() {
+			t.Helper()
 			msgs := h.MQ.Published(queue)
 			t.Fatalf("convergetest: AssertEnqueued(%q, queue %q): not found; saw %d message(s): %+v", kind, queue, len(msgs), msgs)
 		},
