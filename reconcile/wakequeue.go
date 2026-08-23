@@ -162,6 +162,12 @@ func (q *wakeQueue) awaitUnpaused(ctx context.Context) bool {
 	return pausegate.AwaitUnpaused(ctx, &q.mu, &q.gate)
 }
 
+func (q *wakeQueue) paused() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.gate.Paused
+}
+
 func (q *wakeQueue) signal() {
 	select {
 	case q.notify <- struct{}{}:

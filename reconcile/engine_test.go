@@ -11,7 +11,6 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
-	"github.com/GareArc/converge/internal/pausegate"
 )
 
 func advanceUntil(t *testing.T, te *testEngine, step time.Duration, cond func() bool) {
@@ -40,7 +39,7 @@ func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn Func) *testEngin
 		cfg.concurrency = 1
 	}
 	cfg.rec = fn
-	e := &engine{cfg: cfg, ready: make(chan struct{}), gate: pausegate.New(cfg.paused)}
+	e := &engine{cfg: cfg, ready: make(chan struct{}), paused: cfg.paused}
 	deps := converge.JobDeps{
 		KV:       kv,
 		Observer: rec,
@@ -989,13 +988,11 @@ func TestSetPausedStormKeepsGatesConverged(t *testing.T) {
 	wg.Wait()
 
 	te.e.mu.Lock()
-	enginePaused := te.e.gate.Paused
+	enginePaused := te.e.paused
 	te.e.mu.Unlock()
-	te.e.queue.mu.Lock()
-	queuePaused := te.e.queue.gate.Paused
-	te.e.queue.mu.Unlock()
+	queuePaused := te.e.queue.paused()
 	if enginePaused != queuePaused {
-		t.Fatalf("pause gates diverged after storm: engine.gate.Paused=%v queue.gate.Paused=%v", enginePaused, queuePaused)
+		t.Fatalf("pause gates diverged after storm: engine.paused=%v queue.paused()=%v", enginePaused, queuePaused)
 	}
 
 	te.e.SetPaused(false)
