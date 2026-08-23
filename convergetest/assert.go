@@ -26,7 +26,7 @@ func (h *Harness) pollUntil(t testing.TB, check func() bool, describe func() str
 			t.Fatalf("%s", describe())
 			return
 		}
-		time.Sleep(awaitPoll)
+		time.Sleep(pollStep)
 	}
 }
 

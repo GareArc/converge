@@ -17,12 +17,9 @@ const (
 	readyDeadline   = 2 * time.Second
 	stopDeadline    = 2 * time.Second
 	stopAdvance     = 10 * time.Second
-	stopPoll        = 2 * time.Millisecond
 	drainDeadline   = 10 * time.Second
-	drainPoll       = 2 * time.Millisecond
 	drainGap        = 5 * time.Millisecond
 	runPassDeadline = 5 * time.Second
-	runPassPoll     = 2 * time.Millisecond
 	harnessLeaseTTL = 24 * 365 * time.Hour
 )
 
@@ -156,25 +153,27 @@ func (h *Harness) checkAlive(t testing.TB) bool {
 
 func (h *Harness) awaitStop(t testing.TB) {
 	t.Helper()
-	deadline := time.Now().Add(stopDeadline)
-	for {
+	ok := pollUntil(t, pollSpec{
+		deadline: stopDeadline,
+		step:     pollStep,
+		advance:  func() { h.Clock.Advance(stopAdvance) },
+		fail:     func() { t.Fatalf("convergetest: Run never returned") },
+	}, func() bool {
 		select {
 		case <-h.done:
-			h.mu.Lock()
-			err := h.runErr
-			h.mu.Unlock()
-			if err != nil {
-				t.Fatalf("convergetest: Run returned %v", err)
-			}
-			return
+			return true
 		default:
+			return false
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("convergetest: Run never returned")
-			return
-		}
-		h.Clock.Advance(stopAdvance)
-		time.Sleep(stopPoll)
+	})
+	if !ok {
+		return
+	}
+	h.mu.Lock()
+	err := h.runErr
+	h.mu.Unlock()
+	if err != nil {
+		t.Fatalf("convergetest: Run returned %v", err)
 	}
 }
 
@@ -202,20 +201,19 @@ func (h *Harness) Drain(t testing.TB) {
 		return
 	}
 	rt := h.runtime(t)
-	deadline := time.Now().Add(drainDeadline)
-	for {
-		if h.quiet(rt) {
-			time.Sleep(drainGap)
-			if h.quiet(rt) {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
+	pollUntil(t, pollSpec{
+		deadline: drainDeadline,
+		step:     pollStep,
+		fail: func() {
 			t.Fatalf("convergetest: Drain: never quiet after %s; stats=%+v", drainDeadline, rt.Stats())
-			return
+		},
+	}, func() bool {
+		if !h.quiet(rt) {
+			return false
 		}
-		time.Sleep(drainPoll)
-	}
+		time.Sleep(drainGap)
+		return h.quiet(rt)
+	})
 }
 
 func (h *Harness) quiet(rt *converge.Runtime) bool {
@@ -229,20 +227,23 @@ func (h *Harness) RunPass(t testing.TB, job string) {
 	}
 	rt := h.runtime(t)
 	ctx := context.Background()
-	deadline := time.Now().Add(runPassDeadline)
 	var lastErr error
-	for {
-		err := hook.RunPassNow(rt, ctx, job)
-		if err == nil {
-			h.Drain(t)
-			return
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
+	ok := pollUntil(t, pollSpec{
+		deadline: runPassDeadline,
+		step:     pollStep,
+		fail: func() {
 			t.Fatalf("convergetest: RunPass(%q): %v", job, lastErr)
-			return
+		},
+	}, func() bool {
+		err := hook.RunPassNow(rt, ctx, job)
+		if err != nil {
+			lastErr = err
+			return false
 		}
-		time.Sleep(runPassPoll)
+		return true
+	})
+	if ok {
+		h.Drain(t)
 	}
 }
 
