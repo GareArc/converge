@@ -349,6 +349,11 @@ func TestEmptyIDHintRejectedUnlessSingle(t *testing.T) {
 	})
 }
 
+func TestHintWhenNotRunningIsDropped(t *testing.T) {
+	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
+	e.hint(context.Background(), "a")
+}
+
 func TestPokeBeforeBindFails(t *testing.T) {
 	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
 	if err := e.Poke("x"); err == nil {

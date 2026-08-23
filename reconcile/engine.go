@@ -299,7 +299,11 @@ func versionsSetting(v VersionSource) string {
 }
 
 func (e *engine) hint(ctx context.Context, id ID) {
-	e.hintVia(ctx, e.queue, id)
+	q := e.wakeQueueRef()
+	if q == nil {
+		return
+	}
+	e.hintVia(ctx, q, id)
 }
 
 func (e *engine) hintVia(ctx context.Context, q *wakeQueue, id ID) {
