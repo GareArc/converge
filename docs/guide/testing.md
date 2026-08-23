@@ -58,13 +58,14 @@ it:
 ## Custom ports, runtime access, and explicit stop
 
 `convergetest.NewWith(t, convergetest.Options{...})` widens `New(t)` with
-namespace, lease TTL, drain timeout, and port overrides:
+namespace, lease TTL, drain timeout, a shared clock, and port overrides:
 
 ```go
 type Options struct {
 	Namespace    string
 	LeaseTTL     time.Duration
 	DrainTimeout time.Duration
+	Clock        *convergetest.Clock
 	MQ           func(*convergetest.Clock) converge.MQ
 	KV           func(*convergetest.Clock) converge.KV
 	Lease        func(*convergetest.Clock) converge.Lease
@@ -72,14 +73,27 @@ type Options struct {
 ```
 
 `New(t)` is exactly `NewWith(t, Options{})`: every zero value resolves to
-today's default — Namespace `"test"`, the pinned huge `LeaseTTL`, and
-wrapped in-memory MQ/KV/Lease ports. `MQ`, `KV`, and `Lease` are constructor
-funcs over the harness's own fake `*Clock`, so a custom port still runs on
-harness time. A constructor can also ignore the `*Clock` it's handed and
-close over a port built elsewhere — the supported way to share one MQ, KV,
-or Lease across two harnesses (simulating two replicas, or a successor
-picking up after a restart).
+today's default — Namespace `"test"`, the pinned huge `LeaseTTL`, a harness-
+minted fake `*Clock`, and wrapped in-memory MQ/KV/Lease ports built on that
+clock. `MQ`, `KV`, and `Lease` are constructor funcs over whichever `*Clock`
+the harness ends up using — its own, unless you supply one.
 
+- **`Options.Clock` is how two harnesses share simulated time — supply it
+  whenever you also share a port.** A nil `Clock` (the default) mints a
+  fresh one, as today. A non-nil `Clock` is used as the harness's own
+  `h.Clock` *and* handed to the `MQ`/`KV`/`Lease` constructors — so
+  advancing time through either harness advances the same clock the shared
+  port is bound to. Two harnesses simulating replicas (or a successor
+  picking up after a restart) must build their shared `MQ`/`KV`/`Lease` on
+  one externally-created `*Clock` and pass that same `Clock` to `Options`
+  on *both* harnesses: build the clock and ports once, then give every
+  harness `Options{Clock: clock, MQ: func(*convergetest.Clock) converge.MQ
+  { return mq }, ...}`. Passing the shared ports without also passing the
+  shared `Clock` compiles and often still passes — the constructor's own
+  `*Clock` parameter is easy to ignore — but leaves each harness driving
+  its own independent, unadvanced clock, silently disabling any timing-
+  dependent behavior (lease retry, lease extend, delayed republish) between
+  them.
 - **`h.MQ`, `h.KV`, and `h.Lease` are nil when you supply a constructor.**
   Those public fields — `h.MQ` a recording wrapper, `h.KV` and `h.Lease` the
   raw ports — exist only for the default ports the harness builds itself;
@@ -116,5 +130,6 @@ picking up after a restart).
   (`Runtime`, `Wake`, `Drain`, `RunPass`, and the `Assert*` family) all
   require a live runtime, so calling any of them after `Stop` Fatals with a
   message naming the actual cause — that the harness was explicitly
-  stopped — rather than the misleading "exited early" wording a genuine
-  mid-test crash produces.
+  stopped, including `Stop`'s own returned error if it was non-nil —
+  rather than the misleading "exited early" wording a genuine mid-test
+  crash produces.

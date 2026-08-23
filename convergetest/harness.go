@@ -27,6 +27,7 @@ type Options struct {
 	Namespace    string
 	LeaseTTL     time.Duration
 	DrainTimeout time.Duration
+	Clock        *Clock
 	MQ           func(*Clock) converge.MQ
 	KV           func(*Clock) converge.KV
 	Lease        func(*Clock) converge.Lease
@@ -74,7 +75,10 @@ func NewWith(t testing.TB, o Options) *Harness {
 	if leaseTTL == 0 {
 		leaseTTL = harnessLeaseTTL
 	}
-	clock := NewClock(epoch)
+	clock := o.Clock
+	if clock == nil {
+		clock = NewClock(epoch)
+	}
 
 	h := &Harness{
 		Clock:        clock,
@@ -173,7 +177,7 @@ func (h *Harness) ensureRunningState(t testing.TB, allowStopped bool) bool {
 	h.mu.Lock()
 	if !h.attached {
 		h.mu.Unlock()
-		t.Fatalf("convergetest: no runtime attached; call converge.New(h.Options()) before using the Harness")
+		t.Fatalf("convergetest: no runtime attached; call h.Build(t) before using the Harness")
 		return false
 	}
 	if h.started {
@@ -232,6 +236,10 @@ func (h *Harness) checkAlive(t testing.TB, allowStopped bool) bool {
 		if settled {
 			if allowStopped {
 				return true
+			}
+			if err != nil {
+				t.Fatalf("convergetest: harness was stopped via Stop(t) (which returned %v); this verb needs a running runtime, call Events to inspect recorded state instead", err)
+				return false
 			}
 			t.Fatalf("convergetest: harness was stopped via Stop(t); this verb needs a running runtime, call Events to inspect recorded state instead")
 			return false

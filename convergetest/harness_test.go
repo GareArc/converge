@@ -12,6 +12,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/internal/hook"
 	"github.com/GareArc/converge/reconcile"
 	"github.com/GareArc/converge/worker"
 )
@@ -392,10 +393,10 @@ func TestVerbBeforeConvergeNewFatals(t *testing.T) {
 	h.Wake("some-job", "some-id")
 	msgs := fake.messages()
 	if len(msgs) == 0 {
-		t.Fatal("expected Wake before converge.New(h.Options()) to call Fatalf")
+		t.Fatal("expected Wake before h.Build(t) to call Fatalf")
 	}
-	if !strings.Contains(msgs[0], "converge.New(h.Options())") {
-		t.Fatalf("Fatalf message = %q, want mention of converge.New(h.Options())", msgs[0])
+	if !strings.Contains(msgs[0], "h.Build(t)") {
+		t.Fatalf("Fatalf message = %q, want mention of h.Build(t)", msgs[0])
 	}
 }
 
@@ -470,6 +471,31 @@ func TestNewWithCustomKVReachesRuntime(t *testing.T) {
 		keys, _, err := captured.Scan(context.Background(), "test/converge/worker/dead-job/dlq/", "")
 		return err == nil && len(keys) == 1
 	})
+}
+
+func TestOptionsClockIsSharedAcrossHarnesses(t *testing.T) {
+	clock := convergetest.NewClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	var seenByMQFactory *convergetest.Clock
+	ha := convergetest.NewWith(t, convergetest.Options{
+		Clock: clock,
+		MQ: func(c *convergetest.Clock) converge.MQ {
+			seenByMQFactory = c
+			return inmem.NewMQWithClock(c)
+		},
+	})
+	hb := convergetest.NewWith(t, convergetest.Options{Clock: clock})
+
+	if ha.Clock != clock || hb.Clock != clock {
+		t.Fatalf("ha.Clock, hb.Clock = %p, %p, want both to be the supplied %p", ha.Clock, hb.Clock, clock)
+	}
+	if seenByMQFactory != clock {
+		t.Fatalf("MQ factory saw clock %p, want the supplied %p", seenByMQFactory, clock)
+	}
+
+	ha.Clock.Advance(time.Hour)
+	if got := hb.Clock.Now(); !got.Equal(clock.Now()) {
+		t.Fatalf("hb.Clock.Now() = %v after advancing via ha.Clock, want %v (a shared clock)", got, clock.Now())
+	}
 }
 
 func TestNewWithCustomLeaseReachesRuntime(t *testing.T) {
@@ -604,6 +630,61 @@ func TestDrivingVerbAfterStopFatalsNamingCause(t *testing.T) {
 	}
 	if strings.Contains(msgs[0], "exited early") {
 		t.Fatalf("Fatalf message = %q, must not use the crash wording for a deliberate Stop", msgs[0])
+	}
+}
+
+type crashJob struct {
+	ready chan struct{}
+}
+
+func (j *crashJob) Name() string { return "crash" }
+
+func (j *crashJob) Run(context.Context, converge.JobDeps) error {
+	close(j.ready)
+	time.Sleep(50 * time.Millisecond)
+	return errors.New("boom: simulated crash")
+}
+
+func (j *crashJob) Ready() <-chan struct{} { return j.ready }
+
+func (j *crashJob) Poke(string) error { return nil }
+
+func (j *crashJob) Stats() converge.JobStats { return converge.JobStats{Job: j.Name()} }
+
+func (j *crashJob) Info() converge.JobInfo { return converge.JobInfo{Job: j.Name()} }
+
+func (j *crashJob) Quiet() bool { return true }
+
+func (j *crashJob) Hint(string) error { return nil }
+
+func (j *crashJob) RunPassNow(context.Context) error { return nil }
+
+func (j *crashJob) SetPaused(bool) {}
+
+func TestRuntimeExitedEarlyFatalsWithCrashWording(t *testing.T) {
+	fake := &fakeTB{}
+	t.Cleanup(fake.runCleanups)
+	h := convergetest.NewWith(fake, convergetest.Options{})
+	rt := h.Build(fake)
+	if err := hook.RegisterJob(rt, &crashJob{ready: make(chan struct{})}); err != nil {
+		t.Fatal(err)
+	}
+	h.Runtime(fake)
+
+	convergetest.Await(t, func() bool {
+		h.Wake("crash", "id")
+		return len(fake.messages()) > 0
+	})
+
+	msgs := fake.messages()
+	if !strings.Contains(msgs[0], "runtime exited early") {
+		t.Fatalf("Fatalf message = %q, want mention that the runtime exited early", msgs[0])
+	}
+	if !strings.Contains(msgs[0], "boom") {
+		t.Fatalf("Fatalf message = %q, want the crash error included", msgs[0])
+	}
+	if strings.Contains(msgs[0], "stopped via Stop(t)") {
+		t.Fatalf("Fatalf message = %q, must not use the deliberate-stop wording for a genuine crash", msgs[0])
 	}
 }
 

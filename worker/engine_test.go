@@ -934,6 +934,7 @@ func TestShutdownIsNeutral(t *testing.T) {
 
 	w2 := convergetest.NewWith(t, convergetest.Options{
 		Namespace: "wt",
+		Clock:     w1.Clock,
 		MQ:        func(*convergetest.Clock) converge.MQ { return w1.MQ },
 		KV:        func(*convergetest.Clock) converge.KV { return w1.KV },
 	})
@@ -1051,6 +1052,7 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 
 	w2 := convergetest.NewWith(t, convergetest.Options{
 		Namespace: "wt",
+		Clock:     w1.Clock,
 		MQ:        func(*convergetest.Clock) converge.MQ { return pmq },
 		KV:        func(*convergetest.Clock) converge.KV { return w1.KV },
 	})
@@ -1251,6 +1253,7 @@ func newLeaseHarnessPair(t *testing.T) (wa, wb *convergetest.Harness, lease *inm
 		return convergetest.NewWith(t, convergetest.Options{
 			Namespace: "wt",
 			LeaseTTL:  30 * time.Second,
+			Clock:     clock,
 			MQ:        func(*convergetest.Clock) converge.MQ { return mq },
 			KV:        func(*convergetest.Clock) converge.KV { return kv },
 			Lease:     func(*convergetest.Clock) converge.Lease { return lease },
@@ -1383,6 +1386,7 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	build := func() (*convergetest.Harness, *converge.Runtime) {
 		h := convergetest.NewWith(t, convergetest.Options{
 			Namespace: "wt",
+			Clock:     clock,
 			MQ:        func(*convergetest.Clock) converge.MQ { return mq },
 		})
 		rt := h.Build(t)
@@ -1545,10 +1549,13 @@ func TestPausedConsumesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 0 })
-	w.Stop(t)
+	if runErr := w.Stop(t); runErr != nil {
+		t.Fatalf("Run returned %v, want nil", runErr)
+	}
 
 	w2 := convergetest.NewWith(t, convergetest.Options{
 		Namespace: "wt",
+		Clock:     w.Clock,
 		MQ:        func(*convergetest.Clock) converge.MQ { return w.MQ },
 		KV:        func(*convergetest.Clock) converge.KV { return w.KV },
 	})
