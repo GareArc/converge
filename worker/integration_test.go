@@ -48,29 +48,20 @@ func (m *inviteMailer) count(email string) int {
 }
 
 func TestScenarioCEndToEnd(t *testing.T) {
-	clock := convergetest.NewClock(wstart)
-	mq := inmem.NewMQWithClock(clock)
-	kv := inmem.NewKVWithClock(clock)
-	lease := inmem.NewLeaseWithClock(clock)
-
-	producerRt, err := converge.New(converge.Options{MQ: mq, Clock: clock})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	consumerRec := &convergetest.Recorder{}
-	consumerRt, err := converge.New(converge.Options{
+	var mq converge.MQ
+	consumer := convergetest.NewWith(t, convergetest.Options{
 		Namespace: "wt",
-		MQ:        mq,
-		Lease:     lease,
-		KV:        kv,
-		Observer:  consumerRec,
-		Clock:     clock,
+		MQ: func(clock *convergetest.Clock) converge.MQ {
+			mq = inmem.NewMQWithClock(clock)
+			return mq
+		},
 	})
+	consumerRt := consumer.Build(t)
+
+	producerRt, err := converge.New(converge.Options{MQ: mq, Clock: consumer.Clock})
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumer := &world{rt: consumerRt, clock: clock, mq: mq, kv: kv, rec: consumerRec, done: make(chan error, 1)}
 
 	tk := NewTask[invitePayload]("send-invite", TaskOpts{Version: 1})
 	mailer := newInviteMailer()
@@ -80,7 +71,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	var throttleAttempts []int
 	var hardFailRuns, escalations int32
 
-	err = Handle(consumer.rt, tk, func(ctx context.Context, payload invitePayload) error {
+	err = Handle(consumerRt, tk, func(ctx context.Context, payload invitePayload) error {
 		meta, _ := MetaFromContext(ctx)
 		mu.Lock()
 		messageIDs[payload.Email] = meta.MessageID
@@ -117,7 +108,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumer.run(t)
+	consumer.Runtime(t)
 
 	producer, err := ProducerFrom(producerRt)
 	if err != nil {
@@ -143,13 +134,13 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	cleanID, rejectID := messageIDs[cleanInviteEmail], messageIDs[rejectedInviteEmail]
 	mu.Unlock()
 
-	if n := consumer.rec.Count(func(e converge.Event) bool {
+	if n := eventCount(consumer.Events(), func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.ID == cleanID && rc.Err == nil
 	}); n != 1 {
 		t.Fatalf("clean send RunCompleted{Err:nil} count = %d, want 1", n)
 	}
-	if n := consumer.rec.Count(func(e converge.Event) bool {
+	if n := eventCount(consumer.Events(), func(e converge.Event) bool {
 		md, ok := e.(converge.MessageDiscarded)
 		return ok && md.MessageID == rejectID && md.Reason == "rejected address"
 	}); n != 1 {
@@ -172,7 +163,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		defer mu.Unlock()
 		return len(throttleAttempts) == 1
 	})
-	consumer.advanceUntil(t, 30*time.Second, func() bool {
+	convergetest.AdvanceUntil(t, consumer.Clock, 30*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(throttleAttempts) == 2
@@ -188,10 +179,10 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: hardFailInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	consumer.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 2 })
-	consumer.advanceUntil(t, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 3 })
+	convergetest.AdvanceUntil(t, consumer.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 2 })
+	convergetest.AdvanceUntil(t, consumer.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 3 })
 	convergetest.Await(t, func() bool {
-		return consumer.rec.Count(func(e converge.Event) bool {
+		return eventCount(consumer.Events(), func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
 			return ok && dl.Reason == converge.DeadLetterMaxAttempts
 		}) == 1
@@ -201,11 +192,11 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		t.Fatalf("escalations = %d, want 1", got)
 	}
 
-	keys := dlqKeys(t, consumer, "send-invite")
+	keys := dlqKeys(t, consumer.KV, "send-invite")
 	if len(keys) != 1 {
 		t.Fatalf("dlq keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, consumer, keys[0])
+	rec := dlqRecordAt(t, consumer.KV, keys[0])
 	if rec.Reason != converge.DeadLetterMaxAttempts.String() {
 		t.Fatalf("dlq reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAttempts.String())
 	}
@@ -220,18 +211,19 @@ func TestScenarioCEndToEnd(t *testing.T) {
 }
 
 func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
-	w := newWorld(t)
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err := Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return Snooze{In: time.Minute}
 	}, HandleOpts{Retry: RetryPolicy{MaxAge: 5 * time.Minute}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.run(t)
-	p, err := ProducerFrom(w.rt)
+	w.Runtime(t)
+	p, err := ProducerFrom(rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,8 +231,8 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w.advanceUntil(t, time.Minute, func() bool {
-		return w.rec.Count(func(e converge.Event) bool {
+	convergetest.AdvanceUntil(t, w.Clock, time.Minute, func() bool {
+		return eventCount(w.Events(), func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
 			return ok && dl.Reason == converge.DeadLetterMaxAge
 		}) == 1
@@ -252,11 +244,11 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 	stopped := atomic.LoadInt32(&runs)
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == stopped })
 
-	keys := dlqKeys(t, w, "job")
+	keys := dlqKeys(t, w.KV, "job")
 	if len(keys) != 1 {
 		t.Fatalf("dlq keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, w, keys[0])
+	rec := dlqRecordAt(t, w.KV, keys[0])
 	if rec.Reason != converge.DeadLetterMaxAge.String() {
 		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAge.String())
 	}
@@ -266,12 +258,13 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 }
 
 func TestProducerFromResolvesHandlerBinding(t *testing.T) {
-	w := newWorld(t)
-	jobMQ := inmem.NewMQWithClock(w.clock)
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
+	rt := w.Build(t)
+	jobMQ := inmem.NewMQWithClock(w.Clock)
 
 	bound := NewTask[string]("bound", TaskOpts{})
 	var boundRuns int32
-	err := Handle(w.rt, bound, func(ctx context.Context, payload string) error {
+	err := Handle(rt, bound, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&boundRuns, 1)
 		return nil
 	}, HandleOpts{MQ: jobMQ})
@@ -281,8 +274,8 @@ func TestProducerFromResolvesHandlerBinding(t *testing.T) {
 
 	unbound := NewTask[string]("unbound", TaskOpts{})
 
-	w.run(t)
-	p, err := ProducerFrom(w.rt)
+	w.Runtime(t)
+	p, err := ProducerFrom(rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +293,7 @@ func TestProducerFromResolvesHandlerBinding(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	delivered := make(chan converge.Delivery, 1)
-	go w.mq.Consume(ctx, "unbound", func(d converge.Delivery) {
+	go w.MQ.Consume(ctx, "unbound", func(d converge.Delivery) {
 		select {
 		case delivered <- d:
 		default:

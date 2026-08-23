@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 type Version uint64
@@ -36,7 +37,7 @@ func NewTracker(kv converge.KV, namespace string) *Tracker {
 }
 
 func (t *Tracker) key(id ID) string {
-	return "converge/tracker/" + t.namespace + "/" + string(id)
+	return keys.Tracker(t.namespace, string(id))
 }
 
 func (t *Tracker) read(ctx context.Context, id ID) (Version, []byte, error) {

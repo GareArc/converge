@@ -3,6 +3,7 @@ package convredis_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +38,23 @@ func TestMQPortRealRedis(t *testing.T) {
 	}, portcheck.MQOptions{})
 }
 
+func TestStreamsMQNegativeVisibilityDefaults(t *testing.T) {
+	_, client, clock, advance := openMiniServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mq := convredis.NewStreamsMQ(client, convredis.StreamsOpts{Clock: clock, Visibility: -time.Second})
+
+	if err := mq.Publish(ctx, "q", converge.Message{Payload: []byte("a")}); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan converge.Delivery, 16)
+	go mq.Consume(ctx, "q", func(d converge.Delivery) { got <- d })
+	recvDelivery(t, got)
+
+	advance(time.Minute)
+	assertNoDelivery(t, got)
+}
+
 func TestStreamsMQDeliveryCarriesHeadersAndEnqueuedAt(t *testing.T) {
 	f := newStreamsMQ(t)
 	msg := converge.Message{
@@ -66,6 +84,57 @@ func TestStreamsMQExtendAfterAck(t *testing.T) {
 	}
 	if err := d.Extend(f.ctx, time.Minute); !errors.Is(err, convredis.ErrSettled) {
 		t.Fatalf("Extend after Ack = %v, want ErrSettled", err)
+	}
+}
+
+func TestStreamsMQAckSettlesTheHandleWhenCleanupFails(t *testing.T) {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	d := recvDelivery(t, f.consume(t))
+	restore := failCommand(t, f.mr, "HDEL")
+	defer restore()
+
+	if err := d.Ack(f.ctx); err == nil {
+		t.Fatal("Ack = nil, want the failed bookkeeping cleanup reported")
+	}
+	if err := d.Extend(f.ctx, time.Hour); !errors.Is(err, convredis.ErrSettled) {
+		t.Fatalf("Extend after an acked delivery whose cleanup failed = %v, want ErrSettled", err)
+	}
+}
+
+func TestStreamsMQStaleExtendDoesNotPostponeRedelivery(t *testing.T) {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	got := f.consume(t)
+	stale := recvDelivery(t, got)
+	if stale.Attempt() != 1 {
+		t.Fatalf("Attempt = %d, want 1", stale.Attempt())
+	}
+
+	f.advance(time.Minute + time.Second)
+	live := recvDelivery(t, got)
+	if live.Attempt() != 2 {
+		t.Fatalf("reclaimed Attempt = %d, want 2", live.Attempt())
+	}
+
+	if err := stale.Extend(f.ctx, time.Hour); !errors.Is(err, convredis.ErrSettled) {
+		t.Fatalf("Extend on a stale handle = %v, want ErrSettled", err)
+	}
+
+	f.advance(time.Minute + time.Second)
+	next := recvDelivery(t, got)
+	if next.Attempt() != 3 {
+		t.Fatalf("Attempt after a stale extend = %d, want 3", next.Attempt())
+	}
+	if err := next.Ack(f.ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := stale.Nack(f.ctx, time.Hour); err != nil {
+		t.Fatalf("Nack on a stale handle = %v, want nil", err)
+	}
+	if n, err := f.client.ZCard(f.ctx, testPendingKey).Result(); err != nil || n != 0 {
+		t.Fatalf("pending set holds %d entries (err %v), want 0 after a stale nack", n, err)
 	}
 }
 
@@ -99,8 +168,12 @@ func TestStreamsMQReadBatchSurvivesCancelMidBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f.advance(time.Minute + time.Second)
 	got := f.consume(t)
+	f.await(t, fmt.Sprintf("%s never reached %d entries", testPendingKey, batch-1), func() bool {
+		n, err := f.client.ZCard(f.ctx, testPendingKey).Result()
+		return err == nil && n == int64(batch-1)
+	})
+	f.advance(time.Minute + time.Second)
 	seen := map[byte]bool{}
 	for range batch - 1 {
 		d := recvDelivery(t, got)
@@ -138,7 +211,9 @@ func TestStreamsMQReclaimsPendingEntryThatWasNeverTracked(t *testing.T) {
 	}
 
 	got := f.consume(t)
-	f.awaitTracked(t, id)
+	f.await(t, fmt.Sprintf("entry %s was never tracked in %s", id, testPendingKey), func() bool {
+		return f.client.ZScore(f.ctx, testPendingKey, id).Err() == nil
+	})
 	f.advance(time.Minute + time.Second)
 	d := recvDelivery(t, got)
 	if string(d.Message().Payload) != "a" {
@@ -291,15 +366,12 @@ func (f *streamsMQFixture) consume(t *testing.T) chan converge.Delivery {
 	return got
 }
 
-func (f *streamsMQFixture) awaitTracked(t *testing.T, id string) {
+func (f *streamsMQFixture) await(t *testing.T, msg string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if err := f.client.ZScore(f.ctx, testPendingKey, id).Err(); err == nil {
-			return
-		}
+	for !cond() {
 		if time.Now().After(deadline) {
-			t.Fatalf("entry %s was never tracked in %s", id, testPendingKey)
+			t.Fatal(msg)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,7 +22,6 @@ const (
 	handoffTimeout   = 5 * time.Second
 	readCount        = 16
 	pendingPageCount = 64
-	trackAttempts    = 5
 	randomIDBytes    = 8
 	busyGroupPrefix  = "BUSYGROUP"
 	noGroupPrefix    = "NOGROUP"
@@ -49,7 +49,7 @@ func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) converge.MQ {
 	if m.clock == nil {
 		m.clock = wallClock{}
 	}
-	if m.visibility == 0 {
+	if m.visibility <= 0 {
 		m.visibility = DefaultVisibility
 	}
 	return m
@@ -170,9 +170,6 @@ func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliv
 			}
 			continue
 		}
-		if err := m.trackBatch(ctx, queue, group, entries); err != nil && ctx.Err() != nil {
-			return ctx.Err()
-		}
 		for _, entry := range entries {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -234,29 +231,6 @@ func (m *streamsMQ) readNew(ctx context.Context, queue, group, consumer string) 
 	return entries, nil
 }
 
-func (m *streamsMQ) trackBatch(ctx context.Context, queue, group string, entries []redis.XMessage) error {
-	err := m.track(ctx, queue, group, entries)
-	for attempt := 1; err != nil && attempt < trackAttempts; attempt++ {
-		if !pause(ctx) {
-			return ctx.Err()
-		}
-		err = m.track(ctx, queue, group, entries)
-	}
-	return err
-}
-
-func (m *streamsMQ) track(ctx context.Context, queue, group string, entries []redis.XMessage) error {
-	if len(entries) == 0 {
-		return nil
-	}
-	score := dueScore(m.clock.Now().Add(m.visibility))
-	members := make([]redis.Z, 0, len(entries))
-	for _, entry := range entries {
-		members = append(members, redis.Z{Score: score, Member: entry.ID})
-	}
-	return m.rdb.ZAdd(ctx, pendingKey(queue, group), members...).Err()
-}
-
 func (m *streamsMQ) moveDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
 	if err := m.releaseDelayed(ctx, queue); err != nil {
 		return err
@@ -301,28 +275,81 @@ func (m *streamsMQ) releaseDelayed(ctx context.Context, queue string) error {
 }
 
 func (m *streamsMQ) reconcilePending(ctx context.Context, queue, group string) error {
-	pending, err := m.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: streamKey(queue),
-		Group:  group,
-		Start:  pendingRangeMin,
-		End:    pendingRangeMax,
-		Count:  pendingPageCount,
-	}).Result()
-	if errors.Is(err, redis.Nil) {
-		return nil
+	start := pendingRangeMin
+	for {
+		pending, err := m.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
+			Stream: streamKey(queue),
+			Group:  group,
+			Start:  start,
+			End:    pendingRangeMax,
+			Count:  pendingPageCount,
+		}).Result()
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if len(pending) == 0 {
+			return nil
+		}
+		score := dueScore(m.clock.Now().Add(m.visibility))
+		members := make([]redis.Z, 0, len(pending))
+		for _, entry := range pending {
+			members = append(members, redis.Z{Score: score, Member: entry.ID})
+		}
+		if err := m.rdb.ZAddNX(ctx, pendingKey(queue, group), members...).Err(); err != nil {
+			return err
+		}
+		if len(pending) < pendingPageCount {
+			return nil
+		}
+		next := nextEntryID(pending[len(pending)-1].ID)
+		if !entryIDAdvanced(next, start) {
+			return nil
+		}
+		start = next
 	}
+}
+
+func nextEntryID(id string) string {
+	ms, seq, ok := strings.Cut(id, "-")
+	if !ok {
+		return id
+	}
+	n, err := strconv.ParseUint(seq, 10, 64)
 	if err != nil {
-		return err
+		return id
 	}
-	if len(pending) == 0 {
-		return nil
+	return ms + "-" + strconv.FormatUint(n+1, 10)
+}
+
+func entryIDAdvanced(next, start string) bool {
+	nms, nseq, nok := entryIDParts(next)
+	sms, sseq, sok := entryIDParts(start)
+	if !nok || !sok {
+		return next > start
 	}
-	score := dueScore(m.clock.Now().Add(m.visibility))
-	members := make([]redis.Z, 0, len(pending))
-	for _, entry := range pending {
-		members = append(members, redis.Z{Score: score, Member: entry.ID})
+	if nms != sms {
+		return nms > sms
 	}
-	return m.rdb.ZAddNX(ctx, pendingKey(queue, group), members...).Err()
+	return nseq > sseq
+}
+
+func entryIDParts(id string) (ms, seq uint64, ok bool) {
+	m, s, found := strings.Cut(id, "-")
+	if !found {
+		return 0, 0, false
+	}
+	msVal, err := strconv.ParseUint(m, 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	seqVal, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return msVal, seqVal, true
 }
 
 func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
@@ -364,10 +391,7 @@ func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer str
 func (m *streamsMQ) deliverEntry(ctx context.Context, queue, group string, entry redis.XMessage, deliver func(converge.Delivery)) error {
 	msg, enq, err := decodeMessage(entry.Values)
 	if err != nil {
-		if err := m.rdb.XAck(ctx, streamKey(queue), group, entry.ID).Err(); err != nil {
-			return err
-		}
-		return m.forget(ctx, queue, group, entry.ID)
+		return m.ack(ctx, queue, group, entry.ID)
 	}
 	attempt, err := m.startAttempt(ctx, queue, group, entry.ID)
 	if err != nil {
@@ -383,6 +407,37 @@ func (m *streamsMQ) deliverEntry(ctx context.Context, queue, group string, entry
 		enq:     enq,
 	})
 	return nil
+}
+
+func (m *streamsMQ) ack(ctx context.Context, queue, group, id string) error {
+	if err := m.ackStream(ctx, queue, group, id); err != nil {
+		return err
+	}
+	return m.forget(ctx, queue, group, id)
+}
+
+func (m *streamsMQ) ackStream(ctx context.Context, queue, group, id string) error {
+	return m.rdb.XAck(ctx, streamKey(queue), group, id).Err()
+}
+
+func (m *streamsMQ) ackAttempt(ctx context.Context, queue, group, id string, attempt int) (bool, error) {
+	n, err := ackScript.Run(ctx, m.rdb,
+		[]string{attemptsKey(queue, group), streamKey(queue)},
+		id, strconv.Itoa(attempt), group).Int()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+func (m *streamsMQ) deferTo(ctx context.Context, queue, group, id string, attempt int, after time.Duration) (bool, error) {
+	n, err := deferScript.Run(ctx, m.rdb,
+		[]string{pendingKey(queue, group), attemptsKey(queue, group)},
+		id, strconv.Itoa(attempt), dueScore(m.clock.Now().Add(after))).Int()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 func (m *streamsMQ) forget(ctx context.Context, queue, group, id string) error {

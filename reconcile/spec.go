@@ -9,7 +9,6 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
-	"github.com/GareArc/converge/internal/pausegate"
 )
 
 type Reconciler interface {
@@ -141,7 +140,7 @@ func newEngine(s Spec) (*engine, error) {
 	if !periodic && !cfg.allowUnscheduled {
 		return nil, fail("no periodic trigger; set AllowUnscheduled to opt out of the schedule guarantee")
 	}
-	return &engine{cfg: cfg, ready: make(chan struct{}), gate: pausegate.New(s.Paused)}, nil
+	return &engine{cfg: cfg, ready: make(chan struct{}), paused: s.Paused}, nil
 }
 
 func Register(rt *converge.Runtime, s Spec) error {

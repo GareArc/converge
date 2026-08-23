@@ -747,3 +747,55 @@ func TestRunPassNowDoesNotPanicWhenQueueNilsMidPass(t *testing.T) {
 		t.Fatal("RunPassNow never returned")
 	}
 }
+
+func TestSchedulePageRetryBacksOffAndResetsOnSuccess(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	var mu sync.Mutex
+	calls := 0
+	callCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls
+	}
+	const failuresBeforeSuccess = 5
+	steps := []struct {
+		fail bool
+		next string
+	}{
+		{fail: true},
+		{fail: true},
+		{fail: true},
+		{fail: true},
+		{fail: true},
+		{fail: false, next: "cursor2"},
+		{fail: true},
+		{fail: false, next: ""},
+	}
+	src := IDsByPage(func(context.Context, string) ([]ID, string, error) {
+		mu.Lock()
+		st := steps[calls]
+		calls++
+		mu.Unlock()
+		if st.fail {
+			return nil, "", errors.New("page boom")
+		}
+		return nil, st.next, nil
+	})
+	startSchedule(t, te, src, Every(time.Hour))
+
+	retryStep := pageRetryCurve.Min
+	escalationFloor := 8 * pageRetryCurve.Min
+	resetBudget := 8 * pageRetryCurve.Min
+
+	start := te.clock.Now()
+	advanceUntil(t, te, retryStep, func() bool { return callCount() > failuresBeforeSuccess })
+	if waited := te.clock.Now().Sub(start); waited < escalationFloor {
+		t.Fatalf("%d failing pages retried within %v, want the attempt counter to grow the delay past %v", failuresBeforeSuccess, waited, escalationFloor)
+	}
+
+	resumed := te.clock.Now()
+	advanceUntil(t, te, retryStep, func() bool { return callCount() >= len(steps) })
+	if waited := te.clock.Now().Sub(resumed); waited > resetBudget {
+		t.Fatalf("the retry after a successful page waited %v, want at most %v (a successful page must reset the attempt counter)", waited, resetBudget)
+	}
+}

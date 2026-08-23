@@ -23,6 +23,27 @@ rt.Run(ctx)                        go. Blocks. Cancel → stop intake → drain 
   queue — two services sharing one Redis never collide, even with same-named
   jobs.
 
+## Keyspace
+
+For operators inspecting a backend directly, every key converge writes is
+built by `internal/keys`, namespaced by `Options.Namespace` (`{ns}`, cleanly
+omitted when empty for every key below except `Tracker` — see its note):
+
+| Key | Purpose |
+|---|---|
+| `{ns}/converge/ctl` | ops-verb request queue |
+| `{ns}/converge/ctl/res/{opID}/{replica}` | one replica's response to ops verb `{opID}` |
+| `{ns}/converge/ctl/paused/{job}` | durable pause flag for `{job}` |
+| `{ns}/converge/worker/{job}/lease` | worker job's held lease |
+| `{ns}/converge/worker/{job}/dlq/{messageID}` | dead-lettered message record |
+| `{ns}/converge/reconcile/{job}/lease` | reconcile job's held lease |
+| `{ns}/converge/reconcile/{job}/parked/{id}` | parked ID's record |
+| `converge/tracker/{ns}/{id}` | last-seen version for parked-ID revival — `{ns}` sits after the fixed `tracker` segment, not as a leading prefix like the keys above, and is not cleanly omitted when empty: `Tracker` concatenates the namespace raw, so an empty namespace yields a literal double slash, `converge/tracker//{id}` |
+
+`adapters/redis` additionally namespaces its own bookkeeping (streams,
+pending ZSETs, attempts) under a fixed `convredis:` prefix — see
+[Adapters → Auxiliary key prefixes](../reference/adapters.md).
+
 ## Introspection and ops handlers
 
 `debughttp` splits introspection from mutation into two separate,
@@ -102,7 +123,11 @@ delayed-release claim script (against the delayed ZSET), the `XPENDING`
 call that drives PEL reconciliation, the redelivery claim script (against
 the pending ZSET), and the `XREADGROUP` call that reads new entries — all
 four run every pass through the loop, not just when there's a due delayed
-message or a due redelivery. At the 100ms poll cadence (roughly 10
+message or a due redelivery. The reconciliation pass is paginated at
+`pendingPageCount` entries per page: the "one `XPENDING` call" above is the
+idle-PEL case, and a deeper PEL costs one further `XPENDING`/`ZADD NX`
+round-trip pair per additional page of PEL depth, every iteration, until
+the whole PEL has been walked. At the 100ms poll cadence (roughly 10
 iterations/second), that's **~40 Redis round trips per second per idle
 consumer**. Under load, each batch of up to 16 delivered messages adds one
 further `XPENDING`-driven reconciliation cost and one further redelivery

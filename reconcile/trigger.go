@@ -23,6 +23,8 @@ const (
 	triggerRestartMax = time.Minute
 )
 
+var triggerRestartCurve = backoff.Curve{Min: triggerRestartMin, Max: triggerRestartMax}
+
 type OnMessageOpts struct {
 	MQ       converge.MQ
 	Delivery converge.DeliveryMode
@@ -101,7 +103,7 @@ func (e *engine) runMessages(ctx context.Context, t *messageTrigger) {
 }
 
 func (e *engine) supervise(ctx context.Context, run func()) {
-	restart := triggerRestartMin
+	attempt := 0
 	for {
 		start := e.deps.Clock.Now()
 		run()
@@ -109,14 +111,14 @@ func (e *engine) supervise(ctx context.Context, run func()) {
 			return
 		}
 		if e.deps.Clock.Now().Sub(start) >= triggerRestartMax {
-			restart = triggerRestartMin
+			attempt = 0
 		}
+		attempt++
 		select {
 		case <-ctx.Done():
 			return
-		case <-e.deps.Clock.After(backoff.Jitter(restart)):
+		case <-e.deps.Clock.After(triggerRestartCurve.Delay(attempt)):
 		}
-		restart = min(restart*2, triggerRestartMax)
 	}
 }
 

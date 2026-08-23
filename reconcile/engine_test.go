@@ -11,12 +11,17 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
-	"github.com/GareArc/converge/internal/pausegate"
+	"github.com/GareArc/converge/internal/backoff"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 func advanceUntil(t *testing.T, te *testEngine, step time.Duration, cond func() bool) {
 	t.Helper()
 	convergetest.AdvanceUntil(t, te.clock, step, cond)
+}
+
+func parkKey(e *engine, id ID) string {
+	return keys.ReconcileParked(e.deps.Namespace, e.cfg.name, string(id))
 }
 
 type testEngine struct {
@@ -40,7 +45,7 @@ func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn Func) *testEngin
 		cfg.concurrency = 1
 	}
 	cfg.rec = fn
-	e := &engine{cfg: cfg, ready: make(chan struct{}), gate: pausegate.New(cfg.paused)}
+	e := &engine{cfg: cfg, ready: make(chan struct{}), paused: cfg.paused}
 	deps := converge.JobDeps{
 		KV:       kv,
 		Observer: rec,
@@ -345,6 +350,30 @@ func TestEmptyIDHintRejectedUnlessSingle(t *testing.T) {
 	})
 }
 
+func TestHintWhenNotRunningIsDropped(t *testing.T) {
+	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
+	e.hint(context.Background(), "a")
+}
+
+func TestEmptyIDHintAfterTeardownStillReportsDiscard(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	rec := &convergetest.Recorder{}
+	e := &engine{cfg: config{name: "job", concurrency: 1, rec: Func(func(context.Context, ID) error { return nil })}, ready: make(chan struct{})}
+	if err := e.bindCore(converge.JobDeps{KV: inmem.NewKVWithClock(clock), Observer: rec, Clock: clock}); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	e.queue = nil
+	e.mu.Unlock()
+	e.hint(context.Background(), "")
+	if n := rec.Count(func(ev converge.Event) bool {
+		wd, ok := ev.(converge.WakeDiscarded)
+		return ok && wd.Reason == converge.DiscardEmptyID
+	}); n != 1 {
+		t.Fatalf("empty-id hint after teardown = %d DiscardEmptyID events, want 1", n)
+	}
+}
+
 func TestPokeBeforeBindFails(t *testing.T) {
 	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
 	if err := e.Poke("x"); err == nil {
@@ -644,8 +673,8 @@ func TestBackoffFallbackReportsTrueTripCount(t *testing.T) {
 	})
 	for _, e := range te.rec.Events() {
 		if bf, ok := e.(converge.BackoffFallback); ok {
-			if bf.Consecutive != noBackoffLimit+1 {
-				t.Fatalf("BackoffFallback.Consecutive = %d, want %d", bf.Consecutive, noBackoffLimit+1)
+			if bf.Consecutive != backoff.NoBackoffCap+1 {
+				t.Fatalf("BackoffFallback.Consecutive = %d, want %d", bf.Consecutive, backoff.NoBackoffCap+1)
 			}
 			return
 		}
@@ -690,7 +719,7 @@ func TestNoVersionZeroWhenProducerMarked(t *testing.T) {
 			return ok
 		}) == 0
 	})
-	raw, ok, err := kv.Get(context.Background(), te.e.parkKey("a"))
+	raw, ok, err := kv.Get(context.Background(), parkKey(te.e, "a"))
 	if err != nil || !ok || string(raw) != "1" {
 		t.Fatalf("mark = %q, %v, %v; want \"1\"", raw, ok, err)
 	}
@@ -737,7 +766,7 @@ func TestVersionAdvanceRevivesParked(t *testing.T) {
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
 	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
 	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		_, ok, err := kv.Get(ctx, parkKey(te.e, "a"))
 		return err == nil && !ok
 	})
 }
@@ -785,7 +814,7 @@ func TestMidRunVersionBumpStillRevives(t *testing.T) {
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
 	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
 	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		_, ok, err := kv.Get(ctx, parkKey(te.e, "a"))
 		return err == nil && !ok
 	})
 	if n := te.rec.Count(func(e converge.Event) bool {
@@ -814,18 +843,18 @@ func TestInvalidMarkBlocksVersionRevival(t *testing.T) {
 	te.e.hint(ctx, "a")
 	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
 	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(ctx, te.e.parkKey("a"))
+		_, ok, err := kv.Get(ctx, parkKey(te.e, "a"))
 		return err == nil && ok
 	})
 	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Delete(ctx, te.e.parkKey("a")); err != nil {
+	if err := kv.Delete(ctx, parkKey(te.e, "a")); err != nil {
 		t.Fatal(err)
 	}
 	te.e.hint(ctx, "a")
 	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
-	if err := kv.Set(ctx, te.e.parkKey("a"), []byte("junk"), 0); err != nil {
+	if err := kv.Set(ctx, parkKey(te.e, "a"), []byte("junk"), 0); err != nil {
 		t.Fatal(err)
 	}
 	te.e.hint(ctx, "a")
@@ -841,14 +870,14 @@ func TestActivationClearsMarkForActiveID(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := kv.Set(ctx, e.parkKey("a"), []byte("0"), 0); err != nil {
+	if err := kv.Set(ctx, parkKey(e, "a"), []byte("0"), 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.Poke("a"); err != nil {
 		t.Fatal(err)
 	}
 	e.loadParked(ctx)
-	if _, ok, err := kv.Get(ctx, e.parkKey("a")); err != nil || ok {
+	if _, ok, err := kv.Get(ctx, parkKey(e, "a")); err != nil || ok {
 		t.Fatalf("mark for an already-queued id must be cleared at activation: ok=%v err=%v", ok, err)
 	}
 	if c := e.queue.counts(); c.parked != 0 || c.depth != 1 {
@@ -862,7 +891,7 @@ func TestOnAllReplicasParksInMemoryOnly(t *testing.T) {
 	})
 	te.e.hint(context.Background(), "a")
 	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
-	keys, _, err := te.e.deps.KV.Scan(context.Background(), te.e.parkKey(""), "")
+	keys, _, err := te.e.deps.KV.Scan(context.Background(), parkKey(te.e, ""), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -989,13 +1018,11 @@ func TestSetPausedStormKeepsGatesConverged(t *testing.T) {
 	wg.Wait()
 
 	te.e.mu.Lock()
-	enginePaused := te.e.gate.Paused
+	enginePaused := te.e.paused
 	te.e.mu.Unlock()
-	te.e.queue.mu.Lock()
-	queuePaused := te.e.queue.gate.Paused
-	te.e.queue.mu.Unlock()
+	queuePaused := te.e.queue.paused()
 	if enginePaused != queuePaused {
-		t.Fatalf("pause gates diverged after storm: engine.gate.Paused=%v queue.gate.Paused=%v", enginePaused, queuePaused)
+		t.Fatalf("pause gates diverged after storm: engine.paused=%v queue.paused()=%v", enginePaused, queuePaused)
 	}
 
 	te.e.SetPaused(false)

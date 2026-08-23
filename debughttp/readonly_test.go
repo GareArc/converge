@@ -14,74 +14,12 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/debughttp"
-	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/internal/hook"
 	"github.com/GareArc/converge/reconcile"
 	"github.com/GareArc/converge/worker"
 )
 
 var wstart = time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
-
-type world struct {
-	rt    *converge.Runtime
-	clock *convergetest.Clock
-	mq    converge.MQ
-	kv    converge.KV
-	done  chan error
-}
-
-func newWorld(t *testing.T) *world {
-	t.Helper()
-	clock := convergetest.NewClock(wstart)
-	mq := inmem.NewMQWithClock(clock)
-	kv := inmem.NewKVWithClock(clock)
-	rt, err := converge.New(converge.Options{
-		Namespace: "dt",
-		MQ:        mq,
-		Lease:     inmem.NewLeaseWithClock(clock),
-		KV:        kv,
-		Clock:     clock,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &world{rt: rt, clock: clock, mq: mq, kv: kv, done: make(chan error, 1)}
-}
-
-func (w *world) run(t *testing.T) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		cancel()
-		w.stop(t)
-	})
-	go func() { w.done <- w.rt.Run(ctx) }()
-	select {
-	case <-w.rt.Ready():
-	case <-time.After(2 * time.Second):
-		t.Fatal("runtime never ready")
-	}
-}
-
-func (w *world) stop(t *testing.T) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		select {
-		case err := <-w.done:
-			if err != nil {
-				t.Fatalf("Run returned %v", err)
-			}
-			return
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Run never returned")
-		}
-		w.clock.Advance(10 * time.Second)
-		time.Sleep(2 * time.Millisecond)
-	}
-}
 
 func doRequest(h http.Handler, method, path string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
@@ -138,21 +76,22 @@ func assertExactKeys(t *testing.T, m map[string]any, want []string) {
 	}
 }
 
-func registerReconcileJob(t *testing.T, w *world, name string) {
+func registerReconcileJob(t *testing.T, rt *converge.Runtime, name string) {
 	t.Helper()
-	if err := reconcile.Periodic(w.rt, name, reconcile.Every(time.Hour), func(ctx context.Context) error { return nil }); err != nil {
+	if err := reconcile.Periodic(rt, name, reconcile.Every(time.Hour), func(ctx context.Context) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "license-refresh")
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt := w.Build(t)
+	registerReconcileJob(t, rt, "license-refresh")
 
 	tk := worker.NewTask[string]("send-invite", worker.TaskOpts{})
 	var mu sync.Mutex
 	var handled int
-	err := worker.Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+	err := worker.Handle(rt, tk, func(ctx context.Context, payload string) error {
 		mu.Lock()
 		handled++
 		mu.Unlock()
@@ -161,9 +100,9 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.run(t)
+	w.Runtime(t)
 
-	p, err := worker.ProducerFrom(w.rt)
+	p, err := worker.ProducerFrom(rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +115,7 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 		return handled == 1
 	})
 
-	h := debughttp.ReadOnlyHandler(w.rt)
+	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodGet, "/debug/jobs")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
@@ -244,10 +183,11 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 }
 
 func TestReadOnlyJobRowJSONKeysPinned(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "job")
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt := w.Build(t)
+	registerReconcileJob(t, rt, "job")
 
-	h := debughttp.ReadOnlyHandler(w.rt)
+	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodGet, "/debug/jobs")
 	var body map[string]any
 	decodeJSON(t, rec, &body)
@@ -263,10 +203,11 @@ func TestReadOnlyJobRowJSONKeysPinned(t *testing.T) {
 }
 
 func TestReadOnlySingleJobGet(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "job")
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt := w.Build(t)
+	registerReconcileJob(t, rt, "job")
 
-	h := debughttp.ReadOnlyHandler(w.rt)
+	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodGet, "/debug/jobs/job")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
@@ -303,8 +244,9 @@ func TestReadOnlySingleJobGet(t *testing.T) {
 }
 
 func TestReadOnlyUnknownJob404(t *testing.T) {
-	w := newWorld(t)
-	h := debughttp.ReadOnlyHandler(w.rt)
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt := w.Build(t)
+	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodGet, "/debug/jobs/nope")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
@@ -318,9 +260,10 @@ func TestReadOnlyUnknownJob404(t *testing.T) {
 }
 
 func TestReadOnlyHasNoMutatingRoutes(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "job")
-	h := debughttp.ReadOnlyHandler(w.rt)
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt := w.Build(t)
+	registerReconcileJob(t, rt, "job")
+	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodPost, "/debug/jobs/job/poke?id=x")
 	if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 404 or 405 (readonly must not mount verb routes)", rec.Code)
@@ -328,9 +271,10 @@ func TestReadOnlyHasNoMutatingRoutes(t *testing.T) {
 }
 
 func TestReadOnlyWrongMethod405(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "job")
-	h := debughttp.ReadOnlyHandler(w.rt)
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt := w.Build(t)
+	registerReconcileJob(t, rt, "job")
+	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodPost, "/debug/jobs")
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
@@ -338,8 +282,9 @@ func TestReadOnlyWrongMethod405(t *testing.T) {
 }
 
 func TestReadOnlyUnknownPath404(t *testing.T) {
-	w := newWorld(t)
-	h := debughttp.ReadOnlyHandler(w.rt)
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt := w.Build(t)
+	h := debughttp.ReadOnlyHandler(rt)
 	rec := doRequest(h, http.MethodGet, "/debug/jobs/a/b/c")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
@@ -349,18 +294,19 @@ func TestReadOnlyUnknownPath404(t *testing.T) {
 func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
 	cases := []struct {
 		name    string
-		handler func(w *world) http.Handler
+		handler func(rt *converge.Runtime) http.Handler
 	}{
-		{"ReadOnlyHandler", func(w *world) http.Handler { return debughttp.ReadOnlyHandler(w.rt) }},
-		{"OpsHandler", func(w *world) http.Handler { return debughttp.OpsHandler(w.rt, debughttp.OpsOpts{}) }},
+		{"ReadOnlyHandler", func(rt *converge.Runtime) http.Handler { return debughttp.ReadOnlyHandler(rt) }},
+		{"OpsHandler", func(rt *converge.Runtime) http.Handler { return debughttp.OpsHandler(rt, debughttp.OpsOpts{}) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			w := newWorld(t)
-			registerReconcileJob(t, w, "license-refresh")
+			w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+			rt := w.Build(t)
+			registerReconcileJob(t, rt, "license-refresh")
 
 			outer := http.NewServeMux()
-			outer.Handle("/debug/jobs/", c.handler(w))
+			outer.Handle("/debug/jobs/", c.handler(rt))
 			srv := httptest.NewServer(outer)
 			t.Cleanup(srv.Close)
 
@@ -386,10 +332,11 @@ func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
 }
 
 func TestOpsHandlerServesReadOnlyRoutesWithParity(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "job")
-	ro := debughttp.ReadOnlyHandler(w.rt)
-	ops := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt := w.Build(t)
+	registerReconcileJob(t, rt, "job")
+	ro := debughttp.ReadOnlyHandler(rt)
+	ops := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 
 	recRO := doRequest(ro, http.MethodGet, "/debug/jobs")
 	recOps := doRequest(ops, http.MethodGet, "/debug/jobs")

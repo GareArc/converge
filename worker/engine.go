@@ -2,22 +2,19 @@ package worker
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"slices"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
 	"github.com/GareArc/converge/internal/durfmt"
+	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/mw"
 	"github.com/GareArc/converge/internal/pausegate"
 	"github.com/GareArc/converge/internal/sig"
@@ -112,16 +109,12 @@ func (e *engine) awaitUnpaused(ctx context.Context) bool {
 func (e *engine) durable() bool { return e.cfg.runMode != converge.OnAllReplicas }
 
 func (e *engine) key(parts ...string) string {
-	elems := make([]string, 0, len(parts)+4)
-	if e.deps.Namespace != "" {
-		elems = append(elems, e.deps.Namespace)
-	}
-	elems = append(elems, "converge", "worker", e.cfg.info.name)
-	elems = append(elems, parts...)
-	return strings.Join(elems, "/")
+	return keys.Worker(e.deps.Namespace, e.cfg.info.name, parts...)
 }
 
-func (e *engine) dlqKey(id string) string { return e.key("dlq", id) }
+func (e *engine) dlqKey(id string) string {
+	return keys.WorkerDLQ(e.deps.Namespace, e.cfg.info.name, id)
+}
 
 func (e *engine) Stats() converge.JobStats {
 	e.mu.Lock()
@@ -223,8 +216,6 @@ func invocationFrom(ctx context.Context) (invocation, bool) {
 }
 
 const consumeRetryInterval = time.Second
-
-const noBackoffCap = 10
 
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	if err := e.bind(deps); err != nil {
@@ -351,7 +342,7 @@ func (e *engine) receive(ictx, hctx context.Context, d converge.Delivery, slots 
 	case slots <- struct{}{}:
 	case <-ictx.Done():
 		e.setDepth(-1)
-		e.neutral(d, m)
+		e.neutral(context.WithoutCancel(ictx), d, m)
 		return
 	}
 	wg.Add(1)
@@ -371,45 +362,25 @@ func (e *engine) setDepth(delta int) {
 	e.deps.Observer.Observe(converge.QueueDepth{Job: e.cfg.info.name, Queue: e.cfg.info.queue, Depth: depth})
 }
 
-func logicalBase(m converge.Message) (int, bool) {
-	raw, ok := m.Headers[converge.HeaderAttempt]
-	if !ok {
-		return 0, true
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 0 || n > math.MaxInt/2 {
-		return 0, false
-	}
-	return n, true
-}
-
 func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, converge.DeadLetterReason) {
+	env := newEnvelope(d, m)
+	attempt, ok := env.attempt()
 	meta := Meta{
 		Task:        e.cfg.info.name,
 		Queue:       e.cfg.info.queue,
-		MessageID:   m.Headers[converge.HeaderMessageID],
+		MessageID:   env.messageID(),
+		Attempt:     attempt,
 		MaxAttempts: e.cfg.retry.MaxAttempts,
-		EnqueuedAt:  d.EnqueuedAt(),
+		EnqueuedAt:  env.enqueuedAt(),
 		Headers:     maps.Clone(m.Headers),
 	}
-	if meta.MessageID == "" {
-		sum := sha256.New()
-		sum.Write([]byte(m.Kind))
-		sum.Write(m.Payload)
-		meta.MessageID = "anon-" + hex.EncodeToString(sum.Sum(nil)[:16])
-	}
-	if ts, err := time.Parse(time.RFC3339Nano, m.Headers[converge.HeaderEnqueuedAt]); err == nil {
-		meta.EnqueuedAt = ts
-	}
-	base, ok := logicalBase(m)
-	meta.Attempt = base + d.Attempt()
 	if !e.durable() {
 		return meta, converge.DeadLetterReason{}
 	}
 	if m.Kind != e.cfg.info.name {
 		return meta, converge.DeadLetterWrongKind
 	}
-	if m.Headers[converge.HeaderSchemaVersion] != strconv.Itoa(e.cfg.info.version) {
+	if env.schemaVersion() != strconv.Itoa(e.cfg.info.version) {
 		return meta, converge.DeadLetterSchemaVersion
 	}
 	if !ok {
@@ -437,7 +408,7 @@ func (e *engine) process(hctx context.Context, d converge.Delivery, m converge.M
 	}
 	if err := e.limit.Wait(hctx); err != nil {
 		close(stopHB)
-		e.neutral(d, m)
+		e.neutral(sctx, d, m)
 		return
 	}
 	start := e.deps.Clock.Now()
@@ -478,7 +449,7 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		}
 	}
 	if hctx.Err() != nil {
-		e.neutral(d, m)
+		e.neutral(sctx, d, m)
 		return
 	}
 	e.recordFailure()
@@ -490,21 +461,11 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		e.deadLetter(sctx, d, meta, m, converge.DeadLetterMaxAttempts, err)
 		return
 	}
-	d.Nack(sctx, e.retryDelay(meta.Attempt))
+	d.Nack(sctx, e.retryCurve().Delay(meta.Attempt))
 }
 
-func (e *engine) retryDelay(attempt int) time.Duration {
-	d := e.cfg.retry.MinBackoff
-	for i := 1; i < attempt; i++ {
-		if d >= e.cfg.retry.MaxBackoff/2 {
-			return backoff.Jitter(e.cfg.retry.MaxBackoff)
-		}
-		d *= 2
-	}
-	if d >= e.cfg.retry.MaxBackoff {
-		return backoff.Jitter(e.cfg.retry.MaxBackoff)
-	}
-	return backoff.Jitter(d)
+func (e *engine) retryCurve() backoff.Curve {
+	return backoff.Curve{Min: e.cfg.retry.MinBackoff, Max: e.cfg.retry.MaxBackoff}
 }
 
 func (e *engine) recordSuccess() {
@@ -580,23 +541,17 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 		e.deadLetter(sctx, d, meta, m, converge.DeadLetterMaxAge, nil)
 		return
 	}
-	snoozes, _ := strconv.Atoi(m.Headers[converge.HeaderSnoozes])
-	snoozes++
+	env := newEnvelope(d, m)
+	snoozes := env.snoozes() + 1
 	delay := backoff.Floor(in)
-	if snoozes > noBackoffCap {
-		delay = e.retryDelay(snoozes - noBackoffCap)
+	if snoozes > backoff.NoBackoffCap {
+		delay = e.retryCurve().Delay(snoozes - backoff.NoBackoffCap)
 		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.info.name, ID: meta.MessageID, Consecutive: snoozes})
 	}
 	if delay > remaining {
 		delay = remaining
 	}
-	h := maps.Clone(m.Headers)
-	if h == nil {
-		h = map[string]string{}
-	}
-	h[converge.HeaderAttempt] = strconv.Itoa(meta.Attempt - 1)
-	h[converge.HeaderSnoozes] = strconv.Itoa(snoozes)
-	republished := converge.Message{Kind: m.Kind, Headers: h, Payload: m.Payload}
+	republished := env.forSnooze()
 	if err := e.mq.(converge.DelayedPublisher).PublishDelayed(sctx, e.cfg.info.queue, republished, delay); err != nil {
 		d.Nack(sctx, delay)
 		e.observeRun(meta, took, nil)
@@ -607,7 +562,7 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 }
 
 func (e *engine) leaseLoop(ctx context.Context) {
-	name := e.key("lease")
+	name := keys.WorkerLease(e.deps.Namespace, e.cfg.info.name)
 	retry := e.deps.LeaseTTL / 3
 	e.markReady()
 	for {
@@ -659,19 +614,6 @@ func (e *engine) extendLoop(ctx context.Context, d converge.Delivery, stop <-cha
 	}
 }
 
-type dlqRecord struct {
-	Task           string            `json:"task"`
-	Queue          string            `json:"queue"`
-	MessageID      string            `json:"message_id"`
-	Attempt        int               `json:"attempt"`
-	Reason         string            `json:"reason"`
-	Error          string            `json:"error,omitempty"`
-	EnqueuedAt     time.Time         `json:"enqueued_at"`
-	DeadLetteredAt time.Time         `json:"dead_lettered_at"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	Payload        []byte            `json:"payload,omitempty"`
-}
-
 func (e *engine) deadLetterOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason converge.DeadLetterReason, cause error) {
 	e.recordFailure()
 	if !e.durable() {
@@ -681,7 +623,7 @@ func (e *engine) deadLetterOrDrop(ctx context.Context, d converge.Delivery, meta
 }
 
 func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason converge.DeadLetterReason, cause error) {
-	rec := dlqRecord{
+	rec := DeadLetter{
 		Task:           e.cfg.info.name,
 		Queue:          e.cfg.info.queue,
 		MessageID:      meta.MessageID,
@@ -700,7 +642,7 @@ func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta,
 		err = e.deps.KV.Set(ctx, e.dlqKey(meta.MessageID), raw, 0)
 	}
 	if err != nil {
-		d.Nack(ctx, e.retryDelay(meta.Attempt))
+		d.Nack(ctx, e.retryCurve().Delay(meta.Attempt))
 		return
 	}
 	d.Ack(ctx)
@@ -717,23 +659,16 @@ func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta,
 	})
 }
 
-func (e *engine) neutral(d converge.Delivery, m converge.Message) {
+func (e *engine) neutral(ctx context.Context, d converge.Delivery, m converge.Message) {
 	if !e.durable() {
 		return
 	}
-	ctx := context.Background()
-	base, ok := logicalBase(m)
-	if !ok {
+	env := newEnvelope(d, m)
+	if _, ok := env.attempt(); !ok {
 		d.Nack(ctx, 0)
 		return
 	}
-	h := maps.Clone(m.Headers)
-	if h == nil {
-		h = map[string]string{}
-	}
-	h[converge.HeaderAttempt] = strconv.Itoa(base + d.Attempt() - 1)
-	republished := converge.Message{Kind: m.Kind, Headers: h, Payload: m.Payload}
-	if err := e.mq.Publish(ctx, e.cfg.info.queue, republished); err != nil {
+	if err := e.mq.Publish(ctx, e.cfg.info.queue, env.forNeutral()); err != nil {
 		d.Nack(ctx, 0)
 		return
 	}

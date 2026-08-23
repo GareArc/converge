@@ -1,8 +1,9 @@
 package ctl
 
 import (
-	"strings"
 	"time"
+
+	"github.com/GareArc/converge/internal/keys"
 )
 
 const (
@@ -34,20 +35,10 @@ type Request struct {
 	Timeout time.Duration
 }
 
-func key(ns string, parts ...string) string {
-	elems := make([]string, 0, len(parts)+2)
-	if ns != "" {
-		elems = append(elems, ns)
-	}
-	elems = append(elems, "converge", "ctl")
-	elems = append(elems, parts...)
-	return strings.Join(elems, "/")
-}
+func Queue(ns string) string { return keys.Ctl(ns) }
 
-func Queue(ns string) string { return key(ns) }
+func ResPrefix(ns, opID string) string { return keys.Ctl(ns, "res", opID) }
 
-func ResPrefix(ns, opID string) string { return key(ns, "res", opID) }
+func ResKey(ns, opID, replica string) string { return keys.Ctl(ns, "res", opID, replica) }
 
-func ResKey(ns, opID, replica string) string { return key(ns, "res", opID, replica) }
-
-func PausedKey(ns, job string) string { return key(ns, "paused", job) }
+func PausedKey(ns, job string) string { return keys.Ctl(ns, "paused", job) }

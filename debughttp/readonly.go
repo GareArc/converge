@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
-	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/wiring"
 )
 
 type jobView struct {
@@ -76,15 +76,7 @@ func listJobsHandler(rt *converge.Runtime) http.HandlerFunc {
 }
 
 func inspectJobs(rt *converge.Runtime) ([]converge.JobInfo, error) {
-	raw, err := hook.Inspect(rt)
-	if err != nil {
-		return nil, err
-	}
-	infos, ok := raw.([]converge.JobInfo)
-	if !ok {
-		return nil, fmt.Errorf("debughttp: inspect: unexpected type %T", raw)
-	}
-	return infos, nil
+	return wiring.Jobs(rt)
 }
 
 func lookupJob(rt *converge.Runtime, job string) (converge.JobInfo, bool, error) {

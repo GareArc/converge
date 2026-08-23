@@ -43,27 +43,34 @@ One stream per queue. `Consume` is `ConsumeGroup` against the reserved group
 `converge`; `ConsumeGroup` is a real consumer group (`XGROUP CREATE ... 0
 MKSTREAM`); `ConsumeBroadcast` is a per-subscriber `XREAD` from `$`.
 
-**Visibility is adapter-managed, not idle-time-based.** On delivery, the
-adapter scores the entry into a pending ZSET at `Clock.Now() + visibility`;
-`Extend` re-scores; `Ack` removes it. Redelivery claims due members from that
-ZSET (via a guarded Lua script so concurrent consumers never double-claim)
-and hands them to the stream with `XCLAIM` — never `XAUTOCLAIM` and never
-Redis's own idle-time bookkeeping. The same `visibility` window doubles as
-the retry grace for delayed-message release (below).
+**Visibility is adapter-managed, not idle-time-based.**
+`StreamsOpts.Visibility` defaults to `DefaultVisibility` whenever it is
+zero or negative — only a strictly positive duration overrides the
+default. On delivery, the adapter scores the entry into a pending ZSET at
+`Clock.Now() + visibility`; `Extend` re-scores; `Ack` removes it.
+Handle-driven settlement is attempt-guarded: a handle whose entry was
+reclaimed or acked cannot disturb the live attempt — its `Extend` reports
+the loss, its `Nack` and `Ack` are no-ops. Redelivery claims due members
+from that ZSET (via a guarded Lua script so concurrent consumers never
+double-claim) and hands them to the stream with `XCLAIM` — never
+`XAUTOCLAIM` and never Redis's own idle-time bookkeeping. The same
+`visibility` window doubles as the retry grace for delayed-message
+release (below).
 
-**A PEL-reconciliation pass runs every consume iteration.** The adapter
-lists the group's pending entries list (`XPENDING`) and, for any entry ID
-that is *not* already a member of the pending ZSET, adds it (`ZADD NX`) at
-`Clock.Now() + visibility`. This closes the window where a hard crash (or an
-interrupted tracking write) could otherwise strand a delivered-but-untracked
-entry in Redis's PEL forever, invisible to the ZSET-driven reclaim loop. A
-side effect of running this every iteration is that the rare **Ack race is
-self-healing**, not merely "impossible": if reconciliation resurrects an
-entry that was actually already acked, the next reclaim attempt tries to
-`XCLAIM` it, `XCLAIM` returns empty (Redis has already removed it from the
-PEL), and the adapter's cleanup step removes the resurrected ZSET/attempts
-bookkeeping. No message is redelivered from this path; the entry is inert
-from the moment it's resurrected.
+**A PEL-reconciliation pass walks the entire PEL every consume iteration,
+paginated.** The adapter lists the group's pending entries list (`XPENDING`)
+a page at a time, advancing the cursor past each page's last entry ID until
+the PEL is exhausted, and for any entry ID that is *not* already a member of
+the pending ZSET, adds it (`ZADD NX`) at `Clock.Now() + visibility`. This
+closes the window where a hard crash could otherwise strand a
+delivered-but-untracked entry in Redis's PEL forever, invisible to the
+ZSET-driven reclaim loop. A side effect of running this every iteration is
+that the rare **Ack race is self-healing**, not merely "impossible": if
+reconciliation resurrects an entry that was actually already acked, the
+next reclaim attempt tries to `XCLAIM` it, `XCLAIM` returns empty (Redis has
+already removed it from the PEL), and the adapter's cleanup step removes the
+resurrected ZSET/attempts bookkeeping. No message is redelivered from this
+path; the entry is inert from the moment it's resurrected.
 
 **Delayed publish is claim-then-act, not pop-then-publish.** `PublishDelayed`
 adds a JSON record — carrying a random per-call nonce, so two calls with
@@ -93,10 +100,11 @@ backlog" contract the port guarantees for any late-created group, applied to
 the recovery case. An operator who destroys a group on a live queue should
 expect a full replay.
 
-**Streams are unbounded in v1.** `Ack` is `XACK` plus bookkeeping cleanup
-(`ZREM`/`HDEL` on the adapter's own pending/attempts keys) — it never
-issues `XDEL`. Backlog retention is the contract a late-created group
-depends on, so the stream itself only grows; there is no trim option yet.
+**Streams are unbounded in v1.** `Ack` is an attempt-guarded `XACK` plus
+bookkeeping cleanup (`ZREM`/`HDEL` on the adapter's own pending/attempts
+keys) — it never issues `XDEL`. Backlog retention is the contract a
+late-created group depends on, so the stream itself only grows; there is no
+trim option yet.
 Operators should plan for unbounded Redis Streams growth per queue until a
 real consumer motivates a trim/retention knob.
 

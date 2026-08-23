@@ -700,7 +700,7 @@ func TestParkedMarksSurviveRestart(t *testing.T) {
 		}) == 1
 	})
 	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(context.Background(), te1.e.parkKey("a"))
+		_, ok, err := kv.Get(context.Background(), parkKey(te1.e, "a"))
 		return err == nil && ok
 	})
 	cancel1()
@@ -728,7 +728,7 @@ func TestParkedMarksSurviveRestart(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
 	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(context.Background(), te2.e.parkKey("a"))
+		_, ok, err := kv.Get(context.Background(), parkKey(te2.e, "a"))
 		return err == nil && !ok
 	})
 	cancel2()

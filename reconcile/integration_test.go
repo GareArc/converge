@@ -15,70 +15,9 @@ import (
 
 var start = time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
 
-type world struct {
-	rt    *converge.Runtime
-	clock *convergetest.Clock
-	rec   *convergetest.Recorder
-	done  chan error
-}
-
-func newWorld(t *testing.T) *world {
-	t.Helper()
-	clock := convergetest.NewClock(start)
-	rec := &convergetest.Recorder{}
-	rt, err := converge.New(converge.Options{
-		Namespace: "it",
-		MQ:        inmem.NewMQWithClock(clock),
-		Lease:     inmem.NewLeaseWithClock(clock),
-		KV:        inmem.NewKVWithClock(clock),
-		Observer:  rec,
-		Clock:     clock,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &world{rt: rt, clock: clock, rec: rec, done: make(chan error, 1)}
-}
-
-func (w *world) run(t *testing.T) context.CancelFunc {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		cancel()
-		w.stop(t)
-	})
-	go func() { w.done <- w.rt.Run(ctx) }()
-	select {
-	case <-w.rt.Ready():
-	case <-time.After(2 * time.Second):
-		t.Fatal("runtime never ready")
-	}
-	return cancel
-}
-
-func (w *world) stop(t *testing.T) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		select {
-		case err := <-w.done:
-			if err != nil {
-				t.Fatalf("Run returned %v", err)
-			}
-			return
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Run never returned")
-		}
-		w.clock.Advance(10 * time.Second)
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
-func successes(rec *convergetest.Recorder, job string) func() int {
+func successes(events func() []converge.Event, job string) func() int {
 	return func() int {
-		return rec.Count(func(e converge.Event) bool {
+		return eventCount(events(), func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
 			return ok && rc.Job == job && rc.Err == nil
 		})
@@ -97,14 +36,11 @@ func eventCount(events []converge.Event, match func(converge.Event) bool) int {
 
 func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	var mu sync.Mutex
 	workspaces := []string{"ws_1", "ws_2", "ws_3"}
 	synced := map[reconcile.ID]int{}
-	err = reconcile.Register(rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "workspace-credentials",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
@@ -151,13 +87,10 @@ func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 
 func TestTenMinuteTourPeriodic(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	var mu sync.Mutex
 	calls := 0
-	err = reconcile.Periodic(rt, "license-refresh", reconcile.Every(time.Hour), func(ctx context.Context) error {
+	err := reconcile.Periodic(rt, "license-refresh", reconcile.Every(time.Hour), func(ctx context.Context) error {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
@@ -190,11 +123,8 @@ func (foreignSignal) ControlSurface() converge.Surface { return converge.Surface
 
 func TestForeignSignalParksImmediatelyEndToEnd(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = reconcile.Register(rt, reconcile.Spec{
+	rt := h.Build(t)
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "confused",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			return foreignSignal{}
@@ -231,13 +161,10 @@ func TestForeignSignalParksImmediatelyEndToEnd(t *testing.T) {
 
 func TestMalformedHintsCountedAndDropped(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	var mu sync.Mutex
 	var got []reconcile.ID
-	err = reconcile.Register(rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "member-sync",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
@@ -360,10 +287,11 @@ func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 }
 
 func TestPokeRevivesParkedID(t *testing.T) {
-	w := newWorld(t)
+	h := convergetest.NewWith(t, convergetest.Options{Namespace: "it"})
+	rt := h.Build(t)
 	var mu sync.Mutex
 	healed := false
-	err := reconcile.Register(w.rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name:            "flaky",
 		DeadLetterAfter: 1,
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
@@ -386,9 +314,9 @@ func TestPokeRevivesParkedID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.run(t)
+	h.Runtime(t)
 	convergetest.Await(t, func() bool {
-		return w.rec.Count(func(e converge.Event) bool {
+		return eventCount(h.Events(), func(e converge.Event) bool {
 			dl, ok := e.(converge.IDParked)
 			return ok && dl.Job == "flaky" && dl.ID == "app_13"
 		}) == 1
@@ -396,29 +324,27 @@ func TestPokeRevivesParkedID(t *testing.T) {
 	mu.Lock()
 	healed = true
 	mu.Unlock()
-	if err := w.rt.Poke("flaky", "app_13"); err != nil {
+	if err := rt.Poke("flaky", "app_13"); err != nil {
 		t.Fatal(err)
 	}
-	convergetest.Await(t, func() bool { return successes(w.rec, "flaky")() >= 1 })
+	convergetest.Await(t, func() bool { return successes(h.Events, "flaky")() >= 1 })
 }
 
 func TestUnknownJobPokeFails(t *testing.T) {
-	w := newWorld(t)
-	if err := reconcile.Periodic(w.rt, "only-job", reconcile.Every(time.Hour), func(context.Context) error { return nil }); err != nil {
+	h := convergetest.NewWith(t, convergetest.Options{Namespace: "it"})
+	rt := h.Build(t)
+	if err := reconcile.Periodic(rt, "only-job", reconcile.Every(time.Hour), func(context.Context) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	w.run(t)
-	if err := w.rt.Poke("no-such-job", "x"); err == nil {
+	h.Runtime(t)
+	if err := rt.Poke("no-such-job", "x"); err == nil {
 		t.Fatal("poke on an unknown job must error")
 	}
 }
 
 func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	tr := reconcile.NewTracker(h.KV, "deploy")
 	ctx := context.Background()
 	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
@@ -427,7 +353,7 @@ func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
 	var mu sync.Mutex
 	var applied []reconcile.Version
 	raceOnce := true
-	err = reconcile.Register(rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name:     "deploy",
 		Versions: tr,
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
@@ -483,10 +409,7 @@ func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
 
 func TestScenarioBParkedRevivesOnMarkChanged(t *testing.T) {
 	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := h.Build(t)
 	tr := reconcile.NewTracker(h.KV, "deploy")
 	ctx := context.Background()
 	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
@@ -495,7 +418,7 @@ func TestScenarioBParkedRevivesOnMarkChanged(t *testing.T) {
 	var mu sync.Mutex
 	broken := true
 	converged := false
-	err = reconcile.Register(rt, reconcile.Spec{
+	err := reconcile.Register(rt, reconcile.Spec{
 		Name:            "deploy",
 		Versions:        tr,
 		DeadLetterAfter: 2,
