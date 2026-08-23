@@ -12,6 +12,7 @@ import (
 const (
 	maxMissedBoundaries = 1000
 	pageRetryMax        = time.Minute
+	infraPauseAttempt   = 1
 )
 
 var pageRetryCurve = backoff.Curve{Min: triggerRestartMin, Max: pageRetryMax}
@@ -169,7 +170,7 @@ func (e *engine) pauseOnInfraError(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case <-e.deps.Clock.After(triggerRestartCurve.Delay(1)):
+	case <-e.deps.Clock.After(pageRetryCurve.Delay(infraPauseAttempt)):
 		return true
 	}
 }

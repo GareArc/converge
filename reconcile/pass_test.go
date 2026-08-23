@@ -747,3 +747,54 @@ func TestRunPassNowDoesNotPanicWhenQueueNilsMidPass(t *testing.T) {
 		t.Fatal("RunPassNow never returned")
 	}
 }
+
+func TestSchedulePageRetryBacksOffAndResetsOnSuccess(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	var mu sync.Mutex
+	calls := 0
+	callCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls
+	}
+	steps := []struct {
+		fail bool
+		next string
+	}{
+		{fail: true},
+		{fail: true},
+		{fail: false, next: "cursor2"},
+		{fail: true},
+		{fail: false, next: ""},
+	}
+	src := IDsByPage(func(context.Context, string) ([]ID, string, error) {
+		mu.Lock()
+		st := steps[calls]
+		calls++
+		mu.Unlock()
+		if st.fail {
+			return nil, "", errors.New("page boom")
+		}
+		return nil, st.next, nil
+	})
+	startSchedule(t, te, src, Every(time.Hour))
+
+	attempt1Cap := pageRetryCurve.Min
+	attempt2Floor := pageRetryCurve.Min
+	attempt2Cap := 2 * pageRetryCurve.Min
+
+	convergetest.Await(t, func() bool { return callCount() >= 1 })
+
+	te.clock.Advance(attempt1Cap)
+	convergetest.Await(t, func() bool { return callCount() >= 2 })
+
+	te.clock.Advance(attempt2Floor - time.Millisecond)
+	convergetest.AssertStable(t, func() bool { return callCount() < 3 })
+	te.clock.Advance(attempt2Cap - attempt2Floor + time.Millisecond)
+	convergetest.Await(t, func() bool { return callCount() >= 3 })
+
+	convergetest.Await(t, func() bool { return callCount() >= 4 })
+
+	te.clock.Advance(attempt1Cap)
+	convergetest.Await(t, func() bool { return callCount() >= 5 })
+}
