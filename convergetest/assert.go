@@ -2,9 +2,7 @@ package convergetest
 
 import (
 	"bytes"
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/GareArc/converge"
 )
@@ -15,40 +13,26 @@ type TaskRef interface {
 	Encode(v any) ([]byte, error)
 }
 
-func (h *Harness) pollUntil(t testing.TB, check func() bool, describe func() string) {
-	t.Helper()
-	deadline := time.Now().Add(awaitDeadline)
-	for {
-		if check() {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s", describe())
-			return
-		}
-		time.Sleep(pollStep)
-	}
-}
-
 func (h *Harness) AssertReconciled(t testing.TB, job, id string) {
 	t.Helper()
 	if !h.ensureRunning(t) {
 		return
 	}
-	h.pollUntil(t,
-		func() bool {
-			for _, e := range h.rec.Events() {
-				if rc, ok := e.(converge.RunCompleted); ok && rc.Job == job && rc.ID == id && rc.Err == nil {
-					return true
-				}
-			}
-			return false
-		},
-		func() string {
+	pollUntil(t, pollSpec{
+		deadline: awaitDeadline,
+		step:     pollStep,
+		fail: func() {
 			events := h.rec.Events()
-			return fmt.Sprintf("convergetest: AssertReconciled(%q, %q): not observed; saw %d event(s): %+v", job, id, len(events), events)
+			t.Fatalf("convergetest: AssertReconciled(%q, %q): not observed; saw %d event(s): %+v", job, id, len(events), events)
 		},
-	)
+	}, func() bool {
+		for _, e := range h.rec.Events() {
+			if rc, ok := e.(converge.RunCompleted); ok && rc.Job == job && rc.ID == id && rc.Err == nil {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 func (h *Harness) AssertParked(t testing.TB, job, id string) {
@@ -56,20 +40,21 @@ func (h *Harness) AssertParked(t testing.TB, job, id string) {
 	if !h.ensureRunning(t) {
 		return
 	}
-	h.pollUntil(t,
-		func() bool {
-			for _, e := range h.rec.Events() {
-				if p, ok := e.(converge.IDParked); ok && p.Job == job && p.ID == id {
-					return true
-				}
-			}
-			return false
-		},
-		func() string {
+	pollUntil(t, pollSpec{
+		deadline: awaitDeadline,
+		step:     pollStep,
+		fail: func() {
 			events := h.rec.Events()
-			return fmt.Sprintf("convergetest: AssertParked(%q, %q): not observed; saw %d event(s): %+v", job, id, len(events), events)
+			t.Fatalf("convergetest: AssertParked(%q, %q): not observed; saw %d event(s): %+v", job, id, len(events), events)
 		},
-	)
+	}, func() bool {
+		for _, e := range h.rec.Events() {
+			if p, ok := e.(converge.IDParked); ok && p.Job == job && p.ID == id {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 func (h *Harness) AssertEnqueued(t testing.TB, task TaskRef, want any) {
@@ -84,18 +69,19 @@ func (h *Harness) AssertEnqueued(t testing.TB, task TaskRef, want any) {
 	}
 	queue := task.Queue()
 	kind := task.Name()
-	h.pollUntil(t,
-		func() bool {
-			for _, m := range h.MQ.Published(queue) {
-				if m.Kind == kind && bytes.Equal(m.Payload, payload) {
-					return true
-				}
-			}
-			return false
-		},
-		func() string {
+	pollUntil(t, pollSpec{
+		deadline: awaitDeadline,
+		step:     pollStep,
+		fail: func() {
 			msgs := h.MQ.Published(queue)
-			return fmt.Sprintf("convergetest: AssertEnqueued(%q, queue %q): not found; saw %d message(s): %+v", kind, queue, len(msgs), msgs)
+			t.Fatalf("convergetest: AssertEnqueued(%q, queue %q): not found; saw %d message(s): %+v", kind, queue, len(msgs), msgs)
 		},
-	)
+	}, func() bool {
+		for _, m := range h.MQ.Published(queue) {
+			if m.Kind == kind && bytes.Equal(m.Payload, payload) {
+				return true
+			}
+		}
+		return false
+	})
 }
