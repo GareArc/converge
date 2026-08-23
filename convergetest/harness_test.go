@@ -472,6 +472,36 @@ func TestNewWithCustomKVReachesRuntime(t *testing.T) {
 	})
 }
 
+func TestNewWithCustomLeaseReachesRuntime(t *testing.T) {
+	var captured *inmem.Lease
+	h := convergetest.NewWith(t, convergetest.Options{
+		Lease: func(clock *convergetest.Clock) converge.Lease {
+			lease := inmem.NewLeaseWithClock(clock)
+			captured = lease
+			return lease
+		},
+	})
+	if h.Lease != nil {
+		t.Fatalf("h.Lease = %v, want nil when a custom Lease constructor is supplied", h.Lease)
+	}
+	if h.MQ == nil {
+		t.Fatal("h.MQ = nil, want the wrapped default MQ (only Lease was customized)")
+	}
+
+	rt, err := converge.New(h.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk := worker.NewTask[string]("job", worker.TaskOpts{})
+	err = worker.Handle(rt, tk, func(context.Context, string) error { return nil }, worker.HandleOpts{RunMode: converge.OnOneReplica})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+
+	convergetest.Await(t, func() bool { return len(captured.Names()) == 1 })
+}
+
 func TestNewWithZeroOptionsMatchesNew(t *testing.T) {
 	hDefault := convergetest.New(t)
 	hZero := convergetest.NewWith(t, convergetest.Options{})
@@ -519,6 +549,64 @@ func TestStopReturnsNilOnCleanShutdownWithoutDoubleFatal(t *testing.T) {
 	}
 }
 
+func TestEventsReadableAfterStop(t *testing.T) {
+	h := convergetest.New(t)
+	rt, err := converge.New(h.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = reconcile.Register(rt, reconcile.Spec{
+		Name: "steady",
+		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+			return nil
+		}),
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
+				return []string{"id"}, nil
+			}), reconcile.Every(time.Hour)),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	h.AssertReconciled(t, "steady", "id")
+
+	if err := h.Stop(t); err != nil {
+		t.Fatalf("Stop returned %v, want nil", err)
+	}
+
+	events := h.Events()
+	if len(events) == 0 {
+		t.Fatal("Events() after Stop returned nothing, want the recorded event history")
+	}
+}
+
+func TestDrivingVerbAfterStopFatalsNamingCause(t *testing.T) {
+	fake := &fakeTB{}
+	t.Cleanup(fake.runCleanups)
+	h := convergetest.NewWith(fake, convergetest.Options{})
+	if _, err := converge.New(h.Options()); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Stop(fake); err != nil {
+		t.Fatalf("Stop returned %v, want nil", err)
+	}
+
+	h.Wake("some-job", "some-id")
+
+	msgs := fake.messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected a driving verb called after Stop to Fatalf")
+	}
+	if !strings.Contains(msgs[0], "stopped via Stop(t)") {
+		t.Fatalf("Fatalf message = %q, want mention that the harness was explicitly stopped", msgs[0])
+	}
+	if strings.Contains(msgs[0], "exited early") {
+		t.Fatalf("Fatalf message = %q, must not use the crash wording for a deliberate Stop", msgs[0])
+	}
+}
+
 func TestRuntimeReturnsAttachedRuntime(t *testing.T) {
 	h := convergetest.New(t)
 	rt, err := converge.New(h.Options())
@@ -528,6 +616,39 @@ func TestRuntimeReturnsAttachedRuntime(t *testing.T) {
 	got := h.Runtime(t)
 	if got != rt {
 		t.Fatalf("Runtime(t) = %p, want %p (the attached runtime)", got, rt)
+	}
+}
+
+func TestBuildReturnsUnstartedRuntime(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	if rt == nil {
+		t.Fatal("Build(t) = nil, want a constructed runtime")
+	}
+	select {
+	case <-rt.Ready():
+		t.Fatal("Build(t) must not start the runtime; Ready() fired without a driving verb")
+	default:
+	}
+	if got := h.Runtime(t); got != rt {
+		t.Fatalf("Runtime(t) = %p, want %p (the same runtime Build(t) returned, now started)", got, rt)
+	}
+}
+
+func TestBuildFatalsOnConstructionError(t *testing.T) {
+	fake := &fakeTB{}
+	t.Cleanup(fake.runCleanups)
+	h := convergetest.NewWith(fake, convergetest.Options{LeaseTTL: -time.Second})
+	rt := h.Build(fake)
+	if rt != nil {
+		t.Fatalf("Build(t) = %v, want nil on a construction error", rt)
+	}
+	msgs := fake.messages()
+	if len(msgs) == 0 {
+		t.Fatal("expected Build to Fatalf on a converge.New error")
+	}
+	if !strings.Contains(msgs[0], "converge.New(h.Options())") {
+		t.Fatalf("Fatalf message = %q, want mention of converge.New(h.Options())", msgs[0])
 	}
 }
 

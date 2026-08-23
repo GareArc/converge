@@ -67,60 +67,15 @@ func dlqRecordAt(t *testing.T, kv converge.KV, key string) DeadLetter {
 	return rec
 }
 
-type replica struct {
-	rt    *converge.Runtime
-	clock *convergetest.Clock
-	rec   *convergetest.Recorder
-	done  chan error
-}
-
-func (r *replica) run(t *testing.T) {
-	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		cancel()
-		r.stop(t)
-	})
-	go func() { r.done <- r.rt.Run(ctx) }()
-	select {
-	case <-r.rt.Ready():
-	case <-time.After(2 * time.Second):
-		t.Fatal("runtime never ready")
-	}
-}
-
-func (r *replica) stop(t *testing.T) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		select {
-		case err := <-r.done:
-			if err != nil {
-				t.Fatalf("Run returned %v", err)
-			}
-			return
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Run never returned")
-		}
-		r.clock.Advance(10 * time.Second)
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
 func TestHandleRunsAndAcks(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
 	var runs int
 	var gotMeta Meta
 	var gotPayload string
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		mu.Lock()
 		defer mu.Unlock()
 		runs++
@@ -177,13 +132,10 @@ func TestHandleRunsAndAcks(t *testing.T) {
 
 func TestErrorRetriesWithBackoffThenDeadLetters(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return errors.New("boom")
 	}, HandleOpts{Retry: RetryPolicy{MaxAttempts: 3, MinBackoff: time.Second, MaxBackoff: time.Minute}})
@@ -242,14 +194,11 @@ func TestErrorRetriesWithBackoffThenDeadLetters(t *testing.T) {
 
 func TestMetaAttemptCountsTransportRedeliveries(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
 	var attempts []int
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		meta, _ := MetaFromContext(ctx)
 		mu.Lock()
 		attempts = append(attempts, meta.Attempt)
@@ -287,13 +236,10 @@ func TestMetaAttemptCountsTransportRedeliveries(t *testing.T) {
 
 func TestDecodeFailureDeadLettersImmediately(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var ran int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&ran, 1)
 		return nil
 	}, HandleOpts{})
@@ -350,13 +296,10 @@ func TestReceiptGuardsDeadLetter(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-			rt, err := converge.New(w.Options())
-			if err != nil {
-				t.Fatal(err)
-			}
+			rt := w.Build(t)
 			tk := NewTask[string]("job", TaskOpts{})
 			var ran int32
-			err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+			err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 				atomic.AddInt32(&ran, 1)
 				return nil
 			}, HandleOpts{})
@@ -442,13 +385,10 @@ func TestDeadLetterKVFailureNacksAndRecovers(t *testing.T) {
 			return fkv
 		},
 	})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var ran int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&ran, 1)
 		return errors.New("boom")
 	}, HandleOpts{Retry: RetryPolicy{MaxAttempts: 1, MinBackoff: time.Second, MaxBackoff: time.Minute}})
@@ -486,14 +426,11 @@ func TestDeadLetterKVFailureNacksAndRecovers(t *testing.T) {
 
 func TestQueueDepthEvents(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	gate := make(chan struct{})
 	entered := make(chan struct{})
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		close(entered)
 		<-gate
 		return nil
@@ -534,16 +471,13 @@ func TestQueueDepthEvents(t *testing.T) {
 
 func TestConcurrencyBounds(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	gate := make(chan struct{})
 	var mu sync.Mutex
 	running := 0
 	completed := 0
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		mu.Lock()
 		running++
 		mu.Unlock()
@@ -588,13 +522,10 @@ func TestConcurrencyBounds(t *testing.T) {
 
 func TestDiscardAcksWithEvent(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return Discard{Reason: "gone"}
 	}, HandleOpts{})
@@ -637,15 +568,12 @@ func TestDiscardAcksWithEvent(t *testing.T) {
 
 func TestSnoozeRedeliversWithoutConsumingAttempt(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
 	var attempts []int
 	var headers map[string]string
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		meta, _ := MetaFromContext(ctx)
 		mu.Lock()
 		attempts = append(attempts, meta.Attempt)
@@ -695,13 +623,10 @@ func TestSnoozeRedeliversWithoutConsumingAttempt(t *testing.T) {
 
 func TestSnoozeFloorAndBackoffFallback(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return Snooze{In: 0}
 	}, HandleOpts{Retry: RetryPolicy{MinBackoff: time.Hour, MaxBackoff: 2 * time.Hour}})
@@ -730,13 +655,10 @@ func TestSnoozeFloorAndBackoffFallback(t *testing.T) {
 
 func TestSnoozeClampedToMaxAge(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return Snooze{In: time.Hour}
 	}, HandleOpts{Retry: RetryPolicy{MaxAge: 5 * time.Minute}})
@@ -788,15 +710,12 @@ func TestSnoozeClampedToMaxAge(t *testing.T) {
 
 func TestSnoozeWithSpentBudgetDeadLettersImmediately(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	entered := make(chan struct{})
 	gate := make(chan struct{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		close(entered)
 		<-gate
@@ -865,13 +784,10 @@ func TestRetryDelayOverflowSafe(t *testing.T) {
 
 func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var ran int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&ran, 1)
 		return errors.New("boom")
 	}, HandleOpts{Retry: RetryPolicy{MaxAttempts: 1, MinBackoff: time.Second, MaxBackoff: time.Minute}})
@@ -929,13 +845,10 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 
 func TestWrongSurfaceSignalDeadLetters(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return reconcile.CheckAgain{In: time.Second}
 	}, HandleOpts{})
@@ -980,25 +893,11 @@ func TestWrongSurfaceSignalDeadLetters(t *testing.T) {
 }
 
 func TestShutdownIsNeutral(t *testing.T) {
-	clock := convergetest.NewClock(wstart)
-	mq := inmem.NewMQWithClock(clock)
-	kv := inmem.NewKVWithClock(clock)
-	rec := &convergetest.Recorder{}
-	rt1, err := converge.New(converge.Options{
-		Namespace:    "wt",
-		MQ:           mq,
-		Lease:        inmem.NewLeaseWithClock(clock),
-		KV:           kv,
-		Observer:     rec,
-		Clock:        clock,
-		DrainTimeout: 100 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	w1 := convergetest.NewWith(t, convergetest.Options{Namespace: "wt", DrainTimeout: 100 * time.Millisecond})
+	rt1 := w1.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	started := make(chan struct{})
-	err = Handle(rt1, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt1, tk, func(ctx context.Context, payload string) error {
 		close(started)
 		<-ctx.Done()
 		return ctx.Err()
@@ -1007,15 +906,7 @@ func TestShutdownIsNeutral(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runCtx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	done := make(chan error, 1)
-	go func() { done <- rt1.Run(runCtx) }()
-	select {
-	case <-rt1.Ready():
-	case <-time.After(2 * time.Second):
-		t.Fatal("runtime never ready")
-	}
+	w1.Runtime(t)
 
 	p, err := ProducerFrom(rt1)
 	if err != nil {
@@ -1031,30 +922,10 @@ func TestShutdownIsNeutral(t *testing.T) {
 		t.Fatal("handler never started")
 	}
 
-	cancel()
-
-	var runErr error
-	gotDone := false
-	deadline := time.Now().Add(2 * time.Second)
-	for !gotDone {
-		select {
-		case runErr = <-done:
-			gotDone = true
-		default:
-		}
-		if gotDone {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("Run never returned")
-		}
-		clock.Advance(100 * time.Millisecond)
-		time.Sleep(2 * time.Millisecond)
-	}
-	if runErr != nil {
+	if runErr := w1.Stop(t); runErr != nil {
 		t.Fatalf("Run returned %v, want nil", runErr)
 	}
-	if n := rec.Count(func(e converge.Event) bool {
+	if n := eventCount(w1.Events(), func(e converge.Event) bool {
 		_, ok := e.(converge.RunCompleted)
 		return ok
 	}); n != 0 {
@@ -1063,13 +934,10 @@ func TestShutdownIsNeutral(t *testing.T) {
 
 	w2 := convergetest.NewWith(t, convergetest.Options{
 		Namespace: "wt",
-		MQ:        func(*convergetest.Clock) converge.MQ { return mq },
-		KV:        func(*convergetest.Clock) converge.KV { return kv },
+		MQ:        func(*convergetest.Clock) converge.MQ { return w1.MQ },
+		KV:        func(*convergetest.Clock) converge.KV { return w1.KV },
 	})
-	rt2, err := converge.New(w2.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt2 := w2.Build(t)
 
 	tk2 := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
@@ -1140,14 +1008,11 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 			return pmq
 		},
 	})
-	rt, err := converge.New(w1.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w1.Build(t)
 
 	tk := NewTask[string]("job", TaskOpts{})
 	started := make(chan struct{}, 8)
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		started <- struct{}{}
 		<-ctx.Done()
 		return ctx.Err()
@@ -1189,10 +1054,7 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 		MQ:        func(*convergetest.Clock) converge.MQ { return pmq },
 		KV:        func(*convergetest.Clock) converge.KV { return w1.KV },
 	})
-	rt2, err := converge.New(w2.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt2 := w2.Build(t)
 	tk2 := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
 	var attempts []int
@@ -1229,14 +1091,11 @@ func TestVisibilityHeartbeatExtends(t *testing.T) {
 			return cmq
 		},
 	})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	gate := make(chan struct{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		<-gate
 		atomic.AddInt32(&runs, 1)
 		return nil
@@ -1280,13 +1139,10 @@ func (unknownWorkerSignal) ControlSurface() converge.Surface { return converge.S
 
 func TestUnknownWorkerSignalFallsBackToError(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return unknownWorkerSignal{}
 	}, HandleOpts{Retry: RetryPolicy{MaxAttempts: 3, MinBackoff: time.Second, MaxBackoff: time.Minute}})
@@ -1312,15 +1168,12 @@ func TestUnknownWorkerSignalFallsBackToError(t *testing.T) {
 
 func TestPointerOutcomeDispatch(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
 	discardRuns := 0
 	var snoozeAttempts []int
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		meta, _ := MetaFromContext(ctx)
 		switch payload {
 		case "discard-me":
@@ -1388,26 +1241,20 @@ func TestPointerOutcomeDispatch(t *testing.T) {
 	}
 }
 
-func newLeaseReplicaPair(t *testing.T) (*replica, *replica, *inmem.Lease) {
+func newLeaseHarnessPair(t *testing.T) (wa, wb *convergetest.Harness, lease *inmem.Lease) {
 	t.Helper()
 	clock := convergetest.NewClock(wstart)
 	mq := inmem.NewMQWithClock(clock)
 	kv := inmem.NewKVWithClock(clock)
-	lease := inmem.NewLeaseWithClock(clock)
-	build := func() *replica {
-		rec := &convergetest.Recorder{}
-		rt, err := converge.New(converge.Options{
+	lease = inmem.NewLeaseWithClock(clock)
+	build := func() *convergetest.Harness {
+		return convergetest.NewWith(t, convergetest.Options{
 			Namespace: "wt",
-			MQ:        mq,
-			Lease:     lease,
-			KV:        kv,
-			Observer:  rec,
-			Clock:     clock,
+			LeaseTTL:  30 * time.Second,
+			MQ:        func(*convergetest.Clock) converge.MQ { return mq },
+			KV:        func(*convergetest.Clock) converge.KV { return kv },
+			Lease:     func(*convergetest.Clock) converge.Lease { return lease },
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return &replica{rt: rt, clock: clock, rec: rec, done: make(chan error, 1)}
 	}
 	return build(), build(), lease
 }
@@ -1418,7 +1265,9 @@ func leaseAcquired(e converge.Event) bool {
 }
 
 func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
-	wa, wb, _ := newLeaseReplicaPair(t)
+	wa, wb, _ := newLeaseHarnessPair(t)
+	rta := wa.Build(t)
+	rtb := wb.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
 	var aRuns, bRuns int
@@ -1430,16 +1279,16 @@ func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
 			return nil
 		}
 	}
-	if err := Handle(wa.rt, tk, handlerFor(&aRuns), HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
+	if err := Handle(rta, tk, handlerFor(&aRuns), HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Handle(wb.rt, tk, handlerFor(&bRuns), HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
+	if err := Handle(rtb, tk, handlerFor(&bRuns), HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
 		t.Fatal(err)
 	}
-	wa.run(t)
-	wb.run(t)
+	wa.Runtime(t)
+	wb.Runtime(t)
 
-	p, err := ProducerFrom(wa.rt)
+	p, err := ProducerFrom(rta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1465,13 +1314,15 @@ func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
 	if !leaderOnly {
 		t.Fatalf("expected exactly one replica to handle all 3 runs, got aRuns=%d bRuns=%d", gotA, gotB)
 	}
-	if n := wa.rec.Count(leaseAcquired) + wb.rec.Count(leaseAcquired); n != 1 {
+	if n := eventCount(wa.Events(), leaseAcquired) + eventCount(wb.Events(), leaseAcquired); n != 1 {
 		t.Fatalf("LeaseTransition{Acquired:true} count across both replicas = %d, want 1", n)
 	}
 }
 
 func TestLeaseLossCancelsInFlight(t *testing.T) {
-	wa, wb, lease := newLeaseReplicaPair(t)
+	wa, wb, lease := newLeaseHarnessPair(t)
+	rta := wa.Build(t)
+	rtb := wb.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	started := make(chan struct{})
 	var startOnce sync.Once
@@ -1490,16 +1341,16 @@ func TestLeaseLossCancelsInFlight(t *testing.T) {
 		}
 		return nil
 	}
-	if err := Handle(wa.rt, tk, handler, HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
+	if err := Handle(rta, tk, handler, HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Handle(wb.rt, tk, handler, HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
+	if err := Handle(rtb, tk, handler, HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
 		t.Fatal(err)
 	}
-	wa.run(t)
-	wb.run(t)
+	wa.Runtime(t)
+	wb.Runtime(t)
 
-	p, err := ProducerFrom(wa.rt)
+	p, err := ProducerFrom(rta)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1514,7 +1365,7 @@ func TestLeaseLossCancelsInFlight(t *testing.T) {
 
 	lease.Expire("wt/converge/worker/job/lease")
 
-	convergetest.AdvanceUntil(t, wa.clock, 3*time.Second, func() bool {
+	convergetest.AdvanceUntil(t, wa.Clock, 3*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(attempts) >= 2
@@ -1534,10 +1385,7 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 			Namespace: "wt",
 			MQ:        func(*convergetest.Clock) converge.MQ { return mq },
 		})
-		rt, err := converge.New(h.Options())
-		if err != nil {
-			t.Fatal(err)
-		}
+		rt := h.Build(t)
 		return h, rt
 	}
 	wa, rta := build()
@@ -1678,13 +1526,10 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 
 func TestPausedConsumesNothing(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return nil
 	}, HandleOpts{Paused: true})
@@ -1707,10 +1552,7 @@ func TestPausedConsumesNothing(t *testing.T) {
 		MQ:        func(*convergetest.Clock) converge.MQ { return w.MQ },
 		KV:        func(*convergetest.Clock) converge.KV { return w.KV },
 	})
-	rt2, err := converge.New(w2.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt2 := w2.Build(t)
 	tk2 := NewTask[string]("job", TaskOpts{})
 	var runs2 int32
 	err = Handle(rt2, tk2, func(ctx context.Context, payload string) error {
@@ -1726,10 +1568,7 @@ func TestPausedConsumesNothing(t *testing.T) {
 
 func TestInitialPausedResumesAndStartsConsuming(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	var runs int32
 	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(ctx context.Context, payload []byte) error {
 		atomic.AddInt32(&runs, 1)
@@ -1758,10 +1597,7 @@ func TestInitialPausedResumesAndStartsConsuming(t *testing.T) {
 
 func TestPauseMidStreamStopsDeliveryThenResumeDeliversBacklog(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
@@ -1816,10 +1652,7 @@ func TestPauseMidStreamStopsDeliveryThenResumeDeliversBacklog(t *testing.T) {
 
 func TestPauseWithBlockedHandlerDrainTimeoutCancelsHandlerCtx(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt", DrainTimeout: 100 * time.Millisecond})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	entered := make(chan struct{})
 	canceled := make(chan struct{})
 	var startOnce, cancelOnce sync.Once
@@ -1863,10 +1696,7 @@ func TestPauseWithBlockedHandlerDrainTimeoutCancelsHandlerCtx(t *testing.T) {
 
 func TestOnOneReplicaPauseReleasesLease(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(context.Context, []byte) error { return nil }, HandleOpts{RunMode: converge.OnOneReplica})
 	if err != nil {
 		t.Fatal(err)
@@ -1894,10 +1724,7 @@ func TestOnOneReplicaPauseReleasesLease(t *testing.T) {
 
 func TestResumeDuringDrainDoesNotInterruptThenStartsNextCycle(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt", DrainTimeout: 200 * time.Millisecond})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var once sync.Once
@@ -1959,10 +1786,7 @@ func TestResumeDuringDrainDoesNotInterruptThenStartsNextCycle(t *testing.T) {
 
 func TestSetPausedSameValueIsNoOp(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(context.Context, []byte) error { return nil }, HandleOpts{RunMode: converge.OnOneReplica})
 	if err != nil {
 		t.Fatal(err)
@@ -2005,13 +1829,10 @@ func TestInfoPausedReflectsLiveState(t *testing.T) {
 
 func TestRateLimitSpacesRuns(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return nil
 	}, HandleOpts{Concurrency: 4, RateLimit: converge.Rate{Events: 1, Per: time.Second}})
@@ -2036,14 +1857,11 @@ func TestRateLimitSpacesRuns(t *testing.T) {
 
 func TestRateLimitWaitIsHeartbeatCovered(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
 	runs := map[string]int{}
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		mu.Lock()
 		runs[payload]++
 		mu.Unlock()
@@ -2086,14 +1904,11 @@ func TestRateLimitWaitIsHeartbeatCovered(t *testing.T) {
 
 func TestPanicIsRecoveredAsError(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
 	var attempts []int
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		meta, _ := MetaFromContext(ctx)
 		mu.Lock()
 		attempts = append(attempts, meta.Attempt)
@@ -2171,29 +1986,20 @@ func (l *failExtendLease) TryAcquire(ctx context.Context, name string, ttl time.
 }
 
 func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
-	clock := convergetest.NewClock(wstart)
-	mq := inmem.NewMQWithClock(clock)
-	kv := inmem.NewKVWithClock(clock)
-	lease := &failExtendLease{inner: inmem.NewLeaseWithClock(clock)}
-	rec := &convergetest.Recorder{}
-	rt, err := converge.New(converge.Options{
+	w := convergetest.NewWith(t, convergetest.Options{
 		Namespace: "wt",
-		MQ:        mq,
-		Lease:     lease,
-		KV:        kv,
-		Observer:  rec,
-		Clock:     clock,
+		LeaseTTL:  30 * time.Second,
+		Lease: func(clock *convergetest.Clock) converge.Lease {
+			return &failExtendLease{inner: inmem.NewLeaseWithClock(clock)}
+		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	w := &replica{rt: rt, clock: clock, rec: rec, done: make(chan error, 1)}
+	rt := w.Build(t)
 
 	tk := NewTask[string]("job", TaskOpts{})
 	started := make(chan struct{})
 	canceled := make(chan struct{})
 	var startOnce, cancelOnce sync.Once
-	err = Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		startOnce.Do(func() { close(started) })
 		<-ctx.Done()
 		cancelOnce.Do(func() { close(canceled) })
@@ -2202,8 +2008,8 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.run(t)
-	p, err := ProducerFrom(w.rt)
+	w.Runtime(t)
+	p, err := ProducerFrom(rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2216,7 +2022,7 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 		t.Fatal("handler never started")
 	}
 
-	convergetest.AdvanceUntil(t, w.clock, 3*time.Second, func() bool {
+	convergetest.AdvanceUntil(t, w.Clock, 3*time.Second, func() bool {
 		select {
 		case <-canceled:
 			return true
@@ -2225,7 +2031,7 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 		}
 	})
 	convergetest.Await(t, func() bool {
-		return w.rec.Count(func(e converge.Event) bool {
+		return eventCount(w.Events(), func(e converge.Event) bool {
 			lt, ok := e.(converge.LeaseTransition)
 			return ok && !lt.Acquired
 		}) >= 1
@@ -2234,10 +2040,7 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 
 func TestQuietFlipsFalseWhileHandlerInFlight(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	gate := make(chan struct{})
 	entered := make(chan struct{})
 	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(ctx context.Context, payload []byte) error {

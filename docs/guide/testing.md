@@ -67,31 +67,54 @@ type Options struct {
 	DrainTimeout time.Duration
 	MQ           func(*convergetest.Clock) converge.MQ
 	KV           func(*convergetest.Clock) converge.KV
+	Lease        func(*convergetest.Clock) converge.Lease
 }
 ```
 
 `New(t)` is exactly `NewWith(t, Options{})`: every zero value resolves to
 today's default — Namespace `"test"`, the pinned huge `LeaseTTL`, and
-wrapped in-memory MQ/KV ports. `MQ` and `KV` are constructor funcs over the
-harness's own fake `*Clock`, so a custom port still runs on harness time.
+wrapped in-memory MQ/KV/Lease ports. `MQ`, `KV`, and `Lease` are constructor
+funcs over the harness's own fake `*Clock`, so a custom port still runs on
+harness time. A constructor can also ignore the `*Clock` it's handed and
+close over a port built elsewhere — the supported way to share one MQ, KV,
+or Lease across two harnesses (simulating two replicas, or a successor
+picking up after a restart).
 
-- **`h.MQ` and `h.KV` are nil when you supply a constructor.** Those public
-  fields — `h.MQ` a recording wrapper, `h.KV` the raw port — exist only for
-  the default ports the harness builds itself; when you hand it a custom
-  `MQ` or `KV`, the harness isn't holding that port, so it never fabricates
-  a stand-in for one it doesn't own. Two consequences follow, both by
+- **`h.MQ`, `h.KV`, and `h.Lease` are nil when you supply a constructor.**
+  Those public fields — `h.MQ` a recording wrapper, `h.KV` and `h.Lease` the
+  raw ports — exist only for the default ports the harness builds itself;
+  when you hand it a custom `MQ`, `KV`, or `Lease`, the harness isn't
+  holding that port, so it never fabricates a stand-in for one it doesn't
+  own. Capture the concrete value your constructor returns into an outer
+  variable instead. Two consequences follow for a custom `MQ`, both by
   design rather than by crash: **`Drain`'s quiet check degrades to
-  `hook.Quiet(rt)` alone** with a custom `MQ`, since `h.MQ.Idle()` is
-  unavailable; and **`h.AssertEnqueued` fails the test with a clear message**
-  instead of a nil-pointer panic, since it needs `h.MQ`'s recorded
-  publishes. Express both MQ-idle and was-it-enqueued conditions through
-  `convergetest.Await` instead when testing over a custom `MQ`.
+  `hook.Quiet(rt)` alone**, since `h.MQ.Idle()` is unavailable; and
+  **`h.AssertEnqueued` fails the test with a clear message** instead of a
+  nil-pointer panic, since it needs `h.MQ`'s recorded publishes. Express
+  both MQ-idle and was-it-enqueued conditions through `convergetest.Await`
+  instead when testing over a custom `MQ`.
+- **`h.Build(t) *converge.Runtime`** is `converge.New(h.Options())` with the
+  error check folded in — it Fatals the test on a construction error, so
+  call sites need none of their own. It never starts the runtime; use it
+  everywhere you'd otherwise write the `rt, err := converge.New(h.Options());
+  if err != nil { t.Fatal(err) }` boilerplate, which is most tests — you
+  still register reconcilers or worker handlers on the returned runtime
+  before anything drives it.
 - **`h.Runtime(t) *converge.Runtime`** returns the attached runtime,
   lazy-starting it like any other verb — useful when a surface (`debughttp`,
   for example) needs to mount handlers directly on the runtime rather than
-  going through a harness verb.
+  going through a harness verb. Use `Build` to construct without starting,
+  `Runtime` when you want the harness to ensure it's running.
 - **`h.Stop(t) error`** cancels the runtime, drives it to a clean stop, and
   returns `Run`'s error instead of failing the test on it. Calling `Stop`
   marks the harness settled, so the `Cleanup` the harness registers on
   first use skips its own stop-and-check — `Stop` is safe to call from
   inside a test body without a later, duplicate failure.
+- **After `Stop`, `h.Events()` still works; every other verb Fatals.**
+  Reading recorded state is meaningful once the runtime has exited —
+  `Events()` returns the recorder's final snapshot. Driving verbs
+  (`Runtime`, `Wake`, `Drain`, `RunPass`, and the `Assert*` family) all
+  require a live runtime, so calling any of them after `Stop` Fatals with a
+  message naming the actual cause — that the harness was explicitly
+  stopped — rather than the misleading "exited early" wording a genuine
+  mid-test crash produces.

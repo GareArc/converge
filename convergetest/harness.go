@@ -29,6 +29,7 @@ type Options struct {
 	DrainTimeout time.Duration
 	MQ           func(*Clock) converge.MQ
 	KV           func(*Clock) converge.KV
+	Lease        func(*Clock) converge.Lease
 }
 
 type Harness struct {
@@ -45,6 +46,7 @@ type Harness struct {
 	drainTimeout time.Duration
 	mq           converge.MQ
 	kv           converge.KV
+	lease        converge.Lease
 
 	mu       sync.Mutex
 	rt       *converge.Runtime
@@ -76,7 +78,6 @@ func NewWith(t testing.TB, o Options) *Harness {
 
 	h := &Harness{
 		Clock:        clock,
-		Lease:        WrapLease(inmem.NewLeaseWithClock(clock), namespace),
 		t:            t,
 		rec:          &Recorder{},
 		done:         make(chan struct{}),
@@ -101,6 +102,14 @@ func NewWith(t testing.TB, o Options) *Harness {
 		h.kv = kv
 	}
 
+	if o.Lease != nil {
+		h.lease = o.Lease(clock)
+	} else {
+		lease := WrapLease(inmem.NewLeaseWithClock(clock), namespace)
+		h.Lease = lease
+		h.lease = lease
+	}
+
 	return h
 }
 
@@ -109,7 +118,7 @@ func (h *Harness) Options() converge.Options {
 	o := converge.Options{
 		Namespace:    h.namespace,
 		MQ:           h.mq,
-		Lease:        h.Lease,
+		Lease:        h.lease,
 		KV:           h.kv,
 		Observer:     h.rec,
 		Clock:        h.Clock,
@@ -123,6 +132,16 @@ func (h *Harness) Options() converge.Options {
 		return o
 	}
 	return opts
+}
+
+func (h *Harness) Build(t testing.TB) *converge.Runtime {
+	t.Helper()
+	rt, err := converge.New(h.Options())
+	if err != nil {
+		t.Fatalf("convergetest: converge.New(h.Options()): %v", err)
+		return nil
+	}
+	return rt
 }
 
 func (h *Harness) attach(rt any) {
@@ -142,6 +161,14 @@ func (h *Harness) attach(rt any) {
 }
 
 func (h *Harness) ensureRunning(t testing.TB) bool {
+	return h.ensureRunningState(t, false)
+}
+
+func (h *Harness) ensureRunningReadOnly(t testing.TB) bool {
+	return h.ensureRunningState(t, true)
+}
+
+func (h *Harness) ensureRunningState(t testing.TB, allowStopped bool) bool {
 	t.Helper()
 	h.mu.Lock()
 	if !h.attached {
@@ -153,7 +180,7 @@ func (h *Harness) ensureRunning(t testing.TB) bool {
 		starting := h.starting
 		h.mu.Unlock()
 		<-starting
-		return h.checkAlive(t)
+		return h.checkAlive(t, allowStopped)
 	}
 	h.started = true
 	starting := make(chan struct{})
@@ -191,16 +218,24 @@ func (h *Harness) ensureRunning(t testing.TB) bool {
 		h.awaitStop(h.t)
 	})
 
-	return h.checkAlive(t)
+	return h.checkAlive(t, allowStopped)
 }
 
-func (h *Harness) checkAlive(t testing.TB) bool {
+func (h *Harness) checkAlive(t testing.TB, allowStopped bool) bool {
 	t.Helper()
 	select {
 	case <-h.done:
 		h.mu.Lock()
 		err := h.runErr
+		settled := h.settled
 		h.mu.Unlock()
+		if settled {
+			if allowStopped {
+				return true
+			}
+			t.Fatalf("convergetest: harness was stopped via Stop(t); this verb needs a running runtime, call Events to inspect recorded state instead")
+			return false
+		}
 		t.Fatalf("convergetest: runtime exited early: %v", err)
 		return false
 	default:
@@ -334,7 +369,7 @@ func (h *Harness) RunPass(t testing.TB, job string) {
 
 func (h *Harness) Events() []converge.Event {
 	h.t.Helper()
-	if !h.ensureRunning(h.t) {
+	if !h.ensureRunningReadOnly(h.t) {
 		return nil
 	}
 	return h.rec.Events()

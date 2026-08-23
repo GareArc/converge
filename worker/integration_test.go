@@ -56,10 +56,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 			return mq
 		},
 	})
-	consumerRt, err := converge.New(consumer.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	consumerRt := consumer.Build(t)
 
 	producerRt, err := converge.New(converge.Options{MQ: mq, Clock: consumer.Clock})
 	if err != nil {
@@ -215,13 +212,10 @@ func TestScenarioCEndToEnd(t *testing.T) {
 
 func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var runs int32
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&runs, 1)
 		return Snooze{In: time.Minute}
 	}, HandleOpts{Retry: RetryPolicy{MaxAge: 5 * time.Minute}})
@@ -265,15 +259,12 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 
 func TestProducerFromResolvesHandlerBinding(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	jobMQ := inmem.NewMQWithClock(w.Clock)
 
 	bound := NewTask[string]("bound", TaskOpts{})
 	var boundRuns int32
-	err = Handle(rt, bound, func(ctx context.Context, payload string) error {
+	err := Handle(rt, bound, func(ctx context.Context, payload string) error {
 		atomic.AddInt32(&boundRuns, 1)
 		return nil
 	}, HandleOpts{MQ: jobMQ})

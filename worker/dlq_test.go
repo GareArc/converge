@@ -19,12 +19,9 @@ import (
 
 func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		return errors.New("boom")
 	}, HandleOpts{Retry: RetryPolicy{MaxAttempts: 1, MinBackoff: time.Second, MaxBackoff: time.Minute}})
 	if err != nil {
@@ -91,10 +88,7 @@ func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
 
 func TestDLQGetAbsentReturnsNotFound(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	dlq, err := DLQFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
@@ -107,10 +101,7 @@ func TestDLQGetAbsentReturnsNotFound(t *testing.T) {
 
 func TestDLQRequeueAbsentReturnsNotFound(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	dlq, err := DLQFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
@@ -123,10 +114,7 @@ func TestDLQRequeueAbsentReturnsNotFound(t *testing.T) {
 
 func TestDLQListSurfacesUndecodableRecord(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	key := "wt/converge/worker/job/dlq/badid"
 	if err := w.KV.Set(context.Background(), key, []byte(`{not valid json`), 0); err != nil {
 		t.Fatal(err)
@@ -164,16 +152,13 @@ func TestDLQListSurfacesUndecodableRecord(t *testing.T) {
 
 func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
 	var mu sync.Mutex
 	var metas []Meta
 	var fail atomic.Bool
 	fail.Store(true)
-	err = Handle(rt, tk, func(ctx context.Context, payload string) error {
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		meta, _ := MetaFromContext(ctx)
 		mu.Lock()
 		metas = append(metas, meta)
@@ -266,10 +251,7 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 
 func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	rec := DeadLetter{
 		Task:           "job",
 		Queue:          "job",
@@ -364,10 +346,7 @@ func TestDLQListDedupesAcrossScanPages(t *testing.T) {
 			return dkv
 		},
 	})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	ctx := context.Background()
 	rec := DeadLetter{
 		Task:           "job",
@@ -403,10 +382,7 @@ func TestDLQListDedupesAcrossScanPages(t *testing.T) {
 
 func TestDLQPurgeAbsentIsNil(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	dlq, err := DLQFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
@@ -418,10 +394,7 @@ func TestDLQPurgeAbsentIsNil(t *testing.T) {
 
 func TestDLQPurgeAllReturnsCount(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
 		rec := DeadLetter{
@@ -469,10 +442,7 @@ func TestDLQFromNilRuntimeErrors(t *testing.T) {
 
 func TestDLQFromEmptyJobErrors(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	dlq, err := DLQFrom(rt, "")
 	if err == nil || dlq != nil {
 		t.Fatalf("dlq, err = %v, %v, want error and nil DLQ", dlq, err)
@@ -481,10 +451,7 @@ func TestDLQFromEmptyJobErrors(t *testing.T) {
 
 func TestDLQFromUnregisteredJobSucceeds(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	dlq, err := DLQFrom(rt, "ghost-job")
 	if err != nil {
 		t.Fatal(err)
@@ -510,10 +477,7 @@ func TestDLQRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 			return cmq
 		},
 	})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	rec := DeadLetter{
 		Task:           "job",
 		Queue:          "job",
@@ -566,10 +530,7 @@ func TestDLQRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 
 func TestDLQListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt, err := converge.New(w.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
+	rt := w.Build(t)
 	ctx := context.Background()
 	const total = 150
 	for i := 0; i < total; i++ {
