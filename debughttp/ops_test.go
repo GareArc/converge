@@ -65,16 +65,16 @@ func (s *opsStubJob) Stats() converge.JobStats { return converge.JobStats{Job: s
 
 func (s *opsStubJob) Info() converge.JobInfo { return converge.JobInfo{Job: s.name} }
 
-func registerGhostWorker(t *testing.T, w *world, job string) {
+func registerGhostWorker(t *testing.T, rt *converge.Runtime, job string) {
 	t.Helper()
 	tk := worker.NewTask[string](job, worker.TaskOpts{})
-	err := worker.Handle(w.rt, tk, func(ctx context.Context, payload string) error { return nil }, worker.HandleOpts{})
+	err := worker.Handle(rt, tk, func(ctx context.Context, payload string) error { return nil }, worker.HandleOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
 }
 
-func seedDeadLetter(t *testing.T, w *world, job, id string) {
+func seedDeadLetter(t *testing.T, w *convergetest.Harness, job, id string) {
 	t.Helper()
 	rec := struct {
 		Task           string            `json:"task"`
@@ -94,8 +94,8 @@ func seedDeadLetter(t *testing.T, w *world, job, id string) {
 		Attempt:        1,
 		Reason:         converge.DeadLetterMaxAttempts.String(),
 		Error:          "boom",
-		EnqueuedAt:     w.clock.Now(),
-		DeadLetteredAt: w.clock.Now(),
+		EnqueuedAt:     w.Clock.Now(),
+		DeadLetteredAt: w.Clock.Now(),
 		Payload:        []byte(`"hello"`),
 	}
 	raw, err := json.Marshal(rec)
@@ -103,7 +103,7 @@ func seedDeadLetter(t *testing.T, w *world, job, id string) {
 		t.Fatal(err)
 	}
 	key := "dt/converge/worker/" + job + "/dlq/" + id
-	if err := w.kv.Set(context.Background(), key, raw, 0); err != nil {
+	if err := w.KV.Set(context.Background(), key, raw, 0); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -201,9 +201,13 @@ func TestOpsVerbUnknownJob404(t *testing.T) {
 }
 
 func TestOpsDispatchErrorReturns502(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "job")
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{Timeout: time.Hour})
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerReconcileJob(t, rt, "job")
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{Timeout: time.Hour})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -221,13 +225,17 @@ func TestOpsDispatchErrorReturns502(t *testing.T) {
 }
 
 func TestOpsTimeoutReachesDispatch(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "job")
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerReconcileJob(t, rt, "job")
 
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{Timeout: 30 * time.Millisecond})
-	start := w.clock.Now()
-	rec := doOpsRequestAsync(t, w.clock, h, http.MethodPost, "/debug/jobs/job/poke?id=x")
-	elapsed := w.clock.Now().Sub(start)
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{Timeout: 30 * time.Millisecond})
+	start := w.Clock.Now()
+	rec := doOpsRequestAsync(t, w.Clock, h, http.MethodPost, "/debug/jobs/job/poke?id=x")
+	elapsed := w.Clock.Now().Sub(start)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -243,11 +251,15 @@ func TestOpsTimeoutReachesDispatch(t *testing.T) {
 }
 
 func TestOpsPauseStopsConsumingThenResumeRestores(t *testing.T) {
-	w := newWorld(t)
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
 	tk := worker.NewTask[string]("job", worker.TaskOpts{})
 	var mu sync.Mutex
 	var handled []string
-	err := worker.Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+	err = worker.Handle(rt, tk, func(ctx context.Context, payload string) error {
 		mu.Lock()
 		handled = append(handled, payload)
 		mu.Unlock()
@@ -256,9 +268,9 @@ func TestOpsPauseStopsConsumingThenResumeRestores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.run(t)
+	w.Runtime(t)
 
-	p, err := worker.ProducerFrom(w.rt)
+	p, err := worker.ProducerFrom(rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,8 +283,8 @@ func TestOpsPauseStopsConsumingThenResumeRestores(t *testing.T) {
 		return len(handled) == 1
 	})
 
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{Timeout: 200 * time.Millisecond})
-	pauseRec := doOpsRequestAsync(t, w.clock, h, http.MethodPost, "/debug/jobs/job/pause")
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{Timeout: 200 * time.Millisecond})
+	pauseRec := doOpsRequestAsync(t, w.Clock, h, http.MethodPost, "/debug/jobs/job/pause")
 	if pauseRec.Code != http.StatusOK {
 		t.Fatalf("pause status = %d, body = %s", pauseRec.Code, pauseRec.Body)
 	}
@@ -292,7 +304,7 @@ func TestOpsPauseStopsConsumingThenResumeRestores(t *testing.T) {
 		return len(handled) == 1
 	})
 
-	resumeRec := doOpsRequestAsync(t, w.clock, h, http.MethodPost, "/debug/jobs/job/resume")
+	resumeRec := doOpsRequestAsync(t, w.Clock, h, http.MethodPost, "/debug/jobs/job/resume")
 	if resumeRec.Code != http.StatusOK {
 		t.Fatalf("resume status = %d, body = %s", resumeRec.Code, resumeRec.Body)
 	}
@@ -304,17 +316,21 @@ func TestOpsPauseStopsConsumingThenResumeRestores(t *testing.T) {
 }
 
 func TestOpsDLQListRealDeadLetterHidesThenShowsPayload(t *testing.T) {
-	w := newWorld(t)
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
 	tk := worker.NewTask[string]("job", worker.TaskOpts{})
-	err := worker.Handle(w.rt, tk, func(ctx context.Context, payload string) error {
+	err = worker.Handle(rt, tk, func(ctx context.Context, payload string) error {
 		return errors.New("boom")
 	}, worker.HandleOpts{Retry: worker.RetryPolicy{MaxAttempts: 1, MinBackoff: time.Second, MaxBackoff: time.Minute}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	w.run(t)
+	w.Runtime(t)
 
-	p, err := worker.ProducerFrom(w.rt)
+	p, err := worker.ProducerFrom(rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +338,7 @@ func TestOpsDLQListRealDeadLetterHidesThenShowsPayload(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hide := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	hide := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 	var hideBody map[string]any
 	convergetest.Await(t, func() bool {
 		rec := doRequest(hide, http.MethodGet, "/debug/jobs/job/dlq")
@@ -350,7 +366,7 @@ func TestOpsDLQListRealDeadLetterHidesThenShowsPayload(t *testing.T) {
 		t.Fatalf("reason = %v, want %q", entry["reason"], converge.DeadLetterMaxAttempts.String())
 	}
 
-	show := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{ShowPayloads: true})
+	show := debughttp.OpsHandler(rt, debughttp.OpsOpts{ShowPayloads: true})
 	showRec := doRequest(show, http.MethodGet, "/debug/jobs/job/dlq")
 	var showBody map[string]any
 	decodeJSON(t, showRec, &showBody)
@@ -373,9 +389,13 @@ func TestOpsDLQListRealDeadLetterHidesThenShowsPayload(t *testing.T) {
 }
 
 func TestOpsDLQRequeueAbsent404(t *testing.T) {
-	w := newWorld(t)
-	registerGhostWorker(t, w, "job")
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerGhostWorker(t, rt, "job")
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 	rec := doRequest(h, http.MethodPost, "/debug/jobs/job/dlq/nope/requeue")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
@@ -383,11 +403,15 @@ func TestOpsDLQRequeueAbsent404(t *testing.T) {
 }
 
 func TestOpsDLQRequeuePresentSucceedsAndRemovesRecord(t *testing.T) {
-	w := newWorld(t)
-	registerGhostWorker(t, w, "job")
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerGhostWorker(t, rt, "job")
 	seedDeadLetter(t, w, "job", "id-1")
 
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 	rec := doRequest(h, http.MethodPost, "/debug/jobs/job/dlq/id-1/requeue")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
@@ -399,15 +423,19 @@ func TestOpsDLQRequeuePresentSucceedsAndRemovesRecord(t *testing.T) {
 		t.Fatalf("requeued = %v, want id-1", body["requeued"])
 	}
 
-	if _, ok, err := w.kv.Get(context.Background(), "dt/converge/worker/job/dlq/id-1"); err != nil || ok {
+	if _, ok, err := w.KV.Get(context.Background(), "dt/converge/worker/job/dlq/id-1"); err != nil || ok {
 		t.Fatalf("record still present after requeue: ok=%v err=%v", ok, err)
 	}
 }
 
 func TestOpsDLQPurgeOneAbsentIs200(t *testing.T) {
-	w := newWorld(t)
-	registerGhostWorker(t, w, "job")
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerGhostWorker(t, rt, "job")
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 	rec := doRequest(h, http.MethodDelete, "/debug/jobs/job/dlq/nope")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
@@ -420,12 +448,16 @@ func TestOpsDLQPurgeOneAbsentIs200(t *testing.T) {
 }
 
 func TestOpsDLQPurgeAllReturnsCount(t *testing.T) {
-	w := newWorld(t)
-	registerGhostWorker(t, w, "job")
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerGhostWorker(t, rt, "job")
 	seedDeadLetter(t, w, "job", "id-1")
 	seedDeadLetter(t, w, "job", "id-2")
 
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 	rec := doRequest(h, http.MethodDelete, "/debug/jobs/job/dlq")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
@@ -438,10 +470,14 @@ func TestOpsDLQPurgeAllReturnsCount(t *testing.T) {
 }
 
 func TestOpsDLQNonWorkerJob404NamesSurface(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "recon")
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerReconcileJob(t, rt, "recon")
 
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 	rec := doRequest(h, http.MethodGet, "/debug/jobs/recon/dlq")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
@@ -455,8 +491,12 @@ func TestOpsDLQNonWorkerJob404NamesSurface(t *testing.T) {
 }
 
 func TestOpsDLQUnknownJob404(t *testing.T) {
-	w := newWorld(t)
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 	for _, path := range []string{
 		"/debug/jobs/ghost/dlq",
 	} {
@@ -480,9 +520,13 @@ func TestOpsDLQUnknownJob404(t *testing.T) {
 }
 
 func TestOpsWrongMethod405(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "job")
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerReconcileJob(t, rt, "job")
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 	rec := doRequest(h, http.MethodGet, "/debug/jobs/job/poke")
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
@@ -490,9 +534,13 @@ func TestOpsWrongMethod405(t *testing.T) {
 }
 
 func TestOpsUnknownPath404(t *testing.T) {
-	w := newWorld(t)
-	registerReconcileJob(t, w, "job")
-	h := debughttp.OpsHandler(w.rt, debughttp.OpsOpts{})
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt, err := converge.New(w.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerReconcileJob(t, rt, "job")
+	h := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
 	rec := doRequest(h, http.MethodGet, "/debug/jobs/job/nonexistent")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
