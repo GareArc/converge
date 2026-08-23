@@ -23,6 +23,14 @@ const (
 	harnessLeaseTTL = 24 * 365 * time.Hour
 )
 
+type Options struct {
+	Namespace    string
+	LeaseTTL     time.Duration
+	DrainTimeout time.Duration
+	MQ           func(*Clock) converge.MQ
+	KV           func(*Clock) converge.KV
+}
+
 type Harness struct {
 	Clock *Clock
 	MQ    *MQ
@@ -32,6 +40,12 @@ type Harness struct {
 	t   testing.TB
 	rec *Recorder
 
+	namespace    string
+	leaseTTL     time.Duration
+	drainTimeout time.Duration
+	mq           converge.MQ
+	kv           converge.KV
+
 	mu       sync.Mutex
 	rt       *converge.Runtime
 	attached bool
@@ -39,32 +53,68 @@ type Harness struct {
 	starting chan struct{}
 	done     chan struct{}
 	runErr   error
+	cancel   context.CancelFunc
+	settled  bool
 }
 
 func New(t testing.TB) *Harness {
 	t.Helper()
-	clock := NewClock(epoch)
-	return &Harness{
-		Clock: clock,
-		MQ:    WrapMQ(inmem.NewMQWithClock(clock)),
-		KV:    inmem.NewKVWithClock(clock),
-		Lease: WrapLease(inmem.NewLeaseWithClock(clock), "test"),
-		t:     t,
-		rec:   &Recorder{},
-		done:  make(chan struct{}),
+	return NewWith(t, Options{})
+}
+
+func NewWith(t testing.TB, o Options) *Harness {
+	t.Helper()
+	namespace := o.Namespace
+	if namespace == "" {
+		namespace = "test"
 	}
+	leaseTTL := o.LeaseTTL
+	if leaseTTL == 0 {
+		leaseTTL = harnessLeaseTTL
+	}
+	clock := NewClock(epoch)
+
+	h := &Harness{
+		Clock:        clock,
+		Lease:        WrapLease(inmem.NewLeaseWithClock(clock), namespace),
+		t:            t,
+		rec:          &Recorder{},
+		done:         make(chan struct{}),
+		namespace:    namespace,
+		leaseTTL:     leaseTTL,
+		drainTimeout: o.DrainTimeout,
+	}
+
+	if o.MQ != nil {
+		h.mq = o.MQ(clock)
+	} else {
+		mq := WrapMQ(inmem.NewMQWithClock(clock))
+		h.MQ = mq
+		h.mq = mq
+	}
+
+	if o.KV != nil {
+		h.kv = o.KV(clock)
+	} else {
+		kv := inmem.NewKVWithClock(clock)
+		h.KV = kv
+		h.kv = kv
+	}
+
+	return h
 }
 
 func (h *Harness) Options() converge.Options {
 	h.t.Helper()
 	o := converge.Options{
-		Namespace: "test",
-		MQ:        h.MQ,
-		Lease:     h.Lease,
-		KV:        h.KV,
-		Observer:  h.rec,
-		Clock:     h.Clock,
-		LeaseTTL:  harnessLeaseTTL,
+		Namespace:    h.namespace,
+		MQ:           h.mq,
+		Lease:        h.Lease,
+		KV:           h.kv,
+		Observer:     h.rec,
+		Clock:        h.Clock,
+		LeaseTTL:     h.leaseTTL,
+		DrainTimeout: h.drainTimeout,
 	}
 	out := hook.AttachOptions(o, h.attach)
 	opts, ok := out.(converge.Options)
@@ -110,6 +160,7 @@ func (h *Harness) ensureRunning(t testing.TB) bool {
 	h.starting = starting
 	rt := h.rt
 	ctx, cancel := context.WithCancel(context.Background())
+	h.cancel = cancel
 	h.mu.Unlock()
 	defer close(starting)
 
@@ -131,6 +182,12 @@ func (h *Harness) ensureRunning(t testing.TB) bool {
 
 	h.t.Cleanup(func() {
 		cancel()
+		h.mu.Lock()
+		settled := h.settled
+		h.mu.Unlock()
+		if settled {
+			return
+		}
 		h.awaitStop(h.t)
 	})
 
@@ -151,7 +208,7 @@ func (h *Harness) checkAlive(t testing.TB) bool {
 	}
 }
 
-func (h *Harness) awaitStop(t testing.TB) {
+func (h *Harness) waitForStop(t testing.TB) error {
 	t.Helper()
 	ok := pollUntil(t, pollSpec{
 		deadline: stopDeadline,
@@ -167,14 +224,39 @@ func (h *Harness) awaitStop(t testing.TB) {
 		}
 	})
 	if !ok {
-		return
+		return nil
 	}
 	h.mu.Lock()
-	err := h.runErr
-	h.mu.Unlock()
-	if err != nil {
+	defer h.mu.Unlock()
+	return h.runErr
+}
+
+func (h *Harness) awaitStop(t testing.TB) {
+	t.Helper()
+	if err := h.waitForStop(t); err != nil {
 		t.Fatalf("convergetest: Run returned %v", err)
 	}
+}
+
+func (h *Harness) Runtime(t testing.TB) *converge.Runtime {
+	t.Helper()
+	if !h.ensureRunning(t) {
+		return nil
+	}
+	return h.runtime(t)
+}
+
+func (h *Harness) Stop(t testing.TB) error {
+	t.Helper()
+	if !h.ensureRunning(t) {
+		return nil
+	}
+	h.mu.Lock()
+	cancel := h.cancel
+	h.settled = true
+	h.mu.Unlock()
+	cancel()
+	return h.waitForStop(t)
 }
 
 func (h *Harness) runtime(t testing.TB) *converge.Runtime {
@@ -217,6 +299,9 @@ func (h *Harness) Drain(t testing.TB) {
 }
 
 func (h *Harness) quiet(rt *converge.Runtime) bool {
+	if h.MQ == nil {
+		return hook.Quiet(rt)
+	}
 	return h.MQ.Idle() && hook.Quiet(rt)
 }
 

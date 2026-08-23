@@ -11,6 +11,7 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
+	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/reconcile"
 	"github.com/GareArc/converge/worker"
 )
@@ -414,5 +415,118 @@ func TestSecondAttachFatals(t *testing.T) {
 	}
 	if !strings.Contains(msgs[0], "one runtime per Harness") {
 		t.Fatalf("Fatalf message = %q, want mention of one runtime per Harness", msgs[0])
+	}
+}
+
+func TestNewWithCustomNamespaceReachesOptions(t *testing.T) {
+	h := convergetest.NewWith(t, convergetest.Options{Namespace: "custom-ns"})
+	if _, err := converge.New(h.Options()); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.Options().Namespace; got != "custom-ns" {
+		t.Fatalf("Options().Namespace = %q, want %q", got, "custom-ns")
+	}
+}
+
+func TestNewWithCustomKVReachesRuntime(t *testing.T) {
+	var captured converge.KV
+	h := convergetest.NewWith(t, convergetest.Options{
+		KV: func(clock *convergetest.Clock) converge.KV {
+			kv := inmem.NewKVWithClock(clock)
+			captured = kv
+			return kv
+		},
+	})
+	if h.KV != nil {
+		t.Fatalf("h.KV = %v, want nil when a custom KV constructor is supplied", h.KV)
+	}
+	if h.MQ == nil {
+		t.Fatal("h.MQ = nil, want the wrapped default MQ (only KV was customized)")
+	}
+
+	rt, err := converge.New(h.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tk := worker.NewTask[string]("dead-job", worker.TaskOpts{})
+	err = worker.Handle(rt, tk, func(context.Context, string) error {
+		return errors.New("boom")
+	}, worker.HandleOpts{Retry: worker.RetryPolicy{MaxAttempts: 1, MinBackoff: time.Second, MaxBackoff: time.Minute}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := worker.ProducerFrom(rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tk.Enqueue(context.Background(), p, "payload", worker.EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+
+	convergetest.Await(t, func() bool {
+		keys, _, err := captured.Scan(context.Background(), "test/converge/worker/dead-job/dlq/", "")
+		return err == nil && len(keys) == 1
+	})
+}
+
+func TestNewWithZeroOptionsMatchesNew(t *testing.T) {
+	hDefault := convergetest.New(t)
+	hZero := convergetest.NewWith(t, convergetest.Options{})
+
+	oDefault := hDefault.Options()
+	oZero := hZero.Options()
+
+	if oZero.Namespace != oDefault.Namespace {
+		t.Fatalf("NewWith(t, Options{}).Options().Namespace = %q, want %q", oZero.Namespace, oDefault.Namespace)
+	}
+	if oZero.LeaseTTL != oDefault.LeaseTTL {
+		t.Fatalf("NewWith(t, Options{}).Options().LeaseTTL = %v, want %v", oZero.LeaseTTL, oDefault.LeaseTTL)
+	}
+	if oZero.DrainTimeout != oDefault.DrainTimeout {
+		t.Fatalf("NewWith(t, Options{}).Options().DrainTimeout = %v, want %v", oZero.DrainTimeout, oDefault.DrainTimeout)
+	}
+	if hZero.MQ == nil {
+		t.Fatal("NewWith(t, Options{}).MQ = nil, want the wrapped default MQ")
+	}
+	if hZero.KV == nil {
+		t.Fatal("NewWith(t, Options{}).KV = nil, want the wrapped default KV")
+	}
+	if hZero.Lease == nil {
+		t.Fatal("NewWith(t, Options{}).Lease = nil, want the wrapped default Lease")
+	}
+}
+
+func TestStopReturnsNilOnCleanShutdownWithoutDoubleFatal(t *testing.T) {
+	fake := &fakeTB{}
+	t.Cleanup(fake.runCleanups)
+	h := convergetest.NewWith(fake, convergetest.Options{})
+	if _, err := converge.New(h.Options()); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(fake)
+
+	err := h.Stop(fake)
+	if err != nil {
+		t.Fatalf("Stop returned %v, want nil on clean shutdown", err)
+	}
+
+	fake.runCleanups()
+	if msgs := fake.messages(); len(msgs) != 0 {
+		t.Fatalf("Cleanup Fatal'd after an explicit Stop: %v", msgs)
+	}
+}
+
+func TestRuntimeReturnsAttachedRuntime(t *testing.T) {
+	h := convergetest.New(t)
+	rt, err := converge.New(h.Options())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := h.Runtime(t)
+	if got != rt {
+		t.Fatalf("Runtime(t) = %p, want %p (the attached runtime)", got, rt)
 	}
 }

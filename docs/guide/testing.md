@@ -54,3 +54,41 @@ it:
   own `Observer` to capture events for assertions; if your test needs to
   inspect events, use the harness's recorder rather than supplying your own
   `Options.Observer`.
+
+## Custom ports, runtime access, and explicit stop
+
+`convergetest.NewWith(t, convergetest.Options{...})` widens `New(t)` with
+namespace, lease TTL, drain timeout, and port overrides:
+
+```go
+type Options struct {
+	Namespace    string
+	LeaseTTL     time.Duration
+	DrainTimeout time.Duration
+	MQ           func(*convergetest.Clock) converge.MQ
+	KV           func(*convergetest.Clock) converge.KV
+}
+```
+
+`New(t)` is exactly `NewWith(t, Options{})`: every zero value resolves to
+today's default — Namespace `"test"`, the pinned huge `LeaseTTL`, and
+wrapped in-memory MQ/KV ports. `MQ` and `KV` are constructor funcs over the
+harness's own fake `*Clock`, so a custom port still runs on harness time.
+
+- **`h.MQ` and `h.KV` are nil when you supply a constructor.** Those public
+  fields — `h.MQ` a recording wrapper, `h.KV` the raw port — exist only for
+  the default ports the harness builds itself; when you hand it a custom
+  `MQ` or `KV`, the harness isn't holding that port, so it never fabricates
+  a stand-in for one it doesn't own. Consequence: **`Drain`'s quiet check
+  degrades to `hook.Quiet(rt)` alone** with a custom `MQ`, since
+  `h.MQ.Idle()` is unavailable. Express MQ-idle conditions through
+  `convergetest.Await` instead when testing over a custom `MQ`.
+- **`h.Runtime(t) *converge.Runtime`** returns the attached runtime,
+  lazy-starting it like any other verb — useful when a surface (`debughttp`,
+  for example) needs to mount handlers directly on the runtime rather than
+  going through a harness verb.
+- **`h.Stop(t) error`** cancels the runtime, drives it to a clean stop, and
+  returns `Run`'s error instead of failing the test on it. Calling `Stop`
+  marks the harness settled, so the `Cleanup` the harness registers on
+  first use skips its own stop-and-check — `Stop` is safe to call from
+  inside a test body without a later, duplicate failure.
