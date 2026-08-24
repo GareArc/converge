@@ -119,3 +119,109 @@ func TestRunCompletedDoesNotAttributeID(t *testing.T) {
 		}
 	}
 }
+
+func sumPoints(t *testing.T, rm metricdata.ResourceMetrics, name string) []metricdata.DataPoint[int64] {
+	t.Helper()
+	s, ok := findMetric(t, rm, name).Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("%s is not an int64 sum", name)
+	}
+	return s.DataPoints
+}
+
+func TestDeadLetterCountsByReasonAndQueue(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.MessageDeadLettered{
+		Job:       "email",
+		Queue:     "email-q",
+		MessageID: "m-1",
+		Attempt:   5,
+		Reason:    converge.DeadLetterMaxAttempts,
+	})
+
+	pts := sumPoints(t, collect(t, r), "converge.dead_letters")
+	if len(pts) != 1 || pts[0].Value != 1 {
+		t.Fatalf("points = %+v, want a single point of 1", pts)
+	}
+	if got := attrValue(t, pts[0].Attributes, "converge.reason"); got != "max-attempts" {
+		t.Fatalf("converge.reason = %q, want max-attempts", got)
+	}
+	if got := attrValue(t, pts[0].Attributes, "converge.queue"); got != "email-q" {
+		t.Fatalf("converge.queue = %q, want email-q", got)
+	}
+	if _, ok := pts[0].Attributes.Value(attribute.Key("converge.message_id")); ok {
+		t.Fatal("message ID exported as an attribute; unbounded cardinality")
+	}
+}
+
+func TestDiscardsShareOneMetricSplitBySurface(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.WakeDiscarded{Job: "sync", ID: "ws-1", Reason: converge.DiscardParked})
+	obs.Observe(converge.MessageDiscarded{Job: "email", Queue: "email-q", MessageID: "m-1", Reason: "tenant 42 is gone"})
+
+	pts := sumPoints(t, collect(t, r), "converge.discarded")
+	if len(pts) != 2 {
+		t.Fatalf("points = %d, want 2 (one per surface)", len(pts))
+	}
+	bySurface := map[string]metricdata.DataPoint[int64]{}
+	for _, dp := range pts {
+		bySurface[attrValue(t, dp.Attributes, "converge.surface")] = dp
+	}
+	rec, ok := bySurface["reconcile"]
+	if !ok {
+		t.Fatal("no reconcile data point")
+	}
+	if got := attrValue(t, rec.Attributes, "converge.reason"); got != "parked" {
+		t.Fatalf("reconcile converge.reason = %q, want parked", got)
+	}
+	wrk, ok := bySurface["worker"]
+	if !ok {
+		t.Fatal("no worker data point")
+	}
+	if _, ok := wrk.Attributes.Value(attribute.Key("converge.reason")); ok {
+		t.Fatal("worker discard exported its free-form reason; unbounded cardinality")
+	}
+	if got := attrValue(t, wrk.Attributes, "converge.queue"); got != "email-q" {
+		t.Fatalf("worker converge.queue = %q, want email-q", got)
+	}
+}
+
+func TestParkedAndLeaseTransitionsCount(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.IDParked{Job: "sync", ID: "ws-1", Failures: 3})
+	obs.Observe(converge.LeaseTransition{Job: "sync", Acquired: true})
+	obs.Observe(converge.LeaseTransition{Job: "sync", Acquired: false})
+
+	rm := collect(t, r)
+	if pts := sumPoints(t, rm, "converge.parked"); len(pts) != 1 || pts[0].Value != 1 {
+		t.Fatalf("converge.parked points = %+v, want a single point of 1", pts)
+	}
+	pts := sumPoints(t, rm, "converge.lease.transitions")
+	if len(pts) != 2 {
+		t.Fatalf("lease points = %d, want 2 (acquired true and false)", len(pts))
+	}
+	for _, dp := range pts {
+		if attrValue(t, dp.Attributes, "converge.acquired") == "" {
+			t.Fatal("converge.acquired missing")
+		}
+	}
+}
+
+func TestAnomaliesFoldIntoOneCounterByKind(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.VersionZero{Job: "sync", ID: "ws-1"})
+	obs.Observe(converge.WrongSurfaceSignal{Job: "sync", ID: "ws-1", Surface: converge.SurfaceWorker})
+	obs.Observe(converge.BackoffFallback{Job: "sync", ID: "ws-1", Consecutive: 11})
+	obs.Observe(converge.PassOverrun{Job: "sync", Due: time.Unix(0, 0)})
+
+	pts := sumPoints(t, collect(t, r), "converge.anomalies")
+	kinds := map[string]int64{}
+	for _, dp := range pts {
+		kinds[attrValue(t, dp.Attributes, "converge.kind")] = dp.Value
+	}
+	for _, want := range []string{"version-zero", "wrong-surface", "backoff-fallback", "pass-overrun"} {
+		if kinds[want] != 1 {
+			t.Fatalf("kind %q = %d, want 1 (got %v)", want, kinds[want], kinds)
+		}
+	}
+}

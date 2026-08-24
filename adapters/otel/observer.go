@@ -23,6 +23,13 @@ const (
 	statusError = "error"
 )
 
+const (
+	kindVersionZero     = "version-zero"
+	kindWrongSurface    = "wrong-surface"
+	kindBackoffFallback = "backoff-fallback"
+	kindPassOverrun     = "pass-overrun"
+)
+
 type observer struct {
 	runDuration metric.Float64Histogram
 	parked      metric.Int64Counter
@@ -69,6 +76,39 @@ func (o *observer) Observe(e converge.Event) {
 			attribute.String(attrSurface, v.Surface.String()),
 			attribute.String(attrStatus, runStatus(v.Err)),
 		))
+	case converge.IDParked:
+		o.parked.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
+	case converge.MessageDeadLettered:
+		o.deadLetters.Add(ctx, 1, metric.WithAttributes(
+			attribute.String(attrJob, v.Job),
+			attribute.String(attrQueue, v.Queue),
+			attribute.String(attrReason, v.Reason.String()),
+		))
+	case converge.WakeDiscarded:
+		o.discarded.Add(ctx, 1, metric.WithAttributes(
+			attribute.String(attrJob, v.Job),
+			attribute.String(attrSurface, converge.SurfaceReconcile.String()),
+			attribute.String(attrReason, v.Reason.String()),
+		))
+	case converge.MessageDiscarded:
+		o.discarded.Add(ctx, 1, metric.WithAttributes(
+			attribute.String(attrJob, v.Job),
+			attribute.String(attrSurface, converge.SurfaceWorker.String()),
+			attribute.String(attrQueue, v.Queue),
+		))
+	case converge.LeaseTransition:
+		o.leaseMoves.Add(ctx, 1, metric.WithAttributes(
+			attribute.String(attrJob, v.Job),
+			attribute.Bool(attrAcquired, v.Acquired),
+		))
+	case converge.VersionZero:
+		o.anomaly(ctx, v.Job, kindVersionZero)
+	case converge.WrongSurfaceSignal:
+		o.anomaly(ctx, v.Job, kindWrongSurface)
+	case converge.BackoffFallback:
+		o.anomaly(ctx, v.Job, kindBackoffFallback)
+	case converge.PassOverrun:
+		o.anomaly(ctx, v.Job, kindPassOverrun)
 	}
 }
 
@@ -77,4 +117,11 @@ func runStatus(err error) string {
 		return statusError
 	}
 	return statusOK
+}
+
+func (o *observer) anomaly(ctx context.Context, job, kind string) {
+	o.anomalies.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(attrJob, job),
+		attribute.String(attrKind, kind),
+	))
 }
