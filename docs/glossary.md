@@ -93,7 +93,9 @@ puts between retries of an ID that keeps failing.
 
 Telling converge "look at this one thing now, don't wait for the schedule".
 A poke does not queue up work; if the same thing is poked ten times before
-converge gets to it, it still gets checked once.
+converge gets to it, it still gets checked once. A poke also cuts through
+the growing pause after repeated failures, and brings back something
+converge had set aside.
 
 ### Version
 
@@ -169,11 +171,14 @@ person — converge never revives one on its own.
 
 ### Envelope
 
-The handful of extra fields converge attaches to every worker message: its
-message ID, its logical attempt, when it was first sent. You never write
-them. converge sets them at send time and adjusts them whenever the message
-is retried, snoozed, or put back — which is how a count like the logical
-attempt survives being sent again as a fresh message.
+How a worker message remembers anything about itself. converge attaches a
+few extra fields to every message — its message ID, its logical attempt,
+when it was first sent — and you never write them yourself. When converge
+sends a message again as a fresh one, it carries these fields across, which
+is how a snoozed message keeps its logical attempt instead of starting over
+at one. Putting a dead-lettered message back is the deliberate exception: a
+requeue clears the fields, so the message starts again from scratch with its
+whole retry limit to spend.
 
 ## Words for how converge runs your jobs
 
@@ -186,9 +191,11 @@ copies of your service means this job happens once or four times.
 
 ### Lease
 
-How converge makes sure only one copy of your service runs a job at a time.
+How converge keeps one copy of your service in charge of a job at a time.
 Whichever copy holds the lease does the work; the others wait. If the holder
-dies, the lease expires and another copy picks it up.
+dies, the lease expires and another copy picks it up. It makes duplicate
+work rare, not impossible — so your function still has to be safe to run
+twice.
 
 ### Outcome
 
