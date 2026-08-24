@@ -174,6 +174,12 @@ func TestDiscardsShareOneMetricSplitBySurface(t *testing.T) {
 	if got := attrValue(t, rec.Attributes, "converge.reason"); got != "parked" {
 		t.Fatalf("reconcile converge.reason = %q, want parked", got)
 	}
+	if got := attrValue(t, rec.Attributes, "converge.job"); got != "sync" {
+		t.Fatalf("reconcile converge.job = %q, want sync", got)
+	}
+	if _, ok := rec.Attributes.Value(attribute.Key("converge.id")); ok {
+		t.Fatal("per-ID attribute exported; unbounded cardinality")
+	}
 	wrk, ok := bySurface["worker"]
 	if !ok {
 		t.Fatal("no worker data point")
@@ -184,6 +190,12 @@ func TestDiscardsShareOneMetricSplitBySurface(t *testing.T) {
 	if got := attrValue(t, wrk.Attributes, "converge.queue"); got != "email-q" {
 		t.Fatalf("worker converge.queue = %q, want email-q", got)
 	}
+	if got := attrValue(t, wrk.Attributes, "converge.job"); got != "email" {
+		t.Fatalf("worker converge.job = %q, want email", got)
+	}
+	if _, ok := wrk.Attributes.Value(attribute.Key("converge.message_id")); ok {
+		t.Fatal("message ID exported as an attribute; unbounded cardinality")
+	}
 }
 
 func TestParkedAndLeaseTransitionsCount(t *testing.T) {
@@ -193,8 +205,15 @@ func TestParkedAndLeaseTransitionsCount(t *testing.T) {
 	obs.Observe(converge.LeaseTransition{Job: "sync", Acquired: false})
 
 	rm := collect(t, r)
-	if pts := sumPoints(t, rm, "converge.parked"); len(pts) != 1 || pts[0].Value != 1 {
-		t.Fatalf("converge.parked points = %+v, want a single point of 1", pts)
+	parkedPts := sumPoints(t, rm, "converge.parked")
+	if len(parkedPts) != 1 || parkedPts[0].Value != 1 {
+		t.Fatalf("converge.parked points = %+v, want a single point of 1", parkedPts)
+	}
+	if got := attrValue(t, parkedPts[0].Attributes, "converge.job"); got != "sync" {
+		t.Fatalf("converge.job = %q, want sync", got)
+	}
+	if _, ok := parkedPts[0].Attributes.Value(attribute.Key("converge.id")); ok {
+		t.Fatal("per-ID attribute exported; unbounded cardinality")
 	}
 	pts := sumPoints(t, rm, "converge.lease.transitions")
 	if len(pts) != 2 {
@@ -227,6 +246,12 @@ func TestEachAnomalyEventRecordsItsOwnKind(t *testing.T) {
 			}
 			if got := attrValue(t, pts[0].Attributes, "converge.kind"); got != tc.kind {
 				t.Fatalf("converge.kind = %q, want %q", got, tc.kind)
+			}
+			if got := attrValue(t, pts[0].Attributes, "converge.job"); got != "sync" {
+				t.Fatalf("converge.job = %q, want sync", got)
+			}
+			if _, ok := pts[0].Attributes.Value(attribute.Key("converge.id")); ok {
+				t.Fatal("per-ID attribute exported; unbounded cardinality")
 			}
 		})
 	}
