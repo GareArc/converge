@@ -25,7 +25,7 @@ plug in around it.
 ```sh
 set -e
 make check                      # gofmt gate, vet, dependency gate, race tests — every module
-for m in . adapters/redis examples; do  # ./... does not cross module boundaries
+for m in . adapters/redis adapters/otel bridges/kratos examples; do  # ./... does not cross module boundaries
   (cd "$m" && go test -race -count=2 ./...)
 done
 ```
@@ -145,7 +145,8 @@ adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
                              keys; ListTrigger over lists — separate module
 adapters/otel (convotel)     Observer over OpenTelemetry metrics — counters and
                              histograms only, no gauges — separate module
-examples/                    runnable programs (tour, worker) — separate module
+examples/                    runnable programs (tour, worker, otel) — separate
+                             module
 bridges/kratos (convkratos)  Runtime as a kratos transport.Server — separate module
 docs/superpowers/            local-only working docs — gitignored, never commit
 ```

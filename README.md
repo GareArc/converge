@@ -31,6 +31,8 @@ no Redis, no database driver, nothing to configure to start using it against
 
 ```sh
 go get github.com/GareArc/converge/adapters/redis   # convredis: MQ, Lease, KV, ListTrigger
+go get github.com/GareArc/converge/adapters/otel    # convotel: Observer over OpenTelemetry metrics
+go get github.com/GareArc/converge/bridges/kratos   # convkratos: Runtime as a kratos transport.Server
 ```
 
 ## Ten-minute tour
@@ -107,8 +109,9 @@ What this bought you over cron+lock:
 - **Panic recovery**: a panic is an error, not a dead service.
 - **Introspection**: the job appears at `:6060/debug/jobs` with its schedule,
   last run, and effective settings.
-- **A staleness alarm** — once you wire an `Observer`: time-since-last-
-  success per job, the metric that catches silently dead loops.
+- **A dead-loop alarm** — once you wire an `Observer`: a
+  `converge_job`-grouped query over the run counter, not a gauge,
+  that catches silently dead loops.
 
 `reconcile.Periodic` is sugar for the one-unit case. The rest of the guide
 uses the full `Spec`, which is where IDs, triggers, and the interesting jobs
@@ -130,7 +133,7 @@ live — continue with the [full guide](docs/guide/index.md).
 ```sh
 set -e
 make check                      # gofmt gate, vet, dependency gate, race tests — every module
-for m in . adapters/redis examples; do  # ./... does not cross module boundaries
+for m in . adapters/redis adapters/otel bridges/kratos examples; do  # ./... does not cross module boundaries
   (cd "$m" && go test -race -count=2 ./...)
 done
 ```

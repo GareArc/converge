@@ -181,7 +181,7 @@ cost for this adapter are covered on the
 [Operations](../guide/operations.md#operational-visibility) page, not here —
 they're operator-facing concerns, not API surface.
 
-## adapters/otel (convotel)
+## `adapters/otel` (`convotel`)
 
 `NewObserver` wraps an OpenTelemetry `metric.Meter` as a
 `converge.Observer`. It registers one histogram and five counters at
@@ -242,12 +242,16 @@ The replacement for a staleness gauge is a query over the run
 counter:
 
 ```promql
-sum by (job) (increase(converge_run_duration_seconds_count{converge_status="ok"}[10m])) == 0
+sum by (converge_job) (increase(converge_run_duration_seconds_count{converge_status="ok"}[10m])) == 0
 ```
 
 Summing before comparing makes the query leadership-agnostic — it
 does not care which replica did the work, or that the leader changed
 mid-window — which is strictly more correct than any gauge could be.
+One caveat: `increase(...) == 0` only matches while the series
+still exists, so if every replica exporting a job disappears, the
+vector goes empty and the alert silently stops firing — pair it
+with `absent_over_time` if that matters to you.
 
 ### Cardinality
 
@@ -273,7 +277,7 @@ same reason a queue-depth gauge is excluded above: converge cannot
 know, from inside the kernel, which aggregation the deployment's run
 mode makes correct.
 
-## bridges/kratos (convkratos)
+## `bridges/kratos` (`convkratos`)
 
 `Server(rt)` wraps a `*converge.Runtime` as a kratos
 `transport.Server`. `Start` runs the runtime; `Stop` cancels it and
@@ -317,3 +321,15 @@ servers down through a separate `Stop` context instead. `convkratos`
 derives and owns its own cancellable context from the one it is
 given, so `Stop` has something to cancel regardless of what the
 caller's `Start` context does.
+
+### `Stop` before `Start`
+
+Kratos can genuinely call `Stop` before `Start` runs — its start
+goroutine signals its waitgroup *before* entering `Start`, so an app
+whose context is already cancelled at boot can shut a server down
+that never ran. The bridge treats that as success, not error: a
+`Stop` that arrives first returns `nil` immediately, and the `Start`
+that follows also returns `nil` without ever calling `rt.Run`. This
+is deliberate and correct, but it means an operator whose app
+context is already cancelled at boot sees a "healthy" server that
+never ran a single job.

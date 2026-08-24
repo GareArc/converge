@@ -6,12 +6,17 @@ A kratos service:
 func main() {
     rdb := redis.NewClient(...)
 
+    obs, err := convotel.NewObserver(meter)
+    if err != nil {
+        log.Fatal(err)
+    }
+
     rt, err := converge.New(converge.Options{
         Namespace: "enterprise-server", // isolates this service's leases/KV/queues
         MQ:        convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{}),
         Lease:     convredis.NewLease(rdb),
         KV:        convredis.NewKV(rdb),
-        Observer:  convotel.NewObserver(meter),
+        Observer:  obs,
         Middleware: []converge.Middleware{
             tracing.Middleware(),  // spans around every run, both surfaces
             logging.Middleware(),  // job/ID-scoped logger into ctx
