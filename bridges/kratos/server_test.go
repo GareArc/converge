@@ -9,6 +9,7 @@ import (
 	"github.com/GareArc/converge"
 	convkratos "github.com/GareArc/converge/bridges/kratos"
 	"github.com/GareArc/converge/convergetest"
+	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/reconcile"
 	"github.com/go-kratos/kratos/v2/transport"
 )
@@ -130,5 +131,34 @@ func TestStopReportsAnIncompleteDrain(t *testing.T) {
 	case <-started:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Start did not return after the handler was released")
+	}
+}
+
+var errKVUnavailable = errors.New("kv unavailable")
+
+type brokenKV struct {
+	converge.KV
+}
+
+func (brokenKV) Get(context.Context, string) ([]byte, bool, error) {
+	return nil, false, errKVUnavailable
+}
+
+func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {
+	h := convergetest.NewWith(t, convergetest.Options{
+		KV: func(c *convergetest.Clock) converge.KV { return brokenKV{inmem.NewKVWithClock(c)} },
+	})
+	rt := h.Build(t)
+	if err := reconcile.Register(rt, reconcile.Spec{
+		Name:             "unreachable",
+		Reconciler:       reconcile.Func(func(context.Context, reconcile.ID) error { return nil }),
+		AllowUnscheduled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := convkratos.Server(rt)
+	if err := srv.Start(context.Background()); !errors.Is(err, errKVUnavailable) {
+		t.Fatalf("Start = %v, want the runtime's own error unchanged", err)
 	}
 }
