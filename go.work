@@ -3,4 +3,5 @@ go 1.25.0
 use .
 use ./adapters/redis
 use ./adapters/otel
+use ./bridges/kratos
 use ./examples
