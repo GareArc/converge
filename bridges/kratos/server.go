@@ -9,7 +9,10 @@ import (
 	"github.com/go-kratos/kratos/v2/transport"
 )
 
-var ErrDrainIncomplete = errors.New("convkratos: Stop returned before the runtime finished draining")
+var (
+	ErrDrainIncomplete = errors.New("convkratos: Stop returned before the runtime finished draining")
+	ErrAlreadyStarted  = errors.New("convkratos: Start called on a server that is already running")
+)
 
 type server struct {
 	rt   *converge.Runtime
@@ -32,6 +35,11 @@ func (s *server) Start(ctx context.Context) error {
 		s.mu.Unlock()
 		cancel()
 		return nil
+	}
+	if s.started {
+		s.mu.Unlock()
+		cancel()
+		return ErrAlreadyStarted
 	}
 	s.cancel = cancel
 	s.started = true

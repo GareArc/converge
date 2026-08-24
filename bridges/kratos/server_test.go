@@ -162,3 +162,33 @@ func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {
 		t.Fatalf("Start = %v, want the runtime's own error unchanged", err)
 	}
 }
+
+func TestSecondStartIsRejectedAndTheFirstStillDrains(t *testing.T) {
+	rt := buildRuntime(t, func(rt *converge.Runtime) {})
+	srv := convkratos.Server(rt)
+
+	started := make(chan error, 1)
+	go func() { started <- srv.Start(context.Background()) }()
+
+	select {
+	case <-rt.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime never became ready")
+	}
+
+	if err := srv.Start(context.Background()); !errors.Is(err, convkratos.ErrAlreadyStarted) {
+		t.Fatalf("second Start = %v, want ErrAlreadyStarted", err)
+	}
+
+	if err := srv.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop = %v, want nil", err)
+	}
+	select {
+	case err := <-started:
+		if err != nil {
+			t.Fatalf("first Start = %v, want nil on clean shutdown", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not cancel the first runtime")
+	}
+}

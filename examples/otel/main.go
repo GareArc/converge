@@ -27,22 +27,31 @@ func (f *flaky) Reconcile(ctx context.Context, id reconcile.ID) error {
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() (err error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	exp, err := stdoutmetric.New(stdoutmetric.WithPrettyPrint())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 	reader := sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(5*time.Second))
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	defer mp.Shutdown(context.Background())
+	defer func() {
+		if shutdownErr := mp.Shutdown(context.Background()); err == nil {
+			err = shutdownErr
+		}
+	}()
 
 	obs, err := convotel.NewObserver(mp.Meter("converge"))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 
 	rt, err := converge.New(converge.Options{
@@ -53,8 +62,7 @@ func main() {
 		Observer:  obs,
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 
 	if err := reconcile.Register(rt, reconcile.Spec{
@@ -69,13 +77,9 @@ func main() {
 			),
 		},
 	}); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 
 	fmt.Println("running; metrics print every 5s, Ctrl-C to stop")
-	if err := rt.Run(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	return rt.Run(ctx)
 }

@@ -52,7 +52,7 @@ func attrValue(t *testing.T, set attribute.Set, key string) string {
 	if !ok {
 		t.Fatalf("attribute %q missing from %v", key, set.Encoded(attribute.DefaultEncoder()))
 	}
-	return v.Emit()
+	return v.String()
 }
 
 func TestRunCompletedRecordsDurationWithStatus(t *testing.T) {
@@ -114,7 +114,7 @@ func TestRunCompletedDoesNotAttributeID(t *testing.T) {
 		if _, ok := dp.Attributes.Value(attribute.Key("converge.id")); ok {
 			t.Fatal("per-ID attribute exported; unbounded cardinality")
 		}
-		if v, ok := dp.Attributes.Value(attribute.Key("converge.job")); ok && v.Emit() == "tenant-42" {
+		if v, ok := dp.Attributes.Value(attribute.Key("converge.job")); ok && v.String() == "tenant-42" {
 			t.Fatal("ID leaked into the job attribute")
 		}
 	}

@@ -333,3 +333,18 @@ that follows also returns `nil` without ever calling `rt.Run`. This
 is deliberate and correct, but it means an operator whose app
 context is already cancelled at boot sees a "healthy" server that
 never ran a single job.
+
+### One `Start` per server
+
+A second `Start` on a server that is already running returns
+`ErrAlreadyStarted` and does nothing else. This is a real error
+rather than a tolerated no-op, because the alternative is worse than
+a loud failure: without the guard the second call would overwrite
+the cancel belonging to the first runtime, so a later `Stop` would
+cancel a context nobody is running under, report a clean drain that
+never happened, and leave the first runtime live. Kratos itself
+starts each server once — this guards against embedders that do not.
+
+Note the asymmetry with the previous section: a `Stop` arriving
+before `Start` is a race kratos can legitimately produce, so it
+succeeds; a second `Start` is a caller mistake, so it is reported.
