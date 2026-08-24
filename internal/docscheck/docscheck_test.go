@@ -81,3 +81,85 @@ func firstDiff(got, want string) string {
 	}
 	return "  (no line difference; check trailing newline)"
 }
+
+func TestGlossaryCoversContext(t *testing.T) {
+	if os.Getenv("DOCSCHECK_STRICT") == "" {
+		t.Skip("set DOCSCHECK_STRICT=1 to enforce; enabled permanently in task 17")
+	}
+	root := mustRoot(t)
+	ctx, err := ContextTerms(filepath.Join(root, "CONTEXT.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	glos, err := GlossaryTerms(filepath.Join(root, "docs", "glossary.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	inCtx := map[string]bool{}
+	for _, s := range ctx {
+		inCtx[NormalizeTerm(s)] = true
+	}
+	inGlos := map[string]bool{}
+	for _, s := range glos {
+		inGlos[NormalizeTerm(s)] = true
+	}
+	for _, s := range ctx {
+		if !inGlos[NormalizeTerm(s)] {
+			t.Errorf("CONTEXT.md defines %q; docs/glossary.md does not", s)
+		}
+	}
+	for _, s := range glos {
+		if !inCtx[NormalizeTerm(s)] {
+			t.Errorf("docs/glossary.md defines %q; CONTEXT.md does not", s)
+		}
+	}
+}
+
+func TestNoTermUsedCold(t *testing.T) {
+	if os.Getenv("DOCSCHECK_STRICT") == "" {
+		t.Skip("set DOCSCHECK_STRICT=1 to enforce; enabled permanently in task 17")
+	}
+	root := mustRoot(t)
+	terms, err := ContextTerms(filepath.Join(root, "CONTEXT.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	skip := stoplisted()
+	pages, err := BarPages(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, term := range terms {
+		if skip[NormalizeTerm(term)] {
+			continue
+		}
+		checked++
+	}
+	for _, page := range pages {
+		raw, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(raw)
+		masked := MaskNonProse(src)
+		for _, term := range terms {
+			if skip[NormalizeTerm(term)] {
+				continue
+			}
+			use := FirstProseUse(masked, term)
+			if use == -1 {
+				continue
+			}
+			gloss := FirstGloss(src, term)
+			if gloss == -1 {
+				t.Errorf("%s: uses %q with no definition and no glossary link", relTo(root, page), term)
+				continue
+			}
+			if gloss > use {
+				t.Errorf("%s: uses %q at offset %d before its definition at %d", relTo(root, page), term, use, gloss)
+			}
+		}
+	}
+	t.Logf("terms checked: %d; stoplisted: %v", checked, Stoplist)
+}
