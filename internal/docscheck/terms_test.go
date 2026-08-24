@@ -63,3 +63,32 @@ func TestColdPageHasNoGloss(t *testing.T) {
 		t.Error("expected a prose use on the cold page")
 	}
 }
+
+func TestSearchAliasesSplitsParentheticalAndPlain(t *testing.T) {
+	cases := map[string][]string{
+		"Dead-letter (DLQ)": {"Dead-letter", "DLQ"},
+		"Run mode":          {"Run mode"},
+	}
+	for in, want := range cases {
+		got := SearchAliases(in)
+		if len(got) != len(want) {
+			t.Fatalf("SearchAliases(%q) = %v, want %v", in, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("SearchAliases(%q)[%d] = %q, want %q", in, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+func TestFirstGlossGlossaryLinkRequiresWordBoundary(t *testing.T) {
+	falsePositive := "See the [Release process](docs/glossary.md) for details."
+	if FirstGloss(falsePositive, "Lease") != -1 {
+		t.Error("glossary link pattern matched \"Lease\" inside \"Release\"")
+	}
+	real := "See the [Lease](docs/glossary.md) definition."
+	if FirstGloss(real, "Lease") == -1 {
+		t.Error("glossary link pattern did not match a real Lease link")
+	}
+}

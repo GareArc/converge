@@ -11,6 +11,7 @@ var (
 	contextTermRe   = regexp.MustCompile(`^\*\*([^*]+)\*\*:\s*$`)
 	glossaryTermRe  = regexp.MustCompile(`^###\s+(.+?)\s*$`)
 	parentheticalRe = regexp.MustCompile(`\s*\([^)]*\)`)
+	parenContentRe  = regexp.MustCompile(`\(([^)]*)\)`)
 	spaceRe         = regexp.MustCompile(`\s+`)
 )
 
@@ -47,6 +48,21 @@ func NormalizeTerm(s string) string {
 	s = parentheticalRe.ReplaceAllString(s, "")
 	s = spaceRe.ReplaceAllString(strings.TrimSpace(s), " ")
 	return strings.ToLower(s)
+}
+
+func SearchAliases(term string) []string {
+	var out []string
+	base := strings.TrimSpace(parentheticalRe.ReplaceAllString(term, ""))
+	if base != "" {
+		out = append(out, base)
+	}
+	for _, m := range parenContentRe.FindAllStringSubmatch(term, -1) {
+		alias := strings.TrimSpace(m[1])
+		if alias != "" {
+			out = append(out, alias)
+		}
+	}
+	return out
 }
 
 func MaskNonProse(src string) string {
@@ -146,7 +162,7 @@ func FirstGloss(src, term string) int {
 	patterns := []string{
 		`(?i)^###\s+` + q + `\s*$`,
 		`(?i)\*\*` + q + `\*\*`,
-		`(?i)\[[^\]]*` + q + `[^\]]*\]\([^)]*glossary\.md[^)]*\)`,
+		`(?i)\[[^\]]*\b` + q + `\b[^\]]*\]\([^)]*glossary\.md[^)]*\)`,
 	}
 	best := -1
 	for _, p := range patterns {

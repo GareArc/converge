@@ -147,17 +147,19 @@ func TestNoTermUsedCold(t *testing.T) {
 			if skip[NormalizeTerm(term)] {
 				continue
 			}
-			use := FirstProseUse(masked, term)
-			if use == -1 {
-				continue
-			}
-			gloss := FirstGloss(src, term)
-			if gloss == -1 {
-				t.Errorf("%s: uses %q with no definition and no glossary link", relTo(root, page), term)
-				continue
-			}
-			if gloss > use {
-				t.Errorf("%s: uses %q at offset %d before its definition at %d", relTo(root, page), term, use, gloss)
+			for _, alias := range SearchAliases(term) {
+				use := FirstProseUse(masked, alias)
+				if use == -1 {
+					continue
+				}
+				gloss := FirstGloss(src, alias)
+				if gloss == -1 {
+					t.Errorf("%s: uses %q with no definition and no glossary link", relTo(root, page), alias)
+					continue
+				}
+				if gloss > use {
+					t.Errorf("%s: uses %q at offset %d before its definition at %d", relTo(root, page), alias, use, gloss)
+				}
 			}
 		}
 	}

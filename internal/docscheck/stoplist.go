@@ -12,7 +12,6 @@ var Stoplist = []string{
 	"ID",
 	"Outcome",
 	"Worker",
-	"Cadence",
 	"Message ID",
 }
 
