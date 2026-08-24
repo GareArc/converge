@@ -177,8 +177,10 @@ when it was first sent — and you never write them yourself. When converge
 sends a message again as a fresh one, it carries these fields across, which
 is how a snoozed message keeps its logical attempt instead of starting over
 at one. Putting a dead-lettered message back is the deliberate exception: a
-requeue clears the fields, so the message starts again from scratch with its
-whole retry limit to spend.
+requeue sets the logical attempt back to zero and drops any snoozes it had
+folded in, so the message starts again with its whole retry limit to spend.
+Its message ID rides along unchanged, so it is still the same piece of work
+in your logs.
 
 ## Words for how converge runs your jobs
 
