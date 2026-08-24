@@ -207,21 +207,61 @@ func TestParkedAndLeaseTransitionsCount(t *testing.T) {
 	}
 }
 
-func TestAnomaliesFoldIntoOneCounterByKind(t *testing.T) {
-	obs, r := newTestObserver(t)
-	obs.Observe(converge.VersionZero{Job: "sync", ID: "ws-1"})
-	obs.Observe(converge.WrongSurfaceSignal{Job: "sync", ID: "ws-1", Surface: converge.SurfaceWorker})
-	obs.Observe(converge.BackoffFallback{Job: "sync", ID: "ws-1", Consecutive: 11})
-	obs.Observe(converge.PassOverrun{Job: "sync", Due: time.Unix(0, 0)})
+func TestEachAnomalyEventRecordsItsOwnKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind  string
+		event converge.Event
+	}{
+		{"version-zero", converge.VersionZero{Job: "sync", ID: "ws-1"}},
+		{"wrong-surface", converge.WrongSurfaceSignal{Job: "sync", ID: "ws-1", Surface: converge.SurfaceWorker}},
+		{"backoff-fallback", converge.BackoffFallback{Job: "sync", ID: "ws-1", Consecutive: 11}},
+		{"pass-overrun", converge.PassOverrun{Job: "sync", Due: time.Unix(0, 0)}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			obs, r := newTestObserver(t)
+			obs.Observe(tc.event)
 
-	pts := sumPoints(t, collect(t, r), "converge.anomalies")
-	kinds := map[string]int64{}
-	for _, dp := range pts {
-		kinds[attrValue(t, dp.Attributes, "converge.kind")] = dp.Value
+			pts := sumPoints(t, collect(t, r), "converge.anomalies")
+			if len(pts) != 1 {
+				t.Fatalf("points = %d, want 1", len(pts))
+			}
+			if got := attrValue(t, pts[0].Attributes, "converge.kind"); got != tc.kind {
+				t.Fatalf("converge.kind = %q, want %q", got, tc.kind)
+			}
+		})
 	}
-	for _, want := range []string{"version-zero", "wrong-surface", "backoff-fallback", "pass-overrun"} {
-		if kinds[want] != 1 {
-			t.Fatalf("kind %q = %d, want 1 (got %v)", want, kinds[want], kinds)
+}
+
+func TestQueueDepthIsDeliberatelyUnmapped(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.QueueDepth{Job: "email", Queue: "email-q", Depth: 17})
+
+	rm := collect(t, r)
+	for _, sm := range rm.ScopeMetrics {
+		if len(sm.Metrics) != 0 {
+			t.Fatalf("QueueDepth produced metrics %+v; convotel exports no gauges (M1-R2)", sm.Metrics)
 		}
+	}
+}
+
+func TestUnrecognisedReasonRendersAsUnknown(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.WakeDiscarded{Job: "sync", ID: "ws-1", Reason: converge.WakeDiscardReason{}})
+
+	pts := sumPoints(t, collect(t, r), "converge.discarded")
+	if len(pts) != 1 {
+		t.Fatalf("points = %d, want 1", len(pts))
+	}
+	if got := attrValue(t, pts[0].Attributes, "converge.reason"); got != "unknown" {
+		t.Fatalf("converge.reason = %q, want unknown for a zero reason", got)
+	}
+}
+
+func TestRunDurationIsRecordedInSeconds(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.RunCompleted{Job: "sync", Surface: converge.SurfaceReconcile, Duration: 250 * time.Millisecond})
+
+	if got := findMetric(t, collect(t, r), "converge.run.duration").Unit; got != "s" {
+		t.Fatalf("unit = %q, want s", got)
 	}
 }
