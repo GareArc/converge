@@ -38,9 +38,15 @@ func TestParseBlocksIgnoresIndentedFences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(blocks) != 3 {
+		t.Fatalf("got %d blocks, want 3 (indented fence must not be parsed)", len(blocks))
+	}
 	for _, b := range blocks {
-		if b.Lang == "" {
-			t.Errorf("parsed a block with no language at line %d", b.Line)
+		if b.Attrs["title"] == "examples/guide/00-illustrative/main.go" {
+			t.Errorf("indented fence was parsed as a block: %+v", b)
+		}
+		if b.Body == "package illustrative\n" {
+			t.Errorf("indented fence body leaked into a parsed block: %+v", b)
 		}
 	}
 }
