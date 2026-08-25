@@ -45,14 +45,14 @@ type Store struct {
 
 func Register(rt *converge.Runtime, store *Store) error {
 	return reconcile.Register(rt, reconcile.Spec{
-		Name: "sync-tenants",
+		Name: "sync-inventory",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			store.Synced = append(store.Synced, string(id))
 			return nil
 		}),
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(func(ctx context.Context) ([]string, error) {
-				return []string{"acme", "globex"}, nil
+				return []string{"SKU-1001", "SKU-1002"}, nil
 			}), reconcile.Every(time.Hour)),
 		},
 	})
@@ -70,7 +70,7 @@ import (
 	"github.com/GareArc/converge/convergetest"
 )
 
-func TestSyncTenantsChecksEveryTenant(t *testing.T) {
+func TestSyncInventoryChecksEverySKU(t *testing.T) {
 	h := convergetest.New(t)
 	store := &Store{}
 	rt := h.Build(t)
@@ -81,12 +81,12 @@ func TestSyncTenantsChecksEveryTenant(t *testing.T) {
 	h.Drain(t)
 	store.Synced = nil
 
-	h.RunPass(t, "sync-tenants")
+	h.RunPass(t, "sync-inventory")
 
-	h.AssertReconciled(t, "sync-tenants", "acme")
-	h.AssertReconciled(t, "sync-tenants", "globex")
+	h.AssertReconciled(t, "sync-inventory", "SKU-1001")
+	h.AssertReconciled(t, "sync-inventory", "SKU-1002")
 	if len(store.Synced) != 2 {
-		t.Fatalf("synced %v, want two tenants", store.Synced)
+		t.Fatalf("synced %v, want two SKUs", store.Synced)
 	}
 }
 ```
@@ -96,29 +96,29 @@ func TestSyncTenantsChecksEveryTenant(t *testing.T) {
 waiting on your machine's real one. `h.Build(t)` builds the runtime those
 pieces sit behind — the same `*converge.Runtime` `converge.New` returns
 everywhere else in this guide — but does not start it, so
-`Register(rt, store)` has a window to register `sync-tenants` before
+`Register(rt, store)` has a window to register `sync-inventory` before
 anything can run it. The harness has a second way to reach the runtime,
 `h.Runtime(t)`, which starts it immediately if it isn't already running;
 reach for that one when you need
 the runtime before you've decided what will start it, not when you still
 have registration left to do first.
 
-`sync-tenants` carries a schedule, and chapter 1 already showed what that
+`sync-inventory` carries a schedule, and chapter 1 already showed what that
 means the moment a runtime starts running it: converge does not wait out
 `Every(time.Hour)` the first time — it runs the job immediately, for every
 ID the trigger names. `h.Drain(t)` is the call in this test that starts the
 runtime, and it does not return until nothing is left to do, so by the time
-it returns, that first automatic pass has already reconciled both `acme`
-and `globex` once. `store.Synced = nil` clears what it recorded, so what
+it returns, that first automatic pass has already reconciled both `SKU-1001`
+and `SKU-1002` once. `store.Synced = nil` clears what it recorded, so what
 the rest of the test checks is only the pass the next line asks for on
 purpose.
 
-`h.RunPass(t, "sync-tenants")` forces one complete pass over the job's
+`h.RunPass(t, "sync-inventory")` forces one complete pass over the job's
 whole list right now, without moving the clock and without waiting for
 `Every(time.Hour)` to elapse. `h.AssertReconciled` then polls the harness's
 own recorded events for a completed, error-free run of each ID — first
-`"acme"`, then `"globex"` — and the `len(store.Synced)` check after them
-confirms the forced pass covered both tenants and nothing else.
+`"SKU-1001"`, then `"SKU-1002"` — and the `len(store.Synced)` check after them
+confirms the forced pass covered both SKUs and nothing else.
 
 ## Run it
 
@@ -127,8 +127,8 @@ cd examples && go test ./guide/08-testing/ -v
 ```
 
 ```
-=== RUN   TestSyncTenantsChecksEveryTenant
---- PASS: TestSyncTenantsChecksEveryTenant (0.02s)
+=== RUN   TestSyncInventoryChecksEverySKU
+--- PASS: TestSyncInventoryChecksEverySKU (0.02s)
 PASS
 ok  	github.com/GareArc/converge/examples/guide/08-testing	0.252s
 ```
@@ -139,20 +139,20 @@ ok  	github.com/GareArc/converge/examples/guide/08-testing	0.252s
    the hour `Every(time.Hour)` names, and not even the couple of seconds
    earlier chapters' `go run` examples spent waiting out a
    `context.WithTimeout`. Nothing in this test touched a real timer; the
-   only clock `sync-tenants` ever saw was the one `convergetest.New` built.
+   only clock `sync-inventory` ever saw was the one `convergetest.New` built.
 2. Nothing printed between `=== RUN` and `--- PASS`: this program has no
    `fmt.Println` of its own, the way every earlier chapter's did. The two
    `AssertReconciled` calls and the `len` check are what stood in for
    reading output by eye.
 3. `ok  ...  0.252s` closed the run and `go test` exited 0. By the time
-   that line printed, `store.Synced` already held exactly `"acme"` and
-   `"globex"` — the assertions ran against a pass that had already
+   that line printed, `store.Synced` already held exactly `"SKU-1001"` and
+   `"SKU-1002"` — the assertions ran against a pass that had already
    finished, not one still catching up behind them.
 
 ## The principle
 
-Everything `TestSyncTenantsChecksEveryTenant` drives — registration, the
-schedule that discovers `"acme"` and `"globex"`, the pass that walks them,
+Everything `TestSyncInventoryChecksEverySKU` drives — registration, the
+schedule that discovers `"SKU-1001"` and `"SKU-1002"`, the pass that walks them,
 the events `AssertReconciled` polls for — is the same code a production
 `rt.Run` drives, unchanged. What the harness supplies in its place is where
 that code writes its own bookkeeping and what it measures time against:
@@ -161,7 +161,7 @@ that code writes its own bookkeeping and what it measures time against:
 prove the schedule works. A broken reconciler in this test breaks the real
 reconcile loop — the same one every earlier chapter's `go run` exercised —
 not a hand-written stand-in for it, which is why a passing
-`TestSyncTenantsChecksEveryTenant` means the same thing a passing
+`TestSyncInventoryChecksEverySKU` means the same thing a passing
 production job does.
 
 ## Other shapes
@@ -188,25 +188,25 @@ Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 (and add `"errors"` to the import block). Run the test again:
 
 ```
-=== RUN   TestSyncTenantsChecksEveryTenant
-    job_test.go:22: convergetest: AssertReconciled("sync-tenants", "acme"): not observed; saw 3 event(s): [{Job:sync-tenants Acquired:true} {Job:sync-tenants Surface:reconcile ID:acme Attempt:1 Duration:0s Err:sync failed} {Job:sync-tenants Surface:reconcile ID:globex Attempt:1 Duration:0s Err:sync failed}]
---- FAIL: TestSyncTenantsChecksEveryTenant (2.01s)
+=== RUN   TestSyncInventoryChecksEverySKU
+    job_test.go:22: convergetest: AssertReconciled("sync-inventory", "SKU-1001"): not observed; saw 3 event(s): [{Job:sync-inventory Acquired:true} {Job:sync-inventory Surface:reconcile ID:SKU-1001 Attempt:1 Duration:0s Err:sync failed} {Job:sync-inventory Surface:reconcile ID:SKU-1002 Attempt:1 Duration:0s Err:sync failed}]
+--- FAIL: TestSyncInventoryChecksEverySKU (2.02s)
 FAIL
-FAIL	github.com/GareArc/converge/examples/guide/08-testing	2.217s
+FAIL	github.com/GareArc/converge/examples/guide/08-testing	2.234s
 FAIL
 ```
 
 `AssertReconciled` polled for up to two seconds, found no error-free run of
-`"acme"`, and failed with the events it actually recorded instead of a bare
+`"SKU-1001"`, and failed with the events it actually recorded instead of a bare
 timeout: one lease transition for the runtime taking charge, then one
-completed run per tenant, each carrying the `"sync failed"` error the
+completed run per SKU, each carrying the `"sync failed"` error the
 handler returned. That is the same event stream a production `Observer`
 would have seen; the harness just handed it to `t.Fatalf` instead of a
 metrics pipeline.
 
 ## A caveat
 
-Nothing in this test called `time.Sleep`, and nothing should. `sync-tenants`
+Nothing in this test called `time.Sleep`, and nothing should. `sync-inventory`
 has an hourly schedule; a test that waited for the schedule's own next tick
 by sleeping would either sleep an hour for real or race a guess about how
 long is "long enough" — passing on a fast machine, timing out on a loaded

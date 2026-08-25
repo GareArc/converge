@@ -1,7 +1,7 @@
 # 5. More than one copy
 
 You deploy three copies of your service, the way chapter 1 assumed without
-saying how. Register `rebuild-cache` — the job below, one function that
+saying how. Register `refresh-price-cache` — the job below, one function that
 rebuilds an in-memory cache every second — on all three copies exactly as
 chapters 1 through 4 taught, and with nothing deciding between them all three
 would run it: three rebuilds a second for one cache, not one. This chapter is
@@ -36,7 +36,7 @@ func replica(runs *atomic.Int64, lease converge.Lease, kv converge.KV, mode conv
 		log.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "rebuild-cache",
+		Name: "refresh-price-cache",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			runs.Add(1)
 			return nil
@@ -85,14 +85,14 @@ func main() {
 ```
 
 `replica` builds one copy of your service the way chapter 1 did — its own
-`converge.Runtime`, registering `rebuild-cache` through `reconcile.Register`
+`converge.Runtime`, registering `refresh-price-cache` through `reconcile.Register`
 the way chapter 2 introduced — except this time two copies share the same
 `Lease` and the same `KV`, standing in for the one shared Redis every real
 deployment's copies would actually use. `runTwoCopies` starts both, gives
 them two and a half seconds against a schedule that fires every second, and
 waits for them to finish. `main` calls it twice: once under
 `converge.OnOneReplica`, once under `converge.OnAllReplicas`, and prints how
-many times `rebuild-cache` actually ran each time.
+many times `refresh-price-cache` actually ran each time.
 
 ## Run it
 
@@ -119,7 +119,7 @@ OnAllReplicas: 6 runs in total, 3 on each copy
    `converge.OnAllReplicas`.
 4. Then the second line: `OnAllReplicas: 6 runs in total, 3 on each copy`.
    The same three ticks, over the same window — but now both copies ran
-   `rebuild-cache` on every one of them: three runs each, six in total, not
+   `refresh-price-cache` on every one of them: three runs each, six in total, not
    three.
 5. `main` returned, and the process exited with status 0.
 
@@ -128,7 +128,7 @@ OnAllReplicas: 6 runs in total, 3 on each copy
 Chapter 1's two `inmem` lines included a [lease](../glossary.md#lease):
 converge's own record of which copy of your service is currently in charge
 of a job. Under `converge.OnOneReplica` — the default for every
-[reconcile](../glossary.md#reconcile) job, including `rebuild-cache` here —
+[reconcile](../glossary.md#reconcile) job, including `refresh-price-cache` here —
 every copy tries to take that lease when it starts. Whichever copy gets it
 first holds it, runs the schedule, and renews it on a timer to keep holding
 it; the other copy tries too, finds the lease already taken, and does not
@@ -141,7 +141,7 @@ others are doing, just one copy holding something the rest cannot get.
 `converge.OnOneReplica` is one of three [run mode](../glossary.md#run-mode)
 values, and it is the one you get by not choosing: leave `RunMode` unset on
 a reconcile job, the way chapters 1 through 3 did, and that is what you
-already had. `rebuild-cache` above sets it explicitly only so that `main` can
+already had. `refresh-price-cache` above sets it explicitly only so that `main` can
 run the same job both ways. `converge.OnAllReplicas`, the one this chapter's
 second run used, is the opposite choice — it skips the lease entirely, so
 every copy runs the schedule on its own, with nothing coordinating between
@@ -156,8 +156,8 @@ the queue itself, not by converge. In v1 that exists only on the worker
 [surface](../glossary.md#surface) — which of converge's two kinds of job
 this one is — where the queue's own consumer groups do the dividing. Set
 `RunMode: converge.SplitAcrossReplicas` on a reconcile spec — including
-`rebuild-cache` above — and converge refuses to register the job at all,
-the same way it refused `wait-for-cluster` in chapter 3 without
+`refresh-price-cache` above — and converge refuses to register the job at all,
+the same way it refused `sync-inventory` in chapter 3 without
 `AllowUnscheduled`: there is no list here for converge to divide the way a
 queue divides messages between consumers, so v1 does not offer it on this
 surface.
@@ -173,12 +173,12 @@ redeliver the message or set it aside in a
 [dead-letter](../glossary.md#dead-letter-dlq) queue — that copy simply gets
 no further attempt at it. `OnAllReplicas` is for work each copy is meant to
 do for itself, like a local cache; a message meant to happen exactly once,
-like chapter 4's `send-welcome`, is the wrong job for it.
+like chapter 4's `charge-order`, is the wrong job for it.
 
 ## Try breaking it
 
 Take `replica` and force `converge.OnAllReplicas` regardless of what is
-passed in, and give `rebuild-cache` something with a real consequence
+passed in, and give `refresh-price-cache` something with a real consequence
 instead of a counter: an invoice ledger standing in for a real database
 row, incremented and printed on every run. Run two copies of that against
 the same one-second schedule for two and a half seconds:
@@ -198,7 +198,7 @@ added to the same ledger, so whatever real system that ledger stood for
 gets billed twice for every event it should have billed once. Nothing
 crashed and nothing logged an error — this is a program working exactly as
 told, giving a wrong answer. converge cannot tell this case apart from the
-in-memory cache `rebuild-cache` stood for up to now, where every copy doing
+in-memory cache `refresh-price-cache` stood for up to now, where every copy doing
 its own work is correct; choosing the right run mode is how you tell it
 apart. Notice, too, that in the run behind this transcript `#4` printed
 before `#3` — two copies writing to the same thing with nothing

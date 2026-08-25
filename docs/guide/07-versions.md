@@ -50,10 +50,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tracker := reconcile.NewTracker(kv, "apply-config")
+	tracker := reconcile.NewTracker(kv, "apply-price-change")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "apply-config",
+		Name: "apply-price-change",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			version, err := tracker.Latest(ctx, id)
 			if err != nil {
@@ -67,7 +67,7 @@ func main() {
 
 			err = tracker.MarkApplied(ctx, id, version)
 			if errors.Is(err, reconcile.ErrOutdated) {
-				fmt.Println("refused: config changed while we were applying it")
+				fmt.Println("refused: the price changed while we were applying it")
 				return nil
 			}
 			return err
@@ -81,7 +81,7 @@ func main() {
 
 	go func() {
 		<-rt.Ready()
-		if err := rt.Poke("apply-config", "app-1"); err != nil {
+		if err := rt.Poke("apply-price-change", "SKU-1001"); err != nil {
 			log.Println("poke:", err)
 		}
 	}()
@@ -94,13 +94,13 @@ func main() {
 }
 ```
 
-`tracker := reconcile.NewTracker(kv, "apply-config")` creates a
+`tracker := reconcile.NewTracker(kv, "apply-price-change")` creates a
 [Tracker](../glossary.md#tracker): converge's own version counter, kept
 in the same KV as everything else. It is wired in twice — into
 `Spec.Versions`, so converge knows this job carries version tracking at
 all, and closed over directly by the handler, so the handler can read and
 write it itself. `AllowUnscheduled: true` is the same opt-out chapter 3
-used: `apply-config` has no schedule, only the one `rt.Poke` call below.
+used: `apply-price-change` has no schedule, only the one `rt.Poke` call below.
 
 Inside the handler, `tracker.MarkChanged(ctx, id)` stands in for a
 second, concurrent piece of code: in a real deployment that call lives
@@ -118,19 +118,19 @@ cd examples && go run ./guide/07-versions
 ```
 
 ```
-applying app-1 at version 0
-refused: config changed while we were applying it
+applying SKU-1001 at version 0
+refused: the price changed while we were applying it
 ```
 
 ## What happened
 
 1. Nothing happened until the [poke](../glossary.md#poke) landed:
-   `apply-config` has no schedule, so the one `rt.Poke("apply-config",
-   "app-1")` call in the goroutine above is the only thing that ever
+   `apply-price-change` has no schedule, so the one `rt.Poke("apply-price-change",
+   "SKU-1001")` call in the goroutine above is the only thing that ever
    calls it.
-2. `applying app-1 at version 0` printed: the handler's first read of the
+2. `applying SKU-1001 at version 0` printed: the handler's first read of the
    tracker, for an ID it had never seen before, came back `0`.
-3. `refused: config changed while we were applying it` printed
+3. `refused: the price changed while we were applying it` printed
    immediately after, on that same call: the handler's own
    `MarkChanged` had already moved the version to `1` by the time
    `MarkApplied(ctx, id, 0)` ran, so the guarded write was refused.
@@ -144,7 +144,7 @@ refused: config changed while we were applying it
 The order those three tracker calls happen in is a rule, not a style
 choice: read the version, then read whatever truth you are about to
 apply, then perform that write guarded by the version you already have,
-then call `MarkApplied` with that same version. `apply-config` above has
+then call `MarkApplied` with that same version. `apply-price-change` above has
 no real downstream to write to, so its `fmt.Printf` line stands in for
 both reading truth and the guarded write — a job with an actual write in
 the middle keeps all four as separate steps. Get the order wrong and the
@@ -163,14 +163,14 @@ check a version on the way in. For those, `MarkApplied` refusing is
 it was guarded by a version that is no longer current. Know which of the
 two your job has before you rely on it.
 
-`apply-config` above chose to swallow the refusal — it caught
+`apply-price-change` above chose to swallow the refusal — it caught
 `errors.Is(err, reconcile.ErrOutdated)` and returned `nil`, ending the
 pass quietly. Returning the error instead, unwrapped, would have
 converge requeue the ID right away, without the backoff curve a real
 failure gets: `ErrOutdated` is not treated as something having gone
 wrong, only as a sign that the ID needs looking at again soon. Which of
 the two you want depends on whether the next pass should pick up the
-changed config as soon as possible, or wait for whatever normally wakes
+changed price as soon as possible, or wait for whatever normally wakes
 this ID.
 
 ## Other shapes
@@ -194,7 +194,7 @@ same as a poke would.
 
 `Tracker`'s namespace is not cosmetic, either. Registering it into
 `Spec.Versions` requires the namespace to equal the job's own `Spec.Name`
-— `apply-config` above uses `"apply-config"` for both — because the
+— `apply-price-change` above uses `"apply-price-change"` for both — because the
 namespace is what keeps two jobs' version counters from colliding in the
 same KV. `NewTracker` itself also refuses an empty namespace, or one
 containing `/`: a slash in the namespace could make one job's tracker
@@ -209,7 +209,7 @@ concurrent change lands before the version is read instead of after, and
 run it again:
 
 ```
-applying app-1 at version 1
+applying SKU-1001 at version 1
 ```
 
 No second line. `MarkApplied` no longer refuses, because the version it

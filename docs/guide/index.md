@@ -27,20 +27,25 @@ kind of job for one-time work, how many of your copies actually run any of
 it, and somewhere durable to keep all of that bookkeeping. Finish them and
 you can ship.
 
+Chapters 1, 2, 4 and 5 run with nothing installed. Chapters 3 and 6 need a
+Redis, because a message has to come from somewhere real and bookkeeping
+has to outlive a process; both show the one `docker run` line that gets you
+one.
+
 - [1. A first job](01-first-job.md) — one function, on a schedule, with
   nothing installed.
 - [2. Many things to check](02-ids.md) — the IDs one job looks after, and
   where that list comes from.
-- [3. Reacting to events](03-triggers.md) — asking converge to check
-  something now, or asking to be checked again later.
+- [3. Reacting to events](03-triggers.md) — the `Triggers` list: turning a
+  queue into work alongside the schedule. Needs a Redis.
 - [4. The other kind of job](04-worker.md) — sending one message for one
   thing that happened, and what converge does when your handler fails to
   handle it.
 - [5. More than one copy](05-run-modes.md) — running three copies of your
   service, and which one does the work.
-- [6. Going to production](06-production.md) — the three things you swap to
-  move off in-memory storage, and what changes (and what doesn't) when you
-  do.
+- [6. Going to production](06-production.md) — the whole composition root
+  of a deployable service: config, all three ports on Redis, metrics,
+  middleware, a debug endpoint, and a clean shutdown. Needs a Redis.
 
 ## Chapters you reach for
 

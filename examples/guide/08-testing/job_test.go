@@ -6,7 +6,7 @@ import (
 	"github.com/GareArc/converge/convergetest"
 )
 
-func TestSyncTenantsChecksEveryTenant(t *testing.T) {
+func TestSyncInventoryChecksEverySKU(t *testing.T) {
 	h := convergetest.New(t)
 	store := &Store{}
 	rt := h.Build(t)
@@ -17,11 +17,11 @@ func TestSyncTenantsChecksEveryTenant(t *testing.T) {
 	h.Drain(t)
 	store.Synced = nil
 
-	h.RunPass(t, "sync-tenants")
+	h.RunPass(t, "sync-inventory")
 
-	h.AssertReconciled(t, "sync-tenants", "acme")
-	h.AssertReconciled(t, "sync-tenants", "globex")
+	h.AssertReconciled(t, "sync-inventory", "SKU-1001")
+	h.AssertReconciled(t, "sync-inventory", "SKU-1002")
 	if len(store.Synced) != 2 {
-		t.Fatalf("synced %v, want two tenants", store.Synced)
+		t.Fatalf("synced %v, want two SKUs", store.Synced)
 	}
 }
