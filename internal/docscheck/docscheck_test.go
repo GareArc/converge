@@ -19,6 +19,8 @@ func mustRoot(t *testing.T) string {
 	return root
 }
 
+const uncheckedGoBlockBudget = 20
+
 func TestTaggedGoBlocksMatchTheirSourceFiles(t *testing.T) {
 	root := mustRoot(t)
 	files, err := MarkdownFiles(root)
@@ -51,7 +53,11 @@ func TestTaggedGoBlocksMatchTheirSourceFiles(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("unchecked go blocks: %d", unchecked)
+	if unchecked > uncheckedGoBlockBudget {
+		t.Errorf("unchecked go blocks: %d, budget %d; tag the new block title=<path> or raise uncheckedGoBlockBudget deliberately",
+			unchecked, uncheckedGoBlockBudget)
+	}
+	t.Logf("unchecked go blocks: %d (budget %d)", unchecked, uncheckedGoBlockBudget)
 }
 
 func relTo(root, path string) string {
