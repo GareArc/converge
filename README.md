@@ -50,7 +50,10 @@ Both are copied verbatim from the guide, and both run with nothing
 installed.
 
 **A reconcile job**, from [chapter 1](docs/guide/01-first-job.md): one
-function, called on a schedule, that only one replica runs.
+function, called on a schedule, that only one copy of your service runs. The
+in-memory bookkeeping it uses is process-local, so that holds inside one
+process; [chapter 6](docs/guide/06-production.md) swaps those two lines for
+Redis and it holds across replicas.
 
 ```go title=examples/guide/01-first-job/main.go
 package main
