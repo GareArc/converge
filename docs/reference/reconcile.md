@@ -67,9 +67,8 @@ type CronOpts struct {
 func OnMessage(queue string, id IDFunc, o OnMessageOpts) Trigger
 type OnMessageOpts struct {
     MQ       converge.MQ           // non-default transport
-    Delivery converge.DeliveryMode // Group | Broadcast; default follows run mode
-                                   // (see the reconcile guide's "Triggers
-                                   // and the schedule" section)
+    Delivery converge.DeliveryMode // Group | Broadcast; default follows run mode;
+                                   // OnAllReplicas requires Broadcast
 }
 
 // ID extraction
@@ -91,6 +90,5 @@ func (t *Tracker) MarkApplied(ctx context.Context, id ID, v Version) error
 func (t *Tracker) Forget(ctx context.Context, id ID) error // GC when the entity is deleted
 ```
 
-See [Reconcile](../guide/reconcile.md) for the trigger/schedule guide and the
-outcome table, and [Version tracking](../guide/versions.md) for `Tracker`'s
-namespace and revival rules.
+See [Version tracking](../guide/versions.md) for `Tracker`'s namespace and
+revival rules.

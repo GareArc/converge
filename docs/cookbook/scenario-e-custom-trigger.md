@@ -26,7 +26,5 @@ func (t *pubsubTrigger) Run(ctx context.Context, wake func(reconcile.ID)) error 
 }
 ```
 
-Which replicas run it follows the job's run mode (see
-[Reconcile → Triggers and the schedule](../guide/reconcile.md)) — the
-trigger never needs to know. If the source dies, the job gets slower, never
-wrong.
+Which replicas run it follows the job's run mode — the trigger never needs
+to know. If the source dies, the job gets slower, never wrong.
