@@ -64,7 +64,7 @@ and the [reference](../reference/kernel.md) is the condensed API.
 
 Every term this guide uses has a plain-language definition in
 [the glossary](../glossary.md). For what converge deliberately does not do,
-see the [README](../../README.md#what-it-deliberately-does-not-do) for the
+see the [README](https://github.com/GareArc/converge/blob/main/README.md#what-it-deliberately-does-not-do) for the
 short version, or [the reference](../reference/kernel.md#v1-limits) for the
 precise one.
 

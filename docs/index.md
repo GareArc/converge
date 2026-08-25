@@ -16,6 +16,6 @@ converge hands it to your function, and retries it if that function fails.
 - [Reference](reference/kernel.md) — the condensed API: `Options`, what a
   storage or queue backend has to provide, and where the shipped adapters
   live.
-- [Internals](../CONTEXT.md) — the terminology contract and contributor
+- [Internals](https://github.com/GareArc/converge/blob/main/CONTEXT.md) — the terminology contract and contributor
   conventions this project holds itself to; start with
-  [`AGENT.md`](../AGENT.md) for the verification commands.
+  [`AGENT.md`](https://github.com/GareArc/converge/blob/main/AGENT.md) for the verification commands.

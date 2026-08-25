@@ -6,9 +6,6 @@ export default defineConfig({
   srcDir: './.generated',
   outDir: './.dist',
   cleanUrls: true,
-  ignoreDeadLinks: [
-    /\.\.\/(\.\.\/)?(README|CONTEXT|AGENT)$/,
-  ],
   themeConfig: {
     nav: [
       { text: 'Guide', link: '/guide/01-first-job' },
