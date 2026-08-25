@@ -1,289 +1,444 @@
 # 6. Going to production
 
-Every job in this guide so far has kept converge's own bookkeeping — the
-[lease](../glossary.md#lease) that says which copy is in charge, and the
-record of when each [reconcile](../glossary.md#reconcile) job last ran — in
-memory. That is why chapter 1 needed nothing installed, and it is also why
-none of it survived a restart or reached a second copy of your service: the
-bookkeeping lived inside the same process as the job, and died with it. This
-chapter moves that bookkeeping to Redis. The job itself does not change —
-same function, same schedule, same `reconcile.Periodic` call. What changes
-is where converge writes down what it knows.
+Every chapter so far has kept converge's bookkeeping in memory. That was the
+right trade for learning — nothing to install, nothing to clean up — and it
+is the wrong trade for a deployment, because in-memory bookkeeping is
+private to one process. Two replicas each keep their own, so each one
+believes it is in charge and each one runs the job.
+
+This chapter is the other end of that. It is not a two-line swap dressed up
+as a service: it is the whole composition root of something you could
+actually deploy — configuration from the environment, all three ports
+backed by Redis, metrics, a middleware that logs every run, an HTTP
+endpoint to inspect it with, and a shutdown that finishes what it started.
+By the end you will have run it, restarted it mid-interval and watched it
+refuse to double-fire, and looked inside it while it was running.
+
+It is longer than the chapters before it. That length is the point: this is
+what the previous five chapters were building toward, and nothing in it is
+decoration.
 
 ## The code
 
-The whole program:
+Configuration first, in its own file, because a service that hardcodes its
+Redis address is a service you cannot deploy twice:
+
+```go title=examples/guide/06-production/config.go
+package main
+
+import (
+	"os"
+	"time"
+)
+
+type Config struct {
+	RedisAddr    string
+	Namespace    string
+	DebugAddr    string
+	SyncEvery    time.Duration
+	DrainTimeout time.Duration
+}
+
+func env(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func configFromEnv() Config {
+	return Config{
+		RedisAddr:    env("REDIS_ADDR", "localhost:6379"),
+		Namespace:    env("CONVERGE_NAMESPACE", "shop"),
+		DebugAddr:    env("DEBUG_ADDR", "localhost:6060"),
+		SyncEvery:    10 * time.Second,
+		DrainTimeout: 20 * time.Second,
+	}
+}
+```
+
+Every value has a working default, so the program runs with no environment
+set at all — and every value can be overridden, so the same binary runs in
+staging and production. That is the whole trick, and it is the reason this
+is a separate file rather than a literal in the middle of `main`.
+
+Then the composition root:
 
 ```go title=examples/guide/06-production/main.go
 package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/GareArc/converge"
+	convotel "github.com/GareArc/converge/adapters/otel"
 	convredis "github.com/GareArc/converge/adapters/redis"
+	"github.com/GareArc/converge/debughttp"
 	"github.com/GareArc/converge/reconcile"
+	"github.com/GareArc/converge/worker"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
+type ChargeOrder struct {
+	OrderID string `json:"order_id"`
+}
+
+var chargeOrder = worker.NewTask[ChargeOrder]("charge-order", worker.TaskOpts{Queue: "payments"})
+
+func logRuns(next converge.Handler) converge.Handler {
+	return func(ctx context.Context, run converge.Run) error {
+		start := time.Now()
+		err := next(ctx, run)
+		log.Printf("%s/%s id=%q took=%s err=%v",
+			run.Surface, run.Job, run.ID, time.Since(start).Round(time.Millisecond), err)
+		return err
+	}
+}
+
+func newObserver() (converge.Observer, func(), error) {
+	exporter, err := stdoutmetric.New()
+	if err != nil {
+		return nil, nil, err
+	}
+	reader := sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(time.Minute))
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	observer, err := convotel.NewObserver(provider.Meter("shop"))
+	if err != nil {
+		return nil, nil, err
+	}
+	return observer, func() {
+		if err := provider.Shutdown(context.Background()); err != nil {
+			log.Println("metrics shutdown:", err)
+		}
+	}, nil
+}
+
+func registerJobs(rt *converge.Runtime, rdb *redis.Client, cfg Config) error {
+	skus := func(ctx context.Context) ([]string, error) {
+		return []string{"SKU-1001", "SKU-1002"}, nil
+	}
+
+	err := reconcile.Register(rt, reconcile.Spec{
+		Name: "sync-inventory",
+		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
+			inbound, err := rdb.Get(ctx, "warehouse:"+string(id)+":inbound").Int()
+			if err != nil && !errors.Is(err, redis.Nil) {
+				return err
+			}
+			if inbound > 0 {
+				return rdb.Decr(ctx, "warehouse:"+string(id)+":inbound").Err()
+			}
+			return nil
+		}),
+		Triggers: []reconcile.Trigger{
+			reconcile.OnMessage("stock-events", reconcile.IDFromJSONField("sku"), reconcile.OnMessageOpts{}),
+			reconcile.Schedule(reconcile.StringIDs(skus), reconcile.Every(cfg.SyncEvery)),
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	return worker.Handle(rt, chargeOrder, func(ctx context.Context, p ChargeOrder) error {
+		return nil
+	}, worker.HandleOpts{
+		Concurrency: 4,
+		Retry:       worker.RetryPolicy{MaxAttempts: 5},
+	})
+}
+
 func main() {
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	cfg := configFromEnv()
+
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer rdb.Close()
 
+	observer, shutdownMetrics, err := newObserver()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer shutdownMetrics()
+
 	rt, err := converge.New(converge.Options{
-		Namespace: "billing",
-		MQ:        convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{}),
-		Lease:     convredis.NewLease(rdb),
-		KV:        convredis.NewKV(rdb),
+		Namespace:    cfg.Namespace,
+		MQ:           convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{}),
+		Lease:        convredis.NewLease(rdb),
+		KV:           convredis.NewKV(rdb),
+		Observer:     observer,
+		Middleware:   []converge.Middleware{logRuns},
+		DrainTimeout: cfg.DrainTimeout,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = reconcile.Periodic(rt, "refresh-licenses", reconcile.Every(10*time.Second), func(ctx context.Context) error {
-		fmt.Println("refreshing licenses")
-		return nil
-	})
-	if err != nil {
+	if err := registerJobs(rt, rdb, cfg); err != nil {
 		log.Fatal(err)
 	}
+
+	mux := http.NewServeMux()
+	mux.Handle("/debug/jobs/", debughttp.ReadOnlyHandler(rt))
+	debug := &http.Server{Addr: cfg.DebugAddr, Handler: mux}
+	go func() {
+		if err := debug.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Println("debug server:", err)
+		}
+	}()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	log.Printf("converge starting: namespace=%q redis=%s debug=%s", cfg.Namespace, cfg.RedisAddr, cfg.DebugAddr)
 	if err := rt.Run(ctx); err != nil {
 		log.Fatal(err)
+	}
+	log.Println("converge stopped cleanly")
+
+	if err := debug.Shutdown(context.Background()); err != nil {
+		log.Println("debug shutdown:", err)
 	}
 }
 ```
 
-Two of chapter 1's lines are swapped: `Lease: inmem.NewLease()` and
-`KV: inmem.NewKV()` become `convredis.NewLease(rdb)` and
-`convredis.NewKV(rdb)`. The third line, `MQ:
-convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{})`, replaces the
-in-memory `MQ` [chapter 4](04-worker.md) introduced; chapter 1 itself never
-had one, and neither did chapters 2 and 3. With everything in memory, a
-[poke](../glossary.md#poke) could only ever reach the process that raised
-it; there was no second copy for it to reach. `MQ` is what carries a
-trigger from the copy that received it to the copy that will act on it, so
-from here on it is part of the wiring, the same as the other two.
-`Namespace: "billing"` is new too, and gets its own note at the end of this
-chapter. The job registration and the `signal.NotifyContext` shutdown below
-it are exactly chapter 1's, unchanged, other than the ten-second interval —
-long enough to Ctrl-C the process partway through one and restart it before
-the next was due, which is what the next section does.
+Read it as four groups rather than eighty lines.
+
+**The ports.** `MQ`, `Lease` and `KV` are all `convredis` now, pointed at
+one client. These are the three lines chapters 1 through 5 kept in memory,
+and swapping them is what makes every promise this guide has made hold
+across a deployment rather than inside a process.
+
+**What watches it.** `Observer` is `convotel`, turning converge's events
+into OpenTelemetry instruments — [chapter 10](10-observability.md) is
+entirely about this, and here it is simply in place. `Middleware` wraps
+every run of every job on both surfaces; `logRuns` is fifteen lines and
+gives you a line per run with the job, the ID, the duration and the error.
+
+**The jobs.** One of each. `sync-inventory` is chapter 3's job, triggered
+both ways — a message for latency, a schedule for certainty. `charge-order`
+is chapter 4's, with a real retry budget. `registerJobs` takes the runtime
+and returns an error, so the wiring is testable without `main`.
+
+**Getting in and out.** `debughttp.ReadOnlyHandler` exposes what the
+runtime knows over HTTP. `signal.NotifyContext` turns SIGINT and SIGTERM
+into the cancellation `rt.Run` already understands, and `DrainTimeout` is
+how long converge will wait for in-flight work before giving up on it.
 
 ## Run it
 
-This is the only chapter in the guide whose example needs something
-installed: a running Redis.
+```sh
+docker run --rm --name converge-guide -p 6379:6379 redis:7-alpine
+```
 
 ```sh
-docker run --rm -d -p 6379:6379 --name converge-docs redis:7-alpine
 cd examples && go run ./guide/06-production
 ```
 
-```
-refreshing licenses
-refreshing licenses
-refreshing licenses
+```text
+2026/08/25 16:30:49 converge starting: namespace="shop" redis=localhost:6379 debug=localhost:6060
+2026/08/25 16:30:49 reconcile/sync-inventory id="SKU-1001" took=1ms err=<nil>
+2026/08/25 16:30:49 reconcile/sync-inventory id="SKU-1002" took=0s err=<nil>
+2026/08/25 16:30:59 reconcile/sync-inventory id="SKU-1001" took=0s err=<nil>
+2026/08/25 16:30:59 reconcile/sync-inventory id="SKU-1002" took=0s err=<nil>
 ^C
+2026/08/25 16:31:02 converge stopped cleanly
 ```
+
+One report from the metrics exporter also prints at exit, when the deferred
+shutdown flushes it. It is a page of JSON and it is
+[chapter 10](10-observability.md)'s subject, so it is left out above.
 
 ## What happened
 
-Nothing about the output is new: the same `refreshing licenses` line, on
-the same schedule, with the same immediate first run chapter 1 already
-showed you. The difference chapter 1 promised is invisible from the
-terminal — it is sitting in Redis. Leave the program running, and in
-another terminal:
-
-```sh
-docker exec converge-docs redis-cli --scan --pattern 'billing*' | head
-```
-
-```
-billing/converge/reconcile/refresh-licenses/sched/0/last
-billing/converge/reconcile/refresh-licenses/lease
-```
-
-Two keys, under the `billing` namespace. The first is the record of when
-`refresh-licenses`'s schedule last fired. In chapter 1 the equivalent
-record lived on the Go heap, inside the `inmem.KV` value, and vanished the
-moment the process did. This one lives in Redis and outlives the process.
-
-The second is [chapter 5](05-run-modes.md)'s lease, made visible for the
-first time: the claim that says this copy is the one running
-`refresh-licenses`. Chapter 5 described its lifetime; Redis will show it
-to you:
-
-```sh
-docker exec converge-docs redis-cli ttl billing/converge/reconcile/refresh-licenses/lease
-```
-
-```
-27
-```
-
-Twenty-seven seconds left on a thirty-second claim, pushed back up on a
-timer for as long as this copy keeps running. The two keys have opposite
-lifetimes, on purpose: Ctrl-C the program, scan again, and the lease is
-gone — released on the way out, so the next copy to start does not have to
-wait it out — while the schedule's record is still sitting there. That
-record is what the next section puts to the test.
+1. `configFromEnv` read nothing from the environment and fell back to every
+   default, so the service came up against `localhost:6379` in the `shop`
+   namespace.
+2. The runtime took the [lease](../glossary.md#lease) and the schedule
+   fired at once, sweeping both SKUs. Every one of those runs went through
+   `logRuns` on the way, which is where those lines come from — the
+   reconciler itself prints nothing.
+3. Ten seconds later the schedule came round again. Nothing else did
+   anything: no message arrived on `stock-events`, and no order was
+   enqueued, so `charge-order` sat idle with nothing to do. An idle worker
+   job is not a broken one.
+4. Ctrl-C cancelled the context `signal.NotifyContext` owns. `rt.Run`
+   returned `nil` — a clean stop, not a failure — the lease was released,
+   and `converge stopped cleanly` printed.
 
 ## Surviving a restart
 
-[Chapter 3](03-triggers.md) already told you what this swap would do:
-restart the service in the middle of an interval, and converge would find
-the record and work out the interval had not passed, instead of firing
-again the moment the process came back. Try it.
+[Chapter 1](01-first-job.md) mentioned that converge keeps a record of when
+each schedule last fired, and that it lives somewhere durable only once you
+get here. This is what that record buys: restart the service mid-interval,
+and converge works out that the interval has not elapsed instead of firing
+again because the process is new. Now there is a Redis to remember it in,
+so it can be tested.
 
-Start the program and note when the first line prints:
+Start it, let the first sweep happen, and stop it three seconds in:
 
-```sh
-cd examples && go run ./guide/06-production
-```
-
-```
-refreshing licenses
+```text
+2026/08/25 16:31:52 converge starting: namespace="shop" redis=localhost:6379 debug=localhost:6060
+2026/08/25 16:31:52 reconcile/sync-inventory id="SKU-1001" took=1ms err=<nil>
+2026/08/25 16:31:52 reconcile/sync-inventory id="SKU-1002" took=0s err=<nil>
 ^C
+2026/08/25 16:31:55 converge stopped cleanly
 ```
 
-Three seconds later — comfortably inside the ten-second interval — Ctrl-C
-landed and the process exited. Start it again immediately:
+Start it again straight away. It comes up, says so — and then does nothing
+at all for seven seconds:
+
+```text
+2026/08/25 16:31:55 converge starting: namespace="shop" redis=localhost:6379 debug=localhost:6060
+2026/08/25 16:32:02 reconcile/sync-inventory id="SKU-1001" took=3ms err=<nil>
+2026/08/25 16:32:02 reconcile/sync-inventory id="SKU-1002" took=0s err=<nil>
+```
+
+`16:31:52` plus ten seconds is `16:32:02`. The restart did not reset the
+clock and did not earn an extra sweep: converge read the schedule's record
+on the way up, saw that three of the ten seconds had been used, and waited
+out the other seven. Do this with a deployment that restarts every pod in
+sequence and the difference is a job that fires once per interval instead
+of once per pod.
+
+The record it read is one key:
 
 ```sh
-cd examples && go run ./guide/06-production
+docker exec converge-guide redis-cli --scan --pattern '*sched*'
 ```
 
-Nothing prints right away. It stays that way for seven more seconds, and
-then:
-
-```
-refreshing licenses
+```text
+shop/converge/reconcile/sync-inventory/sched/1/last
 ```
 
-Ten seconds after the very first line — not three seconds after the
-restart. converge read `billing/converge/reconcile/refresh-licenses/sched/0/last`
-on the way up, worked out that only three seconds had passed since the
-schedule last fired, and waited out the rest instead of treating the
-restart as a reason to run again.
+The `1` is the trigger's index in the `Triggers` list, and the schedule is
+the second entry — `OnMessage` is the first. Change the order of that list
+and the key changes with it.
 
-Do the same thing with [chapter 1](01-first-job.md)'s program — stop it a
-second into its two-second interval, start it again right away:
+## Looking inside it
+
+While it is running, in another terminal:
 
 ```sh
-cd examples && go run ./guide/01-first-job
+curl -s localhost:6060/debug/jobs/ | python3 -m json.tool
 ```
 
-```
-refreshing licenses
-^C
+```json
+{
+    "jobs": [
+        {
+            "job": "sync-inventory",
+            "surface": "reconcile",
+            "run_mode": "OnOneReplica",
+            "queue": "",
+            "paused": false,
+            "settings": {
+                "concurrency": "1",
+                "schedule": "every 10s",
+                "triggers": "on-message stock-events + schedule"
+            },
+            "queue_depth": 0,
+            "parked": 0,
+            "last_success": "2026-08-25T23:33:49.74309Z",
+            "consecutive_fails": 0
+        },
+        {
+            "job": "charge-order",
+            "surface": "worker",
+            "run_mode": "SplitAcrossReplicas",
+            "queue": "payments",
+            "paused": false,
+            "settings": {
+                "concurrency": "4",
+                "retry": "5 attempts, backoff 1s..15m, max-age 24h",
+                "schema-version": "1",
+                "visibility": "5m"
+            },
+            "queue_depth": 0,
+            "parked": 0,
+            "last_success": "",
+            "consecutive_fails": 0
+        }
+    ]
+}
 ```
 
-```sh
-cd examples && go run ./guide/01-first-job
-```
-
-```
-refreshing licenses
-```
-
-No wait, regardless of how far into the interval you stopped it —
-`refreshing licenses` prints the instant the new process starts, every
-time. There is no record anywhere for it to find: `inmem.NewKV()` forgot
-everything the moment the old process exited, so every restart looks like
-the very first run again. That is the whole difference this chapter makes:
-not a different job, not different output under normal operation, but a
-service that remembers what it was doing across the one event — a restart
-— in-memory bookkeeping can never survive.
+Both jobs are listed, each reporting what it actually is rather than what
+the config said — the [run mode](../glossary.md#run-mode) it resolved to,
+the triggers that are
+attached, when it last succeeded. `ReadOnlyHandler` is exactly what its
+name says; the handler that can *change* a running job is
+[chapter 9](09-operations.md).
 
 ## The principle
 
-Every piece of converge's own bookkeeping goes through exactly four
-things. This chapter's program wires three of them; the fourth waits until
-chapter 10:
+converge asks for four things — an `MQ`, a `Lease`, a `KV`, and optionally
+an `Observer` — and has opinions about none of them. Everything in this
+file that is not those four lines is yours: which Redis, which metrics
+backend, what your middleware logs, where the debug endpoint listens,
+whether config comes from the environment or a file or a flag.
 
-- `MQ` — carries messages between your copies.
-- `Lease` — decides which copy is in charge ([chapter 5](05-run-modes.md)).
-- `KV` — remembers when each job last ran and what has been set aside.
-- `Observer` — reports what happened, for metrics
-  ([chapter 10](10-observability.md)).
+That is why the swap from chapter 1 to here is a swap and not a rewrite.
+The jobs did not change. `sync-inventory` is the same reconciler with the
+same triggers; `charge-order` is the same handler. What changed is where
+the bookkeeping lives, and the bookkeeping was never something your code
+touched.
 
-converge never talks to Redis directly; it only ever calls these four, and
-what is wired up behind them — `convredis`, in this chapter — is the whole
-of what changes going to production. The job, the schedule, and everything
-else about `refresh-licenses` are exactly what they were in chapter 1.
+The corollary is worth saying plainly: **a converge job is not coupled to
+Redis.** It is coupled to three interfaces. Chapters 1 through 5 satisfied
+them from memory, this chapter satisfies them from Redis, and
+[chapter 8](08-testing.md) satisfies them from a test harness with a fake
+clock — the same jobs, unmodified, in all three.
 
 ## Try breaking it
 
-Start the program again, and once you have seen the first line, stop
-Redis without stopping the program:
+Point it at a Redis that is not there:
 
 ```sh
-docker stop converge-docs
+REDIS_ADDR=localhost:6399 go run ./guide/06-production
 ```
 
-Wait through what should have been the next two ticks — twenty seconds, at
-this job's interval. The output stays exactly what it was:
-
-```
-refreshing licenses
-```
-
-Nothing else. No error on stdout, none on stderr, no crash — the process
-is still running, and it is printing nothing. `MQ`, `Lease`, and `KV`
-carry no health check of their own: when the backend behind them becomes
-unreachable, the loops that use them retry silently and indefinitely, and
-nothing in converge surfaces "the backend is down" as an event or a metric
-— see the [operations reference](../reference/operations.md#operational-visibility)
-for the full picture. A job that has quietly stopped running looks, from
-inside the process, identical to a job with nothing to do.
-
-Bring Redis back:
-
-```sh
-docker run --rm -d -p 6379:6379 --name converge-docs redis:7-alpine
+```text
+2026/08/25 16:32:28 converge starting: namespace="shop" redis=localhost:6399 debug=localhost:6060
+2026/08/25 16:32:28 dial tcp [::1]:6399: connect: connection refused
+exit status 1
 ```
 
-Without restarting the program, it picks up on its own — in the run
-behind this transcript, six seconds after Redis came back:
+It refuses to run. That is the good outcome, and it is worth dwelling on
+for a second, because the alternative would be much worse: a service that
+came up, could not reach its lease, and therefore quietly believed it was
+in charge. Every replica would believe the same thing. The failure you want
+from a misconfigured lease is the loud one at startup, and `log.Fatal` on
+`rt.Run`'s return is what gives it to you.
 
-```
-refreshing licenses
-```
-
-Nobody watching only this process's output would know anything had
-happened, either time. Pair converge with monitoring on Redis itself —
-connection health, replication lag, disk — because converge will not tell
-you it is down. [Chapter 10](10-observability.md) covers the one alert
-that catches this from the outside.
+Note where it failed. `converge.New` succeeded — building the adapters
+does not talk to Redis — and so did `registerJobs`. The connection is not
+attempted until `rt.Run` tries to take the lease, so the error arrives from
+`Run`, not from construction.
 
 ## A caveat
 
-`Namespace: "billing"` is what keeps this Redis safe to share. Every key
-`refresh-licenses` writes — its lease, its schedule record — is prefixed
-with it, so a second service pointed at the same Redis, with its own
-namespace, never collides with this one, even if it happens to register a
-job with the same name.
+`DrainTimeout` is a deadline, not a promise. On shutdown converge stops
+taking new work and waits up to that long for what is already running to
+finish; a handler still going when it expires is abandoned, not killed —
+the goroutine keeps running, and the process exits underneath it.
 
-Two services that pick the *same* namespace do not get that protection.
-If both register a job called `refresh-licenses`, they share one lease and
-one schedule record for it: only one service's replicas can hold the
-lease at a time, so the other service's copies quietly never run their own
-`refresh-licenses`, and every run — by whichever service actually holds
-the lease — overwrites the one shared "last ran" timestamp, so each
-service's job looks to converge like a run of the other's. Give every
-service its own namespace; nothing checks that you picked a different one
-than your neighbour.
+This matters most for the worker surface, where an abandoned handler is
+also an unacked message: it goes back on the queue and is delivered again,
+to whichever replica is still up. That is at-least-once doing exactly what
+[chapter 4](04-worker.md) said it would, and it is the second reason that
+chapter asked for an idempotency key. Set `DrainTimeout` from how long your
+slowest handler actually takes, and make sure your deployment's own
+termination grace period is longer — Kubernetes' default is 30 seconds, so
+a `DrainTimeout` above that is a number that never gets used.
 
-Next: [7. Stale writes](07-versions.md). The core path ends here —
-chapters 1 through 6 are what every job in this guide has needed. What
-follows is opt-in: reach for a chapter when your job's situation calls
-for it, not because chapter 6 left it unfinished.
+Next: [7. When something else changed it first](07-versions.md) — what
+happens when the thing you are reconciling moves while you are reconciling
+it.
