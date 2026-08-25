@@ -1,4 +1,4 @@
-# 3. Triggers
+# 3. Reacting to events
 
 Chapters 1 and 2 only ever ran on the schedule: converge called your
 function on its own timeline, and the only way to see a check happen was to
@@ -106,8 +106,12 @@ cluster is ready
 
 `reconcile.CheckAgain{In: d}` is not a retry counter and it is not an
 error: returning it does not touch the backoff a real failure would
-trigger. It says exactly one thing to converge — nothing is wrong, I am
-just not done — and asks to be looked at again in `d`. See
+trigger, for a bounded number of consecutive returns — after ten in a row
+converge assumes the loop is not converging and applies the failure
+backoff curve anyway, reporting `BackoffFallback`. It says exactly one
+thing to converge — nothing is wrong, I am just not done — and asks to be
+looked at again in `d`. Ask for less than 250ms and converge raises it:
+the shortest gap it will actually leave is between 250ms and 375ms. See
 [`reconcile.CheckAgain`](../reference/reconcile.md) for its exact shape.
 
 A [poke](../glossary.md#poke) is the opposite direction: something outside
@@ -136,11 +140,12 @@ exit status 1
 
 No output at all — not even the first `checking cluster-1` line. A
 reconcile job needs a periodic trigger unless `AllowUnscheduled: true` says
-otherwise; without either, `rt.Run` refuses to start the job, the same way
-it refused to start chapter 1's job when `Options.KV` was missing.
-`wait-for-cluster` has no schedule and never will — it exists to be poked —
-so `AllowUnscheduled` is the honest way to say that, rather than adding a
-schedule the job doesn't need just to satisfy the check.
+otherwise; without either, `reconcile.Register` refuses the spec outright —
+the job never reaches `rt.Run` at all. `wait-for-cluster` has no schedule
+and never will — it exists to be poked — so `AllowUnscheduled` is the
+honest way to say that, rather than adding a schedule the job doesn't need
+just to satisfy the check. (Chapter 1's missing `Options.KV` was caught a
+step later, when `rt.Run` started; this one never gets that far.)
 
 ## A caveat
 

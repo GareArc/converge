@@ -146,12 +146,12 @@ choice: read the version, then read whatever truth you are about to
 apply, then perform that write guarded by the version you already have,
 then call `MarkApplied` with that same version. `apply-config` above has
 no real downstream to write to, so its `fmt.Printf` line stands in for
-both reading truth and the guarded write, and only `MarkApplied` itself
-is a real tracker call — a job with an actual write in the middle keeps
-all four as separate steps. Get the order wrong and the guarantee
-breaks — see "Try breaking it" below. converge does not enforce the
-order for you; `Tracker` only refuses to record `MarkApplied` at a
-version that something has since moved past.
+both reading truth and the guarded write — a job with an actual write in
+the middle keeps all four as separate steps. Get the order wrong and the
+guarantee breaks — see "Try breaking it" below. converge does not enforce
+the order for you, and `MarkApplied` writes nothing: it re-reads the
+current version and returns `ErrOutdated` if it has moved past the one you
+pass. It is a check at the end of the sequence, not a record of the work.
 
 What that refusal actually buys you depends on your downstream. If the
 write itself can honor the version as a condition — a `WHERE
@@ -159,9 +159,9 @@ applied_version <= v` clause, a compare-and-set, a conditional API call —
 then a stale write never lands at all: this is **prevention**. Most
 writes cannot do that; a plain REST call, once sent, cannot be told to
 check a version on the way in. For those, `MarkApplied` refusing is
-**detection**: the write may already have gone out, but converge knows it
-was guarded by a version that is no longer current, and does not record
-it as done. Know which of the two your job has before you rely on it.
+**detection**: the write may already have gone out, but converge tells you
+it was guarded by a version that is no longer current. Know which of the
+two your job has before you rely on it.
 
 `apply-config` above chose to swallow the refusal — it caught
 `errors.Is(err, reconcile.ErrOutdated)` and returned `nil`, ending the
@@ -186,8 +186,10 @@ guarantee on.
 Wiring `Spec.Versions` also turns on [parked](../glossary.md#parked)-ID
 revival: an ID converge gave up on after repeated failures does not come
 back on its own — not even on the schedule's own next pass — until
-something pokes it. With version tracking wired in, a version advance
-revives it too, the same as a poke would.
+something pokes it. Giving up is itself something you opt into, by setting
+`Spec.DeadLetterAfter`; left at its default, an ID retries forever instead,
+so no job in this guide ever parks one. With version tracking wired in, a
+version advance revives a parked ID too, the same as a poke would.
 
 `Tracker`'s namespace is not cosmetic, either. Registering it into
 `Spec.Versions` requires the namespace to equal the job's own `Spec.Name`

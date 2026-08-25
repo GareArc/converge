@@ -100,7 +100,8 @@ refreshing licenses
 Nothing about the output is new: the same `refreshing licenses` line, on
 the same schedule, with the same immediate first run chapter 1 already
 showed you. The difference chapter 1 promised is invisible from the
-terminal — it is sitting in Redis:
+terminal — it is sitting in Redis. Leave the program running, and in
+another terminal:
 
 ```sh
 docker exec converge-docs redis-cli --scan --pattern 'billing*' | head
@@ -108,13 +109,33 @@ docker exec converge-docs redis-cli --scan --pattern 'billing*' | head
 
 ```
 billing/converge/reconcile/refresh-licenses/sched/0/last
+billing/converge/reconcile/refresh-licenses/lease
 ```
 
-One key, under the `billing` namespace: the record of when
+Two keys, under the `billing` namespace. The first is the record of when
 `refresh-licenses`'s schedule last fired. In chapter 1 the equivalent
 record lived on the Go heap, inside the `inmem.KV` value, and vanished the
-moment the process did. This one lives in Redis, outlives the process, and
-is what the next section puts to the test.
+moment the process did. This one lives in Redis and outlives the process.
+
+The second is [chapter 5](05-run-modes.md)'s lease, made visible for the
+first time: the claim that says this copy is the one running
+`refresh-licenses`. Chapter 5 described its lifetime; Redis will show it
+to you:
+
+```sh
+docker exec converge-docs redis-cli ttl billing/converge/reconcile/refresh-licenses/lease
+```
+
+```
+27
+```
+
+Twenty-seven seconds left on a thirty-second claim, pushed back up on a
+timer for as long as this copy keeps running. The two keys have opposite
+lifetimes, on purpose: Ctrl-C the program, scan again, and the lease is
+gone — released on the way out, so the next copy to start does not have to
+wait it out — while the schedule's record is still sitting there. That
+record is what the next section puts to the test.
 
 ## Surviving a restart
 
@@ -150,9 +171,9 @@ refreshing licenses
 
 Ten seconds after the very first line — not three seconds after the
 restart. converge read `billing/converge/reconcile/refresh-licenses/sched/0/last`
-on the way up, worked out that only three seconds (and then ten) had
-passed since the schedule last fired, and waited out the rest instead of
-treating the restart as a reason to run again.
+on the way up, worked out that only three seconds had passed since the
+schedule last fired, and waited out the rest instead of treating the
+restart as a reason to run again.
 
 Do the same thing with [chapter 1](01-first-job.md)'s program — stop it a
 second into its two-second interval, start it again right away:

@@ -39,8 +39,10 @@ type Spec struct {
 }
 
 // outcome values — implement error; keyed fields required
+// after 10 consecutive CheckAgain returns for one ID the failure backoff
+// curve applies anyway, reported as BackoffFallback
 type CheckAgain struct {
-    In time.Duration
+    In time.Duration // floored: under 250ms becomes 250-375ms
 }
 var ErrOutdated error
 
