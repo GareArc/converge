@@ -30,8 +30,8 @@ A file's imports declare its model: code importing `worker` but not
 - [4. The other kind of job](04-worker.md) — sending one message for one
   thing that happened, and what converge does when your handler fails to
   handle it.
-- [Run modes and concurrency](run-modes.md) — who runs a job, across
-  replicas.
+- [5. Run modes](05-run-modes.md) — running three copies of your service,
+  and which one does the work.
 - [Version tracking](versions.md) — protecting against stale writes.
 - [Testing](testing.md) — `convergetest`, the harness over the real engine.
 - [Operations](operations.md) — runtime lifecycle, introspection, ops
