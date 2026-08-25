@@ -1,4 +1,11 @@
-# Operations
+# Operations reference
+
+The condensed reference for running converge day to day: what boots and
+what a clean shutdown looks like, every key converge writes to a backend,
+the two introspection/ops HTTP handlers, what each ops verb does and how
+it is dispatched, and what converge does and does not tell you about the
+health of your backend. For a worked walkthrough, see
+[9. Running it in production](../guide/09-operations.md).
 
 ## Runtime lifecycle
 
@@ -42,7 +49,7 @@ omitted when empty for every key below except `Tracker` — see its note):
 
 `adapters/redis` additionally namespaces its own bookkeeping (streams,
 pending ZSETs, attempts) under a fixed `convredis:` prefix — see
-[Adapters → Auxiliary key prefixes](../reference/adapters.md).
+[Adapters → Auxiliary key prefixes](adapters.md#auxiliary-key-prefixes).
 
 ## Introspection and ops handlers
 
@@ -93,6 +100,23 @@ early-return: because a durable pause must be authoritative cluster-wide,
 their dispatch waits (up to the timeout) and returns one response per
 replica that answered.
 
+Every mutating verb is one route on `OpsHandler`:
+
+| Verb | Route | ID required | Dispatch |
+|---|---|---|---|
+| Poke | `POST /debug/jobs/{job}/poke` | yes (`id` form value) | early-return |
+| Run a full pass now | `POST /debug/jobs/{job}/run-pass` | no | early-return, leaseholder only |
+| Pause | `POST /debug/jobs/{job}/pause` | no | waits out the full timeout |
+| Resume | `POST /debug/jobs/{job}/resume` | no | waits out the full timeout |
+| List dead letters | `GET /debug/jobs/{job}/dlq` | no | direct KV read, not cluster-dispatched |
+| Requeue a dead letter | `POST /debug/jobs/{job}/dlq/{id}/requeue` | yes (path segment) | direct KV/MQ write, not cluster-dispatched |
+| Purge one dead letter | `DELETE /debug/jobs/{job}/dlq/{id}` | yes (path segment) | direct KV write, not cluster-dispatched |
+| Purge all dead letters for a job | `DELETE /debug/jobs/{job}/dlq` | no | direct KV write, not cluster-dispatched |
+
+The four DLQ ops act on whichever replica received the request — a
+dead-letter record lives in KV, which every replica can read and write
+directly, so there's nothing to broadcast.
+
 ### Pause and resume
 
 Pausing a job writes a durable flag to KV before broadcasting, so a pause
@@ -115,7 +139,7 @@ event or a metric. Pair converge with your own backend monitoring
 Redis is down.
 
 **Steady-state cost of an idle Redis-backed consumer.** With the shipped
-[Redis adapter](../reference/adapters.md), every consume iteration issues
+[Redis adapter](adapters.md), every consume iteration issues
 **four** Redis round trips, whether or not there's any work: the
 delayed-release claim script (against the delayed ZSET), the `XPENDING`
 call that drives PEL reconciliation, the redelivery claim script (against

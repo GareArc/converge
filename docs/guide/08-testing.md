@@ -9,10 +9,11 @@ run` it, read the lines it prints, decide for yourself whether that looks
 right — and that stops being enough the moment someone other than you can
 change the code, or the moment "watch it run once" isn't something your
 build can do for every commit. If eyeballing `go run` output is still
-enough for what you ship, skip ahead to [9. Operations](09-operations.md).
-By the end of this chapter you will have a Go test that runs the real
-engine, not a stand-in for it, and watched it catch a broken handler the
-way it would catch a real bug.
+enough for what you ship, skip ahead to
+[9. Running it in production](09-operations.md). By the end of this
+chapter you will have a Go test that runs the real engine, not a stand-in
+for it, and watched it catch a broken handler the way it would catch a
+real bug.
 
 `converge/convergetest` is what makes that test possible: a harness that
 runs the real engine — the same registration, the same triggers, the same
@@ -216,6 +217,6 @@ couple of hundredths of a second this chapter's own test ran in. A converge
 test that sleeps instead of advancing `h.Clock` is a flaky test wearing a
 passing one's clothes.
 
-Next: [9. Operations](09-operations.md) — driving a running system from
-outside it: pausing a job, poking an ID, and working the
+Next: [9. Running it in production](09-operations.md) — looking at a
+running job from outside the process, pausing it, and working the
 [dead-letter](../glossary.md#dead-letter-dlq) queue.

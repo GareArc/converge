@@ -36,8 +36,9 @@ A file's imports declare its model: code importing `worker` but not
   twice" isn't enough on its own.
 - [8. Testing your jobs](08-testing.md) — running the real engine in a Go
   test, against in-memory storage and a clock you control.
-- [Operations](operations.md) — runtime lifecycle, introspection, ops
-  verbs.
+- [9. Running it in production](09-operations.md) — looking at a running
+  job from outside the process, pausing it, and working the
+  [dead-letter](../glossary.md#dead-letter-dlq) queue.
 - [Cookbook](../cookbook/scenario-a-safety-net.md) — worked scenarios A–F.
 - [Reference](../reference/kernel.md) — the condensed API.
 

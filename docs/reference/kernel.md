@@ -121,5 +121,6 @@ type Clock interface { Now() time.Time /* ... */ }
 ```
 
 See [Adapters](adapters.md) for the shipped implementations of these ports,
-and [Operations](../guide/operations.md) for the introspection handlers
-(`debughttp.ReadOnlyHandler`, `debughttp.OpsHandler`) built on top of them.
+and [Operations reference](operations.md#introspection-and-ops-handlers) for
+the introspection handlers (`debughttp.ReadOnlyHandler`,
+`debughttp.OpsHandler`) built on top of them.

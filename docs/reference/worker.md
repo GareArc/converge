@@ -82,8 +82,9 @@ how the shipped Redis adapter stamps it on a delayed message.
 
 The dead-letter queue (list/get/requeue/purge) is exposed through
 `debughttp.OpsHandler`, not through this package directly — see
-[Operations](../guide/operations.md). Its listing is backed by `KV.Scan`,
-which is at-least-once under concurrent mutation on the Redis adapter (see
+[Operations reference → Ops verbs](operations.md#ops-verbs). Its listing
+is backed by `KV.Scan`, which is at-least-once under concurrent mutation
+on the Redis adapter (see
 [Adapters → KV](adapters.md#kv--newkv)); the DLQ list dedups by key so a
 duplicate-returning `Scan` can never surface a duplicate dead-letter record.
 

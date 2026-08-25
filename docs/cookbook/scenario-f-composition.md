@@ -44,7 +44,7 @@ A framework-free service (gateway, collector) skips the bridge:
 
 For what `OpsHandler`'s verbs actually do — poke, run-pass, pause/resume,
 DLQ ops, and which replica's response you get back — see
-[Operations → Ops verbs](../guide/operations.md).
+[Operations reference → Ops verbs](../reference/operations.md#ops-verbs).
 
 ## Configuration
 

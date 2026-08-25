@@ -178,7 +178,7 @@ schedule trigger covers whatever a dropped list entry misses. `Run` returns
 
 Backend health, dead-backend behavior, and steady-state Redis round-trip
 cost for this adapter are covered on the
-[Operations](../guide/operations.md#operational-visibility) page, not here —
+[Operations reference](operations.md#operational-visibility) page, not here —
 they're operator-facing concerns, not API surface.
 
 ## `adapters/otel` (`convotel`)
