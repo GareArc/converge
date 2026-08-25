@@ -1,6 +1,6 @@
 # Scenario E: A custom trigger
 
-> Assumes [chapter 03, triggers](../guide/03-triggers.md).
+> Assumes [chapter 03, reacting to events](../guide/03-triggers.md).
 
 Any [wake](../glossary.md#wake) source is ~20 lines: `pubsubTrigger` below
 turns Redis pub/sub cache invalidation into wakes. Wired into a job
@@ -84,7 +84,7 @@ unreachable — `Run` returns it, and the engine backs off and restarts `Run`
 on its own; nothing here needs to handle that itself. No log line and no
 metric mark that restart — the same quiet-failure shape
 [chapter 6](../guide/06-production.md) shows for a dead backend — so the
-schedule below is what keeps this job correct, not visible, while the
+schedule above is what keeps this job correct, not visible, while the
 trigger is down.
 
 `msg.Payload` is the published ID string; converting it straight to

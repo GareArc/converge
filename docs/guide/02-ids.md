@@ -1,4 +1,4 @@
-# 2. IDs
+# 2. Many things to check
 
 Chapter 1's job watched one thing: a license cache, refreshed by a single
 function on a timer. Most real jobs watch a table, not a single row — every
@@ -117,7 +117,8 @@ once.
 ## Try breaking it
 
 Change `tenantIDs` to return `nil, errors.New("tenant service unavailable")`
-instead of a list, and run it again. All five seconds pass without a single
+instead of a list (and add `"errors"` to the import block), and run it
+again. All five seconds pass without a single
 line of output — no `checking tenant` lines and no error either — and the
 process exits with status 0, the same as a run that went well.
 
@@ -137,5 +138,5 @@ three seconds doing it, and that is three seconds before anything in that
 round gets checked — every round, not just the first. A slow list holds up
 everyone on it, not only the tenant it was slow to find.
 
-Next: [3. Triggers](03-triggers.md) — asking converge to check one thing
+Next: [3. Reacting to events](03-triggers.md) — asking converge to check one thing
 right now, instead of waiting for the next round.

@@ -1,4 +1,4 @@
-# 5. Run modes
+# 5. More than one copy
 
 You deploy three copies of your service, the way chapter 1 assumed without
 saying how. Register `rebuild-cache` — the job below, one function that
@@ -200,9 +200,9 @@ crashed and nothing logged an error — this is a program working exactly as
 told, giving a wrong answer. converge cannot tell this case apart from the
 in-memory cache `rebuild-cache` stood for up to now, where every copy doing
 its own work is correct; choosing the right run mode is how you tell it
-apart. Notice, too, that `#4` printed before `#3` — two copies writing to
-the same thing with nothing coordinating the order between them, not even
-that.
+apart. Notice, too, that in the run behind this transcript `#4` printed
+before `#3` — two copies writing to the same thing with nothing
+coordinating the order between them, not even that.
 
 ## A caveat
 

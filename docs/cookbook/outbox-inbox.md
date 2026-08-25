@@ -1,7 +1,7 @@
 # Outbox and inbox recipes
 
 > Assumes [chapter 04, the other kind of job](../guide/04-worker.md) and
-> [chapter 05, run modes](../guide/05-run-modes.md).
+> [chapter 05, more than one copy](../guide/05-run-modes.md).
 
 Two recipes for the same underlying problem: converge's queue boundary
 doesn't span your database transaction. Both compose the two surfaces —
