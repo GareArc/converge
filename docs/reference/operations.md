@@ -97,7 +97,7 @@ early-return: because a durable pause must be authoritative cluster-wide,
 their dispatch waits (up to the timeout) and returns one response per
 replica that answered.
 
-Every mutating verb is one route on `OpsHandler`:
+Each `OpsHandler` verb is one route:
 
 | Verb | Route | ID required | Dispatch |
 |---|---|---|---|
