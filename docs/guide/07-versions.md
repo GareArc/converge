@@ -1,9 +1,10 @@
 # 7. Stale writes
 
-Chapters 1 through 5 are the core path: a job on a schedule, a list of IDs
+Chapters 1 through 6 are the core path: a job on a schedule, a list of IDs
 it looks after, ways to check something sooner than the schedule would,
-the other kind of job for one-time work, and how many of your copies
-actually run any of it. Finish those five and you have enough to ship.
+the other kind of job for one-time work, how many of your copies actually
+run any of it, and somewhere durable to keep all of that bookkeeping.
+Finish those six and you have enough to ship.
 This chapter opens the second half of the guide — things you reach for
 once your situation calls for them, not before every job. Read it if two
 copies of your service could ever apply the same change at once, or if a

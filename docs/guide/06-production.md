@@ -185,8 +185,8 @@ service that remembers what it was doing across the one event — a restart
 ## The principle
 
 Every piece of converge's own bookkeeping goes through exactly four
-things. This chapter's program wires three of them; the fourth is next
-chapter's:
+things. This chapter's program wires three of them; the fourth waits until
+chapter 10:
 
 - `MQ` — carries messages between your copies.
 - `Lease` — decides which copy is in charge ([chapter 5](05-run-modes.md)).
