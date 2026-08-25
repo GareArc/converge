@@ -70,10 +70,19 @@ type Discard struct {
 | `nil` | ack — done |
 | `Snooze{In: d}` | ack, republish after `d`; logical attempt untouched — capped by `Retry.MaxAge`, not `Retry.MaxAttempts` |
 | `Discard{Reason: s}` | ack, `MessageDiscarded` observer event; never redelivered |
-| handler's context canceled (shutdown, or losing the lease under `converge.OnOneReplica`) | ack, republish immediately — not after `Visibility` — logical attempt preserved, no failure counted |
+| the engine's handler context canceled (shutdown, or losing the lease under `converge.OnOneReplica`) | ack, republish immediately — not after `Visibility` — logical attempt preserved, no failure counted |
 | any other error | attempt++, redeliver after backoff |
 | `Retry.MaxAttempts` reached, or age exceeds `Retry.MaxAge` | dead-lettered — payload and final error kept |
 | panic | recovered, converted to an error, then handled as "any other error" above |
+
+That cancellation row means the context converge itself hands your handler
+and later cancels. The engine derives it with `context.WithCancel` and never
+puts a deadline on it, so it only ever reports `context.Canceled`. A deadline
+you impose on your own work is a different thing: returning
+`context.DeadlineExceeded` from a context you derived is an ordinary error,
+counting a failure, redelivering after backoff, and dead-lettering at
+`Retry.MaxAttempts` like any other. Neutral republish is not a way to
+express "this attempt timed out, give it back unharmed".
 
 While a handler runs, the engine automatically extends the delivery's
 visibility (heartbeats at `Visibility/3`); reclaim by another worker only
