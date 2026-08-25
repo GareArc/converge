@@ -1,11 +1,8 @@
 # Operations reference
 
-The condensed reference for running converge day to day: what boots and
-what a clean shutdown looks like, every key converge writes to a backend,
-the two introspection/ops HTTP handlers, what each ops verb does and how
-it is dispatched, and what converge does and does not tell you about the
-health of your backend. For a worked walkthrough, see
-[9. Running it in production](../guide/09-operations.md).
+The condensed reference for running converge in production — see
+[9. Running it in production](../guide/09-operations.md) for a worked
+walkthrough.
 
 ## Runtime lifecycle
 

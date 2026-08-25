@@ -136,12 +136,15 @@ This chapter's example only mounts the read-only handler. Two more things
 worth knowing follow the same shape as the principle above.
 
 **Pausing a job.** `OpsHandler` exposes pause and resume as their own
-routes. Mount it alongside `ReadOnlyHandler` — on a separate, admin-only
-listener, since `OpsHandler` carries no auth of its own — and pausing
-`refresh-licenses` is one call:
+routes. This chapter's example only mounts `ReadOnlyHandler`, on
+`localhost:6060` — pausing isn't available there. `OpsHandler` carries no
+auth of its own, so it belongs on a separate, admin-only listener you
+mount yourself, alongside the one this example already runs. If you
+mounted it on, say, `localhost:6061`, pausing `refresh-licenses` would be
+one call:
 
 ```sh
-curl -X POST http://localhost:6060/debug/jobs/refresh-licenses/pause
+curl -X POST http://localhost:6061/debug/jobs/refresh-licenses/pause
 ```
 
 **Putting a message back.** A worker message that runs out of retries ends
