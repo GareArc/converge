@@ -21,7 +21,8 @@ A file's imports declare its model: code importing `worker` but not
 
 ## Where to go next
 
-- [Ten-minute tour](tour.md) — the smallest real job, end to end.
+- [A first job](01-first-job.md) — one function, on a schedule, with nothing
+  installed.
 - [Concepts](concepts.md) — IDs, ID sources, and what a handler's return
   value means.
 - [Reconcile](reconcile.md) — triggers, the schedule, and the reconcile

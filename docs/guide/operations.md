@@ -65,9 +65,8 @@ publicMux.Handle("/debug/jobs/", debughttp.ReadOnlyHandler(rt))
 
 Both handlers register their listing route at `/debug/jobs` **and**
 `/debug/jobs/{$}` — the trailing-slash exact-match alias — so a
-`http.Handle("/debug/jobs/", ...)` mount (as used in the
-[ten-minute tour](tour.md)) serves the job list correctly instead of 404ing
-on the bare trailing slash.
+`http.Handle("/debug/jobs/", ...)` mount serves the job list correctly
+instead of 404ing on the bare trailing slash.
 
 ## Ops verbs
 
