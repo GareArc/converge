@@ -32,6 +32,9 @@ A file's imports declare its model: code importing `worker` but not
   handle it.
 - [5. Run modes](05-run-modes.md) — running three copies of your service,
   and which one does the work.
+- [6. Going to production](06-production.md) — the four things you swap to
+  move off in-memory storage, and what changes (and what doesn't) when you
+  do.
 - [7. Stale writes](07-versions.md) — protecting a write when "safe to run
   twice" isn't enough on its own.
 - [8. Testing your jobs](08-testing.md) — running the real engine in a Go
