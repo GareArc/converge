@@ -1,5 +1,10 @@
 # `converge/reconcile` — the level-triggered model
 
+[Reconcile](../glossary.md#reconcile) jobs keep something true: converge
+calls your function once per ID on a schedule, and your function re-reads
+the world and puts it right — messages only say *what* to look at, never
+*what to do*.
+
 ```go
 type ID string
 func JoinID(parts ...string) ID
@@ -44,7 +49,10 @@ func SingleID() IDSource
 func IDs(fn func(ctx context.Context) ([]ID, error)) IDSource
 func StringIDs(fn func(ctx context.Context) ([]string, error)) IDSource
 func IDsByPage(fn func(ctx context.Context, cursor string) ([]ID, string, error)) IDSource
-    // cursor MUST be keyset-stable (see Concepts → "ID sources")
+    // cursor MUST be keyset-stable: built from a value whose relative
+    // order across calls never changes (e.g. an ID or timestamp), not a
+    // positional offset — an offset shifts under concurrent inserts and
+    // deletes, silently skipping IDs
 
 // triggers
 type Trigger interface {

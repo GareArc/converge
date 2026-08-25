@@ -267,3 +267,5 @@ converge hands you HTTP handlers; it never opens a port itself. The handler
 that can change things carries no login of its own, so you mount it behind
 whatever authentication your service already has — or mount the read-only
 one instead, which can only tell you what is registered and what ran last.
+
+Coming from Kubernetes or Kafka? [Converge terms in other systems](reference/prior-art.md).

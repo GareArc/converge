@@ -1,5 +1,10 @@
 # `converge/worker` — the edge-triggered model
 
+[Worker](../glossary.md#worker) jobs do one specific thing that just
+happened: something enqueues a message, and converge hands it to your
+function exactly as sent, retrying on failure and setting it aside rather
+than dropping it if the retries run out.
+
 ```go
 func NewTask[T any](name string, o TaskOpts) Task[T]
 

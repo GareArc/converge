@@ -30,8 +30,7 @@ var OnOneReplica RunMode        // lease per job
 var SplitAcrossReplicas RunMode // worker surface only in v1; reconcile → registration error
 var OnAllReplicas RunMode
 
-// message delivery mode for hint queues (see the reconcile guide's
-// "Triggers and the schedule" section); zero value follows the run mode
+// message delivery mode for hint queues; zero value follows the run mode
 var Group DeliveryMode     // competing consumers — each message wakes one replica
 var Broadcast DeliveryMode // every replica sees every message
 
@@ -98,8 +97,8 @@ type Lease interface {
 type LeaseHandle interface {
     Extend(ctx context.Context, ttl time.Duration) error
     Release(ctx context.Context) error
-    Done() <-chan struct{} // closed on loss → engine cancels in-flight ctx
-                           // (a neutral outcome — see the reconcile/worker guides)
+    Done() <-chan struct{} // closed on loss → engine cancels in-flight ctx;
+                           // neither surface counts this as a failure
 }
 
 type KV interface {
