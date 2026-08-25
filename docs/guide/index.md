@@ -23,8 +23,8 @@ A file's imports declare its model: code importing `worker` but not
 
 - [A first job](01-first-job.md) — one function, on a schedule, with nothing
   installed.
-- [2. IDs](02-ids.md) — IDs, ID sources, and what a handler's return
-  value means.
+- [2. IDs](02-ids.md) — IDs, and where the list of things to check comes
+  from.
 - [Reconcile](reconcile.md) — triggers, the schedule, and the reconcile
   outcome table.
 - [Worker](worker.md) — the worker outcome table, visibility, and retries.
