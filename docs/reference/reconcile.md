@@ -90,5 +90,5 @@ func (t *Tracker) MarkApplied(ctx context.Context, id ID, v Version) error
 func (t *Tracker) Forget(ctx context.Context, id ID) error // GC when the entity is deleted
 ```
 
-See [Version tracking](../guide/versions.md) for `Tracker`'s namespace and
+See [7. Stale writes](../guide/07-versions.md) for `Tracker`'s namespace and
 revival rules.

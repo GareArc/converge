@@ -68,5 +68,5 @@ if _, err := r.tracker.MarkChanged(ctx, reconcile.JoinID(tenantID, appID)); err 
 publishAppEvent(ctx, tenantID, appID) // best-effort; the schedule covers message loss
 ```
 
-See also: [Version tracking](../guide/versions.md) for the ordering rule
+See also: [7. Stale writes](../guide/07-versions.md) for the ordering rule
 (`Latest` before truth, `v` as the write guard) this example follows.

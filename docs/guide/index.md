@@ -32,7 +32,8 @@ A file's imports declare its model: code importing `worker` but not
   handle it.
 - [5. Run modes](05-run-modes.md) — running three copies of your service,
   and which one does the work.
-- [Version tracking](versions.md) — protecting against stale writes.
+- [7. Stale writes](07-versions.md) — protecting a write when "safe to run
+  twice" isn't enough on its own.
 - [Testing](testing.md) — `convergetest`, the harness over the real engine.
 - [Operations](operations.md) — runtime lifecycle, introspection, ops
   verbs.
