@@ -70,6 +70,11 @@ func main() {
 }
 ```
 
+`MQ: inmem.NewMQ()` is a third line chapters 1 through 3 had no use for: it
+is where the [queue](../glossary.md#queue) itself lives. It is in memory here
+like the two lines beside it, which is why this example still needs nothing
+installed; [chapter 6](06-production.md) is where all three become Redis.
+
 `sendWelcome` is a `worker.Task[Welcome]`: a name, a payload type, and a
 queue, agreed once and shared by whatever sends the message and whatever
 handles it. `worker.Handle` registers the function that runs when a message

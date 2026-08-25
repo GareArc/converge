@@ -3,12 +3,12 @@
 You deploy three copies of your service, the way chapter 1 assumed without
 saying how. Register `rebuild-cache` — the job below, one function that
 rebuilds an in-memory cache every second — on all three copies exactly as
-chapters 1 through 4 taught, and by default all three run it: three rebuilds
-a second for one cache, not one. This chapter is the dial that decides how
-many of your copies actually do the work for a job like this one, and why
-converge already set it for you without asking. By the end you will have run
-the same job two different ways and watched the difference in how many
-times it actually happened.
+chapters 1 through 4 taught, and with nothing deciding between them all three
+would run it: three rebuilds a second for one cache, not one. This chapter is
+the dial that decides how many of your copies actually do the work for a job
+like this one, and why converge already set it for you without asking. By the
+end you will have run the same job two different ways and watched the
+difference in how many times it actually happened.
 
 ## The code
 
@@ -140,12 +140,12 @@ others are doing, just one copy holding something the rest cannot get.
 
 `converge.OnOneReplica` is one of three [run mode](../glossary.md#run-mode)
 values, and it is the one you get by not choosing: leave `RunMode` unset on
-a reconcile job, the way `rebuild-cache` above does, and the way chapters 1
-through 3 did too, and that is what you already had.
-`converge.OnAllReplicas`, the one this chapter's second run used, is the
-opposite choice — it skips the lease entirely, so every copy runs the
-schedule on its own, with nothing coordinating between them, which is
-exactly why the count doubled instead of staying flat.
+a reconcile job, the way chapters 1 through 3 did, and that is what you
+already had. `rebuild-cache` above sets it explicitly only so that `main` can
+run the same job both ways. `converge.OnAllReplicas`, the one this chapter's
+second run used, is the opposite choice — it skips the lease entirely, so
+every copy runs the schedule on its own, with nothing coordinating between
+them, which is exactly why the count doubled instead of staying flat.
 
 ## Other shapes
 
@@ -153,7 +153,8 @@ There is a third run mode, `converge.SplitAcrossReplicas`: instead of one
 copy doing all the work, or every copy doing all of it, the work is
 divided between them — each message goes to exactly one copy, chosen by
 the queue itself, not by converge. In v1 that exists only on the worker
-surface, where the queue's own consumer groups do the dividing. Set
+[surface](../glossary.md#surface) — which of converge's two kinds of job
+this one is — where the queue's own consumer groups do the dividing. Set
 `RunMode: converge.SplitAcrossReplicas` on a reconcile spec — including
 `rebuild-cache` above — and converge refuses to register the job at all,
 the same way it refused `wait-for-cluster` in chapter 3 without
@@ -196,11 +197,12 @@ Three ticks, six invoices: on every tick, both copies ran the job and both
 added to the same ledger, so whatever real system that ledger stood for
 gets billed twice for every event it should have billed once. Nothing
 crashed and nothing logged an error — this is a program working exactly as
-told, giving a wrong answer. converge cannot tell this case apart from a
-job like chapter 1's own bookkeeping, where every copy doing its own work
-is correct; choosing the right run mode is how you tell it apart. Notice,
-too, that `#4` printed before `#3` — two copies writing to the same thing
-with nothing coordinating the order between them, not even that.
+told, giving a wrong answer. converge cannot tell this case apart from the
+in-memory cache `rebuild-cache` stood for up to now, where every copy doing
+its own work is correct; choosing the right run mode is how you tell it
+apart. Notice, too, that `#4` printed before `#3` — two copies writing to
+the same thing with nothing coordinating the order between them, not even
+that.
 
 ## A caveat
 

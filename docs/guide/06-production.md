@@ -64,9 +64,10 @@ func main() {
 
 Two of chapter 1's lines are swapped: `Lease: inmem.NewLease()` and
 `KV: inmem.NewKV()` become `convredis.NewLease(rdb)` and
-`convredis.NewKV(rdb)`. The third new line, `MQ:
-convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{})`, is not a swap —
-chapter 1 never had an `MQ` line at all. With everything in memory, a
+`convredis.NewKV(rdb)`. The third line, `MQ:
+convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{})`, replaces the
+in-memory `MQ` [chapter 4](04-worker.md) introduced; chapter 1 itself never
+had one, and neither did chapters 2 and 3. With everything in memory, a
 [poke](../glossary.md#poke) could only ever reach the process that raised
 it; there was no second copy for it to reach. `MQ` is what carries a
 trigger from the copy that received it to the copy that will act on it, so
