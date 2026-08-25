@@ -4,13 +4,13 @@ Chapter 9 gave you a way to ask a running job questions from outside the
 process. This chapter is about the question nobody thinks to ask, because
 nothing prompts it: a job that has quietly stopped running altogether. If
 your background jobs failing silently would be a bad day for you, this
-chapter is for you. A reconcile pass that stops firing, or a worker that
-stops consuming, does not raise an error — the process is still up, nothing
-crashed, there is just nothing happening. Nothing pages you, because from
-inside the process nothing looks wrong. By the end of this chapter you will
-have watched converge's own events turn into named numbers in an exporter's
-output, and you will know which one of those numbers to alert on so that
-silence itself gets you paged.
+chapter is for you. A [reconcile](../glossary.md#reconcile) pass that stops
+firing, or a worker that stops consuming, does not raise an error — the
+process is still up, nothing crashed, there is just nothing happening.
+Nothing pages you, because from inside the process nothing looks wrong. By
+the end of this chapter you will have watched converge's own events turn
+into named numbers in an exporter's output, and you will know which one of
+those numbers to alert on so that silence itself gets you paged.
 
 ## The code
 
@@ -146,8 +146,9 @@ cut:
 1. The moment `go run` started, `refresh-licenses` fired its first pass
    immediately, then again every 500ms after — the same immediate first
    fire every scheduled job in this guide has had since chapter 1. Taking
-   charge of the job called `observer.Observe` with a lease acquisition
-   once; each completed pass called it again with a completed run.
+   charge of the job called `observer.Observe` with a
+   [lease](../glossary.md#lease) acquisition once; each completed pass
+   called it again with a completed run.
 2. About a second in, the periodic reader's first export printed. Both
    `converge` metric names are already there: `converge.run.duration` has
    recorded two runs (`"Count": 2`), each carrying `converge.job`,
@@ -175,9 +176,11 @@ completely different metrics system instead.
 ## Other shapes
 
 This chapter's example only shows two of the six things `convotel` can
-report — a run and a lease transition — because `refresh-licenses` never
-fails and never runs more than one job. The complete inventory, and the
-only names this chapter will use, is this:
+report — a run and a lease transition, not an ID going
+[parked](../glossary.md#parked) or a message reaching the
+[dead-letter](../glossary.md#dead-letter-dlq) store — because
+`refresh-licenses` never fails and never runs more than one job. The
+complete inventory, and the only names this chapter will use, is this:
 
 | Instrument | Kind | Meaning |
 |---|---|---|

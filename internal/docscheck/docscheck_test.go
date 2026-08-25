@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -83,9 +84,6 @@ func firstDiff(got, want string) string {
 }
 
 func TestGlossaryCoversContext(t *testing.T) {
-	if os.Getenv("DOCSCHECK_STRICT") == "" {
-		t.Skip("set DOCSCHECK_STRICT=1 to enforce; enabled permanently in task 17")
-	}
 	root := mustRoot(t)
 	ctx, err := ContextTerms(filepath.Join(root, "CONTEXT.md"))
 	if err != nil {
@@ -116,9 +114,6 @@ func TestGlossaryCoversContext(t *testing.T) {
 }
 
 func TestNoTermUsedCold(t *testing.T) {
-	if os.Getenv("DOCSCHECK_STRICT") == "" {
-		t.Skip("set DOCSCHECK_STRICT=1 to enforce; enabled permanently in task 17")
-	}
 	root := mustRoot(t)
 	terms, err := ContextTerms(filepath.Join(root, "CONTEXT.md"))
 	if err != nil {
@@ -164,4 +159,160 @@ func TestNoTermUsedCold(t *testing.T) {
 		}
 	}
 	t.Logf("terms checked: %d; stoplisted: %v", checked, Stoplist)
+}
+
+var atxHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
+
+func headingSlugs(path string) ([]string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	inFence := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		if leadingFence(line) != "" {
+			inFence = !inFence
+			continue
+		}
+		if inFence {
+			continue
+		}
+		if m := atxHeadingRe.FindStringSubmatch(line); m != nil {
+			text := strings.TrimRight(strings.TrimSpace(m[2]), "# ")
+			out = append(out, slugify(text))
+		}
+	}
+	return out, nil
+}
+
+func slugify(heading string) string {
+	lower := strings.ToLower(heading)
+	var b strings.Builder
+	for _, r := range lower {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == ' ', r == '-':
+			b.WriteRune(r)
+		}
+	}
+	return strings.ReplaceAll(b.String(), " ", "-")
+}
+
+func closestSlug(slugs []string, want string) string {
+	best := ""
+	bestDist := -1
+	for _, s := range slugs {
+		d := levenshtein(s, want)
+		if bestDist == -1 || d < bestDist {
+			bestDist = d
+			best = s
+		}
+	}
+	return best
+}
+
+func levenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	la, lb := len(ra), len(rb)
+	prev := make([]int, lb+1)
+	curr := make([]int, lb+1)
+	for j := 0; j <= lb; j++ {
+		prev[j] = j
+	}
+	for i := 1; i <= la; i++ {
+		curr[0] = i
+		for j := 1; j <= lb; j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			del := prev[j] + 1
+			ins := curr[j-1] + 1
+			sub := prev[j-1] + cost
+			m := del
+			if ins < m {
+				m = ins
+			}
+			if sub < m {
+				m = sub
+			}
+			curr[j] = m
+		}
+		prev, curr = curr, prev
+	}
+	return prev[lb]
+}
+
+func stripFencedCode(src string) string {
+	lines := strings.Split(src, "\n")
+	inFence := false
+	for i, line := range lines {
+		if leadingFence(line) != "" {
+			inFence = !inFence
+			lines[i] = ""
+			continue
+		}
+		if inFence {
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func TestInternalMarkdownLinksResolve(t *testing.T) {
+	root := mustRoot(t)
+	files, err := MarkdownFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkRe := regexp.MustCompile(`\[[^\]]*\]\(([^)]+)\)`)
+	slugCache := map[string][]string{}
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prose := stripFencedCode(string(raw))
+		for _, m := range linkRe.FindAllStringSubmatch(prose, -1) {
+			target := m[1]
+			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "#") || strings.HasPrefix(target, "mailto:") {
+				continue
+			}
+			fragment := ""
+			if i := strings.IndexByte(target, '#'); i >= 0 {
+				fragment = target[i+1:]
+				target = target[:i]
+			}
+			if target == "" {
+				continue
+			}
+			resolved := filepath.Join(filepath.Dir(f), target)
+			if _, err := os.Stat(resolved); err != nil {
+				t.Errorf("%s: broken link %q", relTo(root, f), m[1])
+				continue
+			}
+			if fragment == "" || !strings.HasSuffix(resolved, ".md") {
+				continue
+			}
+			slugs, ok := slugCache[resolved]
+			if !ok {
+				slugs, err = headingSlugs(resolved)
+				if err != nil {
+					t.Fatal(err)
+				}
+				slugCache[resolved] = slugs
+			}
+			found := false
+			for _, s := range slugs {
+				if s == fragment {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s: link %q has broken fragment %q; closest heading slug is %q",
+					relTo(root, f), m[1], fragment, closestSlug(slugs, fragment))
+			}
+		}
+	}
 }

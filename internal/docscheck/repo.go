@@ -10,12 +10,14 @@ import (
 )
 
 var skipDirs = map[string]bool{
-	".git":         true,
-	".generated":   true,
 	"node_modules": true,
 	"superpowers":  true,
 	"testdata":     true,
 	"website":      true,
+}
+
+func skipDir(name string) bool {
+	return strings.HasPrefix(name, ".") || skipDirs[name]
 }
 
 func RepoRoot() (string, error) {
@@ -42,7 +44,7 @@ func MarkdownFiles(root string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			if skipDirs[d.Name()] {
+			if skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
