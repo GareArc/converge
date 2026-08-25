@@ -27,7 +27,9 @@ A file's imports declare its model: code importing `worker` but not
   from.
 - [3. Triggers](03-triggers.md) — asking converge to check something now, or
   asking to be checked again later.
-- [Worker](worker.md) — the worker outcome table, visibility, and retries.
+- [4. The other kind of job](04-worker.md) — sending one message for one
+  thing that happened, and what converge does when your handler fails to
+  handle it.
 - [Run modes and concurrency](run-modes.md) — who runs a job, across
   replicas.
 - [Version tracking](versions.md) — protecting against stale writes.

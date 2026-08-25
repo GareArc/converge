@@ -70,5 +70,5 @@ which is at-least-once under concurrent mutation on the Redis adapter (see
 [Adapters → KV](adapters.md#kv--newkv)); the DLQ list dedups by key so a
 duplicate-returning `Scan` can never surface a duplicate dead-letter record.
 
-See [Worker](../guide/worker.md) for the outcome table, logical-attempt vs.
-transport-delivery distinction, and `OnAllReplicas` semantics.
+See [4. The other kind of job](../guide/04-worker.md) for a walkthrough of
+what a handler can return.

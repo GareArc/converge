@@ -75,5 +75,5 @@ In a process that both produces and consumes, `worker.ProducerFrom(rt)`
 resolves each queue through the registered handlers' bindings, falling back
 to the default MQ for queues handled elsewhere (validated at `Run`).
 
-See also: [Worker outcomes](../guide/worker.md), and the
+See also: [Worker outcomes](../guide/04-worker.md), and the
 [worker API reference](../reference/worker.md) for `RetryPolicy`'s defaults.

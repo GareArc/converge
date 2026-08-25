@@ -28,5 +28,4 @@ device — it prevents duplicate work; it does not provide correctness.
 any spec feature that assumes one logical runner over shared state:
 `Versions`, `DeadLetterAfter`, `IDsByPage`, `RateLimit`. Per-replica jobs
 converge per-replica state; shared bookkeeping would race. On the worker
-surface, `OnAllReplicas` additionally changes retry semantics — see
-[Worker → Run modes](worker.md#run-modes).
+surface, `OnAllReplicas` additionally changes retry semantics.
