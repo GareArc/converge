@@ -39,6 +39,7 @@ type Spec struct {
 }
 
 // outcome values — implement error; keyed fields required
+
 // after 10 consecutive CheckAgain returns for one ID the failure backoff
 // curve applies anyway, reported as BackoffFallback
 type CheckAgain struct {

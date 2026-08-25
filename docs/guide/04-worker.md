@@ -177,5 +177,5 @@ is not, and worth designing against. `sendWelcome`'s handler here just
 prints a line, so it happens to tolerate that without any extra care —
 real handlers usually need to earn it.
 
-Next: [5. More than one copy](05-run-modes.md) — running three copies of your
-service, and which one does the work.
+Next: [5. More than one copy](05-run-modes.md) — running three copies of
+your service, and which one does the work.

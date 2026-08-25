@@ -31,13 +31,13 @@ you can ship.
   nothing installed.
 - [2. Many things to check](02-ids.md) — the IDs one job looks after, and
   where that list comes from.
-- [3. Reacting to events](03-triggers.md) — asking converge to check something now, or
-  asking to be checked again later.
+- [3. Reacting to events](03-triggers.md) — asking converge to check
+  something now, or asking to be checked again later.
 - [4. The other kind of job](04-worker.md) — sending one message for one
   thing that happened, and what converge does when your handler fails to
   handle it.
-- [5. More than one copy](05-run-modes.md) — running three copies of your service,
-  and which one does the work.
+- [5. More than one copy](05-run-modes.md) — running three copies of your
+  service, and which one does the work.
 - [6. Going to production](06-production.md) — the three things you swap to
   move off in-memory storage, and what changes (and what doesn't) when you
   do.

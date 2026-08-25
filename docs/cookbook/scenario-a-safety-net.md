@@ -37,5 +37,5 @@ func (r *Reconciler) Reconcile(ctx context.Context, id reconcile.ID) error {
 Defaults do the rest: one replica runs it, serially, with persisted last-fire
 (a leader crash at 02:59 doesn't skip the night's pass).
 
-See also: [2. Many things to check](../guide/02-ids.md) for the ID vocabulary this example
-relies on.
+See also: [2. Many things to check](../guide/02-ids.md) for the ID
+vocabulary this example relies on.

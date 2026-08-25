@@ -95,10 +95,11 @@ func TestSyncTenantsChecksEveryTenant(t *testing.T) {
 [lease](../glossary.md#lease), and a clock you can move by hand instead of
 waiting on your machine's real one. `h.Build(t)` builds the runtime those
 pieces sit behind — the same `*converge.Runtime` `converge.New` returns
-everywhere else in this guide — but does not start it, so `Register(rt, store)` has a window to
-register `sync-tenants` before anything can run it. The harness has a
-second way to reach the runtime, `h.Runtime(t)`, which starts it
-immediately if it isn't already running; reach for that one when you need
+everywhere else in this guide — but does not start it, so
+`Register(rt, store)` has a window to register `sync-tenants` before
+anything can run it. The harness has a second way to reach the runtime,
+`h.Runtime(t)`, which starts it immediately if it isn't already running;
+reach for that one when you need
 the runtime before you've decided what will start it, not when you still
 have registration left to do first.
 

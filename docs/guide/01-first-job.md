@@ -138,5 +138,5 @@ shut down, and it blocks until then. Carry the two-second interval into
 production by accident and you will call your function eighteen hundred times
 an hour.
 
-Next: [2. Many things to check](02-ids.md) — one function looking after ten thousand things
-instead of one.
+Next: [2. Many things to check](02-ids.md) — one function looking after
+ten thousand things instead of one.
