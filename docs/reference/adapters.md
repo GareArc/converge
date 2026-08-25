@@ -14,7 +14,6 @@ interfaces, never signature changes):
 | `adapters/redis` (`convredis`) | `NewStreamsMQ` (GroupConsumer, BroadcastConsumer, DelayedPublisher), `NewLease`, `NewKV`, `ListTrigger` |
 | `adapters/otel` (`convotel`) | `NewObserver` |
 | `bridges/kratos` (`convkratos`) | `Server(rt)` — a `transport.Server` |
-| `bridges/k8s` | informer → `reconcile.Trigger` |
 
 Durability note: at-least-once holds **to the durability of your MQ**. Redis
 Streams with default persistence can lose acknowledged writes on failover —

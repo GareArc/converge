@@ -132,8 +132,7 @@ request.
 
 ## Other shapes
 
-This chapter's example only mounts the read-only handler. Two more things
-worth knowing follow the same shape as the principle above.
+Two more things worth knowing follow the same shape as the principle above.
 
 **Pausing a job.** `OpsHandler` exposes pause and resume as their own
 routes. This chapter's example only mounts `ReadOnlyHandler`, on

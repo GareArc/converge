@@ -179,8 +179,9 @@ This chapter's example only shows two of the six things `convotel` can
 report — a run and a lease transition, not an ID going
 [parked](../glossary.md#parked) or a message reaching the
 [dead-letter](../glossary.md#dead-letter-dlq) store — because
-`refresh-licenses` never fails and never runs more than one job. The
-complete inventory, and the only names this chapter will use, is this:
+`refresh-licenses` never fails, so no ID ever parks, and this program runs
+no worker job, so no message ever reaches that store. The complete
+inventory, and the only names this chapter will use, is this:
 
 | Instrument | Kind | Meaning |
 |---|---|---|
