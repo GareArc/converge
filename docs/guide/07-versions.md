@@ -186,10 +186,11 @@ guarantee on.
 Wiring `Spec.Versions` also turns on [parked](../glossary.md#parked)-ID
 revival: an ID converge gave up on after repeated failures does not come
 back on its own — not even on the schedule's own next pass — until
-something pokes it. Giving up is itself something you opt into, by setting
-`Spec.DeadLetterAfter`; left at its default, an ID retries forever instead,
-so no job in this guide ever parks one. With version tracking wired in, a
-version advance revives a parked ID too, the same as a poke would.
+something pokes it. Giving up on a failing ID is itself something you opt
+into, by setting `Spec.DeadLetterAfter`; left at its default, a failing ID
+retries forever instead, so no job in this guide ever parks one. With
+version tracking wired in, a version advance revives a parked ID too, the
+same as a poke would.
 
 `Tracker`'s namespace is not cosmetic, either. Registering it into
 `Spec.Versions` requires the namespace to equal the job's own `Spec.Name`

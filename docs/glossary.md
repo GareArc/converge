@@ -114,10 +114,10 @@ instead and skip the tracker entirely.
 ### Parked
 
 Converge tried to check something, it kept failing, and converge has stopped
-retrying it until something changes. That happens once the job's
-`DeadLetterAfter` limit is set and reached; left unset, the ID retries
-forever instead. It is not lost — it starts again on the
-next poke or when its version changes — and it is not the same as a
+retrying it until something changes. Giving up on a failing ID happens once
+the job's `DeadLetterAfter` limit is set and reached; left unset, a failing
+ID retries forever instead. It is not lost — it starts again on the next
+poke or when its version changes — and it is not the same as a
 dead-lettered message, which only comes back if an operator requeues it.
 
 ## Words for worker jobs
