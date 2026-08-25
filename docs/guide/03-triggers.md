@@ -144,19 +144,26 @@ schedule the job doesn't need just to satisfy the check.
 
 ## A caveat
 
-Every scheduled job keeps a record of when its schedule last fired. The
-very first time — before that record exists — converge calls your function
-immediately, which is what you saw in chapter 1. Once the record exists,
-converge works out which scheduled moments have already gone by and waits
-for the next one instead of firing right away.
+This one is about chapter 1's job, not this chapter's: `wait-for-cluster`
+has no schedule at all, so it has no record of when it last fired and
+nothing below applies to it — poking it prints the same four lines on
+every run, restart or not.
 
-Here that record lives in memory, so it never survives a restart: stop this
-program and start it again and there is no record to find, so you are back
-to the immediate-first-run case every time. Once you swap `inmem.NewKV()`
-for something that outlives the process — [chapter 6](06-production.md)'s
-Redis swap — that stops being true: restart your service in the middle of
-an interval and converge finds the record, works out the interval hasn't
-passed yet, and does not re-run the job just because the process did.
+`refresh-licenses`, chapter 1's job, does have a schedule, and every
+scheduled job keeps a record of when that schedule last fired. The very
+first time — before the record exists — converge calls the function
+immediately, which is what you saw there. Once the record exists, converge
+works out which scheduled moments have already gone by and waits for the
+next one instead of firing right away.
+
+Chapter 1 keeps that record in memory, so it never survives a restart:
+stop `refresh-licenses` and start it again and there is no record to find,
+so you are back to the immediate-first-run case every time. Once you swap
+`inmem.NewKV()` for something that outlives the process —
+[chapter 6](06-production.md)'s Redis swap — that stops being true:
+restart the service in the middle of an interval and converge finds the
+record, works out the interval hasn't passed yet, and does not re-run the
+job just because the process did.
 
 Next: [4. The other kind of job](04-worker.md) — work that only needs
 doing once, for one thing that happened.

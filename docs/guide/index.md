@@ -25,8 +25,8 @@ A file's imports declare its model: code importing `worker` but not
   installed.
 - [2. IDs](02-ids.md) — IDs, and where the list of things to check comes
   from.
-- [Reconcile](reconcile.md) — triggers, the schedule, and the reconcile
-  outcome table.
+- [3. Triggers](03-triggers.md) — asking converge to check something now, or
+  asking to be checked again later.
 - [Worker](worker.md) — the worker outcome table, visibility, and retries.
 - [Run modes and concurrency](run-modes.md) — who runs a job, across
   replicas.

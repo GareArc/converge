@@ -102,8 +102,7 @@ the schedule itself: a paused reconciler's trigger still runs its passes and
 still enumerates the full ID space on schedule, at the same cost as when
 unpaused (DB queries, cursor pages) — only the resulting wakes are dropped.
 Budget for that cost when a job you plan to pause has an expensive ID
-source. See [Reconcile → Triggers and the schedule](reconcile.md) for the
-schedule-side detail.
+source.
 
 ## Operational visibility
 
