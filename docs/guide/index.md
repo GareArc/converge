@@ -77,22 +77,25 @@ Every background job is one of exactly two things:
 | Style | level-triggered — you are given *what to look at* | edge-triggered — you are given *what to do* |
 | You write | `Reconcile(ctx, id) error` | `Handle(ctx, payload) error` |
 | A message is | a *[hint](../glossary.md#hint)* — "re-check this ID" | the *work itself* |
-| Lost message means | slightly later convergence (the scheduled pass catches it) | lost work — so delivery is at-least-once (ack, retry, [DLQ](../glossary.md#dead-letter-dlq)), to the durability of your MQ |
-| Must be | idempotent, re-reads truth | idempotent (at-least-once delivery) |
-| Examples | credential sync, deploy convergence, cache warmers | send an email, run an export, call a webhook once |
+| Lost message means | the state is put right a little later: the next scheduled round looks at that ID anyway | the work is gone, and no later round notices — so converge keeps hold of it. It records a message as handled only once your handler has dealt with it, hands it back again if that fails, and sets it aside as a [dead-letter](../glossary.md#dead-letter-dlq) rather than dropping it. That reaches only as far as the queue underneath stores messages durably |
+| Must be | safe to run twice, and written to look at how things actually are rather than trust what it was told | safe to run twice: your handler can be called more than once for the same message |
+| Examples | keeping credentials in sync, keeping a deployment in step with what it should be, warming a cache | send an email, run an export, call a webhook once |
 
 **The decision test:** *given only an ID, can the handler recompute everything
 by re-reading storage?* Yes → `reconcile`. No (the message is the only copy of
 the data) → `worker`.
 
 **The rule that prevents the classic [reconcile](../glossary.md#reconcile)
-incident:** your reconcile handler runs **every scheduled pass, even when
-nothing has changed**. Every side effect must therefore be conditioned on
-observed state. "Notify the workspace when it exceeds quota" must not send a
-notification per pass — it converges toward "a notification exists": check
-the stored `notified_at` fact, send only if absent, record that it was sent.
-If a side effect can't be made convergent like this, it's a verb — use
-`worker`.
+incident:** your reconcile handler runs **every time the schedule comes
+around, whether or not anything has changed**. So every side effect it
+performs has to depend on what it finds, not on the fact that it ran. "Notify
+the workspace when it exceeds quota" must not send a notification every time
+— write it to work toward "a notification exists": read the stored
+`notified_at` fact, send only if it is absent, and record that you sent it. A
+side effect you cannot make conditional like that is a one-time action; send
+it through `worker` instead.
 
-When in doubt, it's a reconciler. Most "queues" that carry `{"workspace_id": X,
-"type": "changed"}` are reconcilers wearing worker costumes.
+When in doubt, it is a reconcile job. A queue whose messages carry
+`{"workspace_id": X, "type": "changed"}` is not carrying work — it is
+carrying a name to go and look at, which makes it a reconcile job dressed as
+a worker.
