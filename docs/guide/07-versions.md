@@ -105,10 +105,10 @@ Inside the handler, `tracker.MarkChanged(ctx, id)` stands in for a
 second, concurrent piece of code: in a real deployment that call lives
 wherever new desired state gets saved — an API handler, a config sync —
 not inside the reconciler that applies it. Placing it here, between the
-version read and the guarded write, is what lets one process demonstrate
-the race a second copy would ordinarily cause: by the time `MarkApplied`
-runs, the version has already moved past what the handler read at the
-top.
+version read and the `MarkApplied` call that checks it, is what lets one
+process demonstrate the race a second copy would ordinarily cause: by
+the time `MarkApplied` runs, the version has already moved past what the
+handler read at the top.
 
 ## Run it
 
@@ -143,10 +143,14 @@ refused: config changed while we were applying it
 The order those three tracker calls happen in is a rule, not a style
 choice: read the version, then read whatever truth you are about to
 apply, then perform that write guarded by the version you already have,
-then call `MarkApplied` with that same version. Get the order wrong and
-the guarantee breaks — see "Try breaking it" below. converge does not
-enforce the order for you; `Tracker` only refuses to record
-`MarkApplied` at a version that something has since moved past.
+then call `MarkApplied` with that same version. `apply-config` above has
+no real downstream to write to, so its `fmt.Printf` line stands in for
+both reading truth and the guarded write, and only `MarkApplied` itself
+is a real tracker call — a job with an actual write in the middle keeps
+all four as separate steps. Get the order wrong and the guarantee
+breaks — see "Try breaking it" below. converge does not enforce the
+order for you; `Tracker` only refuses to record `MarkApplied` at a
+version that something has since moved past.
 
 What that refusal actually buys you depends on your downstream. If the
 write itself can honor the version as a condition — a `WHERE
@@ -161,21 +165,22 @@ it as done. Know which of the two your job has before you rely on it.
 `apply-config` above chose to swallow the refusal — it caught
 `errors.Is(err, reconcile.ErrOutdated)` and returned `nil`, ending the
 pass quietly. Returning the error instead, unwrapped, would have
-converge requeue the ID immediately rather than back off the way a real
-failure would: `ErrOutdated` is not treated as something having gone
-wrong, only as a sign that the ID needs looking at again right away.
-Which of the two you want depends on whether the next pass should pick up
-the changed config immediately, or wait for whatever normally wakes this
-ID.
+converge requeue the ID right away, without the backoff curve a real
+failure gets: `ErrOutdated` is not treated as something having gone
+wrong, only as a sign that the ID needs looking at again soon. Which of
+the two you want depends on whether the next pass should pick up the
+changed config as soon as possible, or wait for whatever normally wakes
+this ID.
 
 ## Other shapes
 
 `Tracker` is the version source converge provides for free. If your own
-truth already carries a column that moves whenever intent changes — a
-real optimistic-concurrency column, not just an `updated_at` — implement
-the one-method `VersionSource` interface over that column directly and
-skip `Tracker` entirely. Either way, wiring `Spec.Versions` is what turns
-the guarantee on.
+truth already has a column that moves whenever intent changes — not a
+timestamp like `updated_at`, but a counter that only advances when
+somebody changes what the ID should look like — implement the
+one-method `VersionSource` interface over that column directly and skip
+`Tracker` entirely. Either way, wiring `Spec.Versions` is what turns the
+guarantee on.
 
 Wiring `Spec.Versions` also turns on [parked](../glossary.md#parked)-ID
 revival: an ID converge gave up on after repeated failures does not come
@@ -187,7 +192,11 @@ revives it too, the same as a poke would.
 `Spec.Versions` requires the namespace to equal the job's own `Spec.Name`
 — `apply-config` above uses `"apply-config"` for both — because the
 namespace is what keeps two jobs' version counters from colliding in the
-same KV. Get it wrong and registration fails before the job ever runs.
+same KV. `NewTracker` itself also refuses an empty namespace, or one
+containing `/`: a slash in the namespace could make one job's tracker
+keys look like another's, since the namespace and the ID share the same
+slash-separated key underneath. Get either wrong and registration fails
+before the job ever runs.
 
 ## Try breaking it
 
