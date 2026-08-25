@@ -58,6 +58,23 @@ type Discard struct {
 }
 ```
 
+## Outcomes
+
+| Return | Engine does |
+|---|---|
+| `nil` | ack — done |
+| `Snooze{In: d}` | ack, republish after `d`; logical attempt untouched — capped by `Retry.MaxAge`, not `Retry.MaxAttempts` |
+| `Discard{Reason: s}` | ack, `MessageDiscarded` observer event; never redelivered |
+| handler's context canceled (shutdown, or losing the lease under `converge.OnOneReplica`) | ack, republish immediately — not after `Visibility` — logical attempt preserved, no failure counted |
+| any other error | attempt++, redeliver after backoff |
+| `Retry.MaxAttempts` reached, or age exceeds `Retry.MaxAge` | dead-lettered — payload and final error kept |
+| panic | recovered, converted to an error, then handled as "any other error" above |
+
+While a handler runs, the engine automatically extends the delivery's
+visibility (heartbeats at `Visibility/3`); reclaim by another worker only
+happens once those heartbeats stop — i.e. the process holding the message
+has actually died.
+
 `Meta.EnqueuedAt` reflects the message's `converge.enqueued-at` header, not
 necessarily the moment your code first called `Enqueue` — see
 [Adapters → EnqueuedAt divergence](adapters.md#enqueuedat-divergence) for

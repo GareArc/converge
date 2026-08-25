@@ -95,7 +95,7 @@ sending welcome email to grace@example.com
 1. Nothing printed the moment either `Enqueue` call returned — enqueuing
    only puts a message on the queue; nothing runs until `rt.Run` starts.
 2. Both lines appeared together, right after `rt.Run` started:
-   `ada@example.com` first, then `grace@example.com`, each exactly once, in
+   `ada@example.com` first, then `grace@example.com`, each printed once, in
    the order the two `Enqueue` calls happened.
 3. Nothing printed again after that. Unlike chapters 1 through 3, nothing
    here walks a list every so often — a worker message is handled once, and
@@ -117,7 +117,7 @@ returns an error, converge doesn't move on to the next message on the
 [queue](../glossary.md#queue) — it redelivers the same one, with a delay
 that grows each time it fails again. And if it keeps failing, converge
 doesn't drop it either: it gets set aside as a
-[dead-letter](../glossary.md#dead-letter), kept for a person to look at,
+[dead-letter](../glossary.md#dead-letter-dlq), kept for a person to look at,
 instead of thrown away.
 
 ## Outcomes
@@ -160,11 +160,12 @@ to requeue it.
 
 ## A caveat
 
-converge redelivers a worker message at least once — never fewer times
-than it takes to get an acknowledgment, sometimes more. If your process
-dies after sending the email but before converge records that the message
-succeeded, converge redelivers it, and your handler runs again for the
-same `Welcome{Email: "ada@example.com"}`. A handler can run twice for one
+converge makes sure your handler is called at least once for every
+message; it never silently drops one, but it may call your handler more
+than once for the same message. If your process dies after sending the
+email but before converge records that the message succeeded, converge
+redelivers it, and your handler runs again for the same
+`Welcome{Email: "ada@example.com"}`. A handler can run twice for one
 message, so make it safe to run twice: sending the same welcome email
 twice is a minor annoyance, and worth checking for; charging a card twice
 is not, and worth designing against. `sendWelcome`'s handler here just
