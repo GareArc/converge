@@ -3,6 +3,7 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'Converge',
   description: 'One model for all background work',
+  base: '/converge/',
   srcDir: './.generated',
   outDir: './.dist',
   cleanUrls: true,
