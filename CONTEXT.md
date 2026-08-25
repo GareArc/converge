@@ -36,7 +36,7 @@ _Avoid_: job (that is the umbrella term)
 ### Reconcile concepts
 
 **ID**:
-The name of one unit of reconcile work (one workspace, one app, one deploy).
+The name of one unit of reconcile work (one SKU, one customer, one region).
 _Avoid_: key, workqueue key, Redis key
 
 **Wake**:
