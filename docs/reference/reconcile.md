@@ -49,10 +49,11 @@ func SingleID() IDSource
 func IDs(fn func(ctx context.Context) ([]ID, error)) IDSource
 func StringIDs(fn func(ctx context.Context) ([]string, error)) IDSource
 func IDsByPage(fn func(ctx context.Context, cursor string) ([]ID, string, error)) IDSource
-    // cursor MUST be keyset-stable: built from a value whose relative
-    // order across calls never changes (e.g. an ID or timestamp), not a
-    // positional offset — an offset shifts under concurrent inserts and
-    // deletes, silently skipping IDs
+    // cursor MUST be keyset-stable: a value that is both order-stable and
+    // unique across calls (e.g. an auto-incrementing ID, or a timestamp
+    // paired with a tiebreaker column when it isn't already unique), not
+    // a positional offset — get either property wrong and concurrent
+    // inserts, deletes, or tied boundary values silently skip IDs
 
 // triggers
 type Trigger interface {
