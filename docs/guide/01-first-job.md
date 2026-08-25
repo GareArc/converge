@@ -68,9 +68,10 @@ refreshing licenses
 
 ## What happened
 
-1. The first line appeared straight away, not two seconds later. converge
-   calls your function as soon as it starts, and counts the interval from
-   there.
+1. The first line appeared straight away: converge did not wait out the first
+   interval before calling your function. That is what happens the first time
+   a [job](../glossary.md#job) ever runs — after that converge works from a
+   record of when the job last ran, which [chapter 3](03-triggers.md) covers.
 2. Three more followed, one every two seconds — at roughly two, four and six
    seconds in.
 3. At seven seconds the context deadline passed, `rt.Run` returned, and the
@@ -82,19 +83,19 @@ refreshing licenses
 ## The principle
 
 The two `inmem` lines are converge's own bookkeeping: where it writes down
-which [job](../glossary.md#job) last ran when, and which copy of your service
-is currently in charge. Nothing of yours goes in there. Here it is kept in
-memory, which is why this example needs nothing installed — and why it only
-holds up inside one process, because there is nothing there for a second copy
-of your service to read.
+which job last ran when, and which copy of your service is currently in
+charge. It is not a store for your own data; you never read or write it
+yourself. Here it is kept in memory, which is why this example needs nothing
+installed — and why it only holds up inside one process, because there is
+nothing there for a second copy of your service to read.
 
-[Chapter 6](06-production.md) swaps those two lines for Redis, and that is the
-whole change. With one shared place to keep the bookkeeping, every copy of
-your service reads the same answer to "who is in charge", and the promise at
-the top of this page holds across the deployment rather than inside one
-process. [Chapter 5](05-run-modes.md) is where you learn how converge picks
-the one, how to ask for all of them instead, and why your function should
-still be written so that running it twice does no harm.
+Swapping those two lines for Redis is the whole of
+[chapter 6](06-production.md): with one shared place to keep the bookkeeping,
+every copy of your service reads the same answer to "who is in charge", and
+the promise at the top of this page holds across the deployment rather than
+inside one process. How converge picks the one, how to ask for all of them
+instead, and why your function should still be safe to run twice: that is
+[chapter 5](05-run-modes.md).
 
 ## Other shapes
 
