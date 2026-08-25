@@ -90,7 +90,7 @@ The dead-letter queue (list/get/requeue/purge) is exposed through
 [Operations reference → Ops verbs](operations.md#ops-verbs). Its listing
 is backed by `KV.Scan`, which is at-least-once under concurrent mutation
 on the Redis adapter (see
-[Adapters → KV](adapters.md#kv--newkv)); the DLQ list dedups by key so a
+[Adapters → KV](adapters.md#kv-—-newkv)); the DLQ list dedups by key so a
 duplicate-returning `Scan` can never surface a duplicate dead-letter record.
 
 See [4. The other kind of job](../guide/04-worker.md) for a walkthrough of

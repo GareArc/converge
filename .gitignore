@@ -5,3 +5,8 @@ docs/superpowers/
 *.test
 *.out
 /bin/
+
+# VitePress site
+website/node_modules/
+website/.generated/
+website/.dist/

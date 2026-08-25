@@ -215,7 +215,7 @@ filtered to `converge.status="ok"`. A job that has stopped running emits
 nothing at all — so the only observable trace of that is a number that
 used to climb and now doesn't. The exact query, and why `convotel` is
 built this way instead of shipping a staleness gauge, is in
-[`convotel`'s reference entry](../reference/adapters.md#adaptersotel-convotel).
+[`convotel`'s reference entry](../reference/adapters.md#adapters-otel-convotel).
 
 ## Try breaking it
 
@@ -307,6 +307,6 @@ Next: there is no chapter 11. From here, the
 put everything in this guide together — [Scenario F](../cookbook/scenario-f-composition.md)
 wires an `Observer` into a full composition root alongside `MQ`, `Lease`,
 and `KV` — and the
-[reference](../reference/adapters.md#adaptersotel-convotel) has `convotel`'s
+[reference](../reference/adapters.md#adapters-otel-convotel) has `convotel`'s
 complete instrument table, its attribute values, and the exact query behind
 the alert in "Other shapes" above.

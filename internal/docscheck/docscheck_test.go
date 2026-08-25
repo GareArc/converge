@@ -192,26 +192,37 @@ func headingSlugs(path string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	seen := map[string]int{}
 	var out []string
 	err = forEachProseLine(string(raw), func(line string) {
-		if m := atxHeadingRe.FindStringSubmatch(line); m != nil {
-			text := strings.TrimRight(strings.TrimSpace(m[2]), "# ")
-			out = append(out, slugify(text))
+		m := atxHeadingRe.FindStringSubmatch(line)
+		if m == nil {
+			return
 		}
+		text := strings.TrimRight(strings.TrimSpace(m[2]), "# ")
+		out = append(out, uniqueSlug(slugify(text), seen))
 	})
 	return out, err
 }
 
-func slugify(heading string) string {
-	lower := strings.ToLower(heading)
-	var b strings.Builder
-	for _, r := range lower {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == ' ', r == '-':
-			b.WriteRune(r)
-		}
+func uniqueSlug(s string, seen map[string]int) string {
+	if s != "" && s[0] >= '0' && s[0] <= '9' {
+		s = "_" + s
 	}
-	return strings.ReplaceAll(b.String(), " ", "-")
+	n, ok := seen[s]
+	seen[s] = n + 1
+	if ok {
+		return fmt.Sprintf("%s-%d", s, n)
+	}
+	return s
+}
+
+var slugSeparatorRun = regexp.MustCompile("[\\s~`!@#$%^&*()_+=\\[\\]{}|\\\\;:\"',.<>/?“”‘’-]+")
+
+func slugify(heading string) string {
+	s := slugSeparatorRun.ReplaceAllString(strings.TrimSpace(heading), "-")
+	s = strings.ToLower(s)
+	return strings.Trim(s, "-")
 }
 
 func closestSlug(slugs []string, want string) string {
