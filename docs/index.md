@@ -13,8 +13,9 @@ converge hands it to your function, and retries it if that function fails.
   scheduled job to watching it run in production.
 - [Cookbook](cookbook/scenario-a-safety-net.md) — six worked scenarios,
   plus the outbox/inbox recipes.
-- [Reference](reference/kernel.md) — the condensed API: `Options`, the
-  ports a backend implements, and where the shipped adapters live.
+- [Reference](reference/kernel.md) — the condensed API: `Options`, what a
+  storage or queue backend has to provide, and where the shipped adapters
+  live.
 - [Internals](../CONTEXT.md) — the terminology contract and contributor
   conventions this project holds itself to; start with
   [`AGENT.md`](../AGENT.md) for the verification commands.

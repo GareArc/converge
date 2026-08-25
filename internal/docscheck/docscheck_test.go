@@ -1,6 +1,7 @@
 package docscheck
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,27 +164,42 @@ func TestNoTermUsedCold(t *testing.T) {
 
 var atxHeadingRe = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
 
+var errUnterminatedFence = errors.New("markdown file ends with an unterminated code fence")
+
+func forEachProseLine(src string, fn func(line string)) error {
+	fence := ""
+	for _, line := range strings.Split(src, "\n") {
+		if fence == "" {
+			if f := leadingFence(line); f != "" {
+				fence = f
+				continue
+			}
+			fn(line)
+			continue
+		}
+		if isClosingFence(line, fence) {
+			fence = ""
+		}
+	}
+	if fence != "" {
+		return errUnterminatedFence
+	}
+	return nil
+}
+
 func headingSlugs(path string) ([]string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 	var out []string
-	inFence := false
-	for _, line := range strings.Split(string(raw), "\n") {
-		if leadingFence(line) != "" {
-			inFence = !inFence
-			continue
-		}
-		if inFence {
-			continue
-		}
+	err = forEachProseLine(string(raw), func(line string) {
 		if m := atxHeadingRe.FindStringSubmatch(line); m != nil {
 			text := strings.TrimRight(strings.TrimSpace(m[2]), "# ")
 			out = append(out, slugify(text))
 		}
-	}
-	return out, nil
+	})
+	return out, err
 }
 
 func slugify(heading string) string {
@@ -243,20 +259,83 @@ func levenshtein(a, b string) int {
 	return prev[lb]
 }
 
-func stripFencedCode(src string) string {
-	lines := strings.Split(src, "\n")
-	inFence := false
-	for i, line := range lines {
-		if leadingFence(line) != "" {
-			inFence = !inFence
-			lines[i] = ""
+func stripFencedCode(src string) (string, error) {
+	var b strings.Builder
+	err := forEachProseLine(src, func(line string) {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	})
+	return b.String(), err
+}
+
+var (
+	linkRe   = regexp.MustCompile(`\[[^\]]*\]\(([^)]+)\)`)
+	refUseRe = regexp.MustCompile(`\[([^\]]+)\]\[([^\]]*)\]`)
+	refDefRe = regexp.MustCompile(`(?m)^ {0,3}\[([^\]]+)\]:\s*(\S+)`)
+)
+
+func normalizeLabel(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+func refTargets(prose string) (targets []string, undefinedLabels []string) {
+	defs := map[string]string{}
+	for _, m := range refDefRe.FindAllStringSubmatch(prose, -1) {
+		defs[normalizeLabel(m[1])] = m[2]
+	}
+	for _, m := range refUseRe.FindAllStringSubmatch(prose, -1) {
+		label := m[2]
+		if label == "" {
+			label = m[1]
+		}
+		target, ok := defs[normalizeLabel(label)]
+		if !ok {
+			undefinedLabels = append(undefinedLabels, label)
 			continue
 		}
-		if inFence {
-			lines[i] = ""
+		targets = append(targets, target)
+	}
+	return targets, undefinedLabels
+}
+
+func checkLinkTarget(t *testing.T, root, f, target string, slugCache map[string][]string) {
+	t.Helper()
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "#") || strings.HasPrefix(target, "mailto:") {
+		return
+	}
+	display := target
+	fragment := ""
+	if i := strings.IndexByte(target, '#'); i >= 0 {
+		fragment = target[i+1:]
+		target = target[:i]
+	}
+	if target == "" {
+		return
+	}
+	resolved := filepath.Join(filepath.Dir(f), target)
+	if _, err := os.Stat(resolved); err != nil {
+		t.Errorf("%s: broken link %q", relTo(root, f), display)
+		return
+	}
+	if fragment == "" || !strings.HasSuffix(resolved, ".md") {
+		return
+	}
+	slugs, ok := slugCache[resolved]
+	if !ok {
+		var err error
+		slugs, err = headingSlugs(resolved)
+		if err != nil {
+			t.Errorf("%s: %v", relTo(root, resolved), err)
+		}
+		slugCache[resolved] = slugs
+	}
+	for _, s := range slugs {
+		if s == fragment {
+			return
 		}
 	}
-	return strings.Join(lines, "\n")
+	t.Errorf("%s: link %q has broken fragment %q; closest heading slug is %q",
+		relTo(root, f), display, fragment, closestSlug(slugs, fragment))
 }
 
 func TestInternalMarkdownLinksResolve(t *testing.T) {
@@ -265,54 +344,71 @@ func TestInternalMarkdownLinksResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	linkRe := regexp.MustCompile(`\[[^\]]*\]\(([^)]+)\)`)
 	slugCache := map[string][]string{}
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		prose := stripFencedCode(string(raw))
-		for _, m := range linkRe.FindAllStringSubmatch(prose, -1) {
-			target := m[1]
-			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "#") || strings.HasPrefix(target, "mailto:") {
-				continue
-			}
-			fragment := ""
-			if i := strings.IndexByte(target, '#'); i >= 0 {
-				fragment = target[i+1:]
-				target = target[:i]
-			}
-			if target == "" {
-				continue
-			}
-			resolved := filepath.Join(filepath.Dir(f), target)
-			if _, err := os.Stat(resolved); err != nil {
-				t.Errorf("%s: broken link %q", relTo(root, f), m[1])
-				continue
-			}
-			if fragment == "" || !strings.HasSuffix(resolved, ".md") {
-				continue
-			}
-			slugs, ok := slugCache[resolved]
-			if !ok {
-				slugs, err = headingSlugs(resolved)
-				if err != nil {
-					t.Fatal(err)
-				}
-				slugCache[resolved] = slugs
-			}
-			found := false
-			for _, s := range slugs {
-				if s == fragment {
-					found = true
-					break
-				}
-			}
-			if !found {
-				t.Errorf("%s: link %q has broken fragment %q; closest heading slug is %q",
-					relTo(root, f), m[1], fragment, closestSlug(slugs, fragment))
-			}
+		prose, ferr := stripFencedCode(string(raw))
+		if ferr != nil {
+			t.Errorf("%s: %v", relTo(root, f), ferr)
+			continue
 		}
+		for _, m := range linkRe.FindAllStringSubmatch(prose, -1) {
+			checkLinkTarget(t, root, f, m[1], slugCache)
+		}
+		targets, undefinedLabels := refTargets(prose)
+		for _, label := range undefinedLabels {
+			t.Errorf("%s: reference-style link has no definition for label %q", relTo(root, f), label)
+		}
+		for _, target := range targets {
+			checkLinkTarget(t, root, f, target, slugCache)
+		}
+	}
+}
+
+func TestStripFencedCodeFlagsUnterminatedFence(t *testing.T) {
+	src := "before\n```go\ncode that never closes\n[real link](docs/glossary.md)\n"
+	if _, err := stripFencedCode(src); err == nil {
+		t.Error("expected an error for an unterminated fence")
+	}
+}
+
+func TestStripFencedCodeStripsBalancedFences(t *testing.T) {
+	src := "before\n```go\nfoo[X](bar)\n```\nafter\n"
+	out, err := stripFencedCode(src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out, "foo[X](bar)") {
+		t.Error("fenced content was not stripped")
+	}
+	if !strings.Contains(out, "before") || !strings.Contains(out, "after") {
+		t.Error("prose outside the fence was stripped")
+	}
+}
+
+func TestHeadingSlugsFlagsUnterminatedFence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "broken.md")
+	src := "# Title\n\n```go\nunterminated\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := headingSlugs(path); err == nil {
+		t.Error("expected an error for an unterminated fence")
+	}
+}
+
+func TestReferenceStyleLinksResolveAgainstDefinitions(t *testing.T) {
+	src := "See [Reference][apiref] and the shortcut [apiref][], but not " +
+		"[bad][missing].\n\n[apiref]: docs/reference/kernel.md\n"
+	targets, undefined := refTargets(src)
+	if len(targets) != 2 || targets[0] != "docs/reference/kernel.md" || targets[1] != "docs/reference/kernel.md" {
+		t.Errorf("targets = %v, want two docs/reference/kernel.md entries", targets)
+	}
+	if len(undefined) != 1 || undefined[0] != "missing" {
+		t.Errorf("undefined = %v, want [missing]", undefined)
 	}
 }
