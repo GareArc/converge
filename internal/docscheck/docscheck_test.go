@@ -268,6 +268,48 @@ func stripFencedCode(src string) (string, error) {
 	return b.String(), err
 }
 
+func stripInlineCode(src string) string {
+	out := []byte(src)
+	pos := 0
+	for pos < len(out) {
+		if out[pos] != '`' {
+			pos++
+			continue
+		}
+		start := pos
+		for pos < len(out) && out[pos] == '`' {
+			pos++
+		}
+		runLen := pos - start
+		end := -1
+		scan := pos
+		for scan < len(out) {
+			if out[scan] != '`' {
+				scan++
+				continue
+			}
+			closeStart := scan
+			for scan < len(out) && out[scan] == '`' {
+				scan++
+			}
+			if scan-closeStart == runLen {
+				end = scan
+				break
+			}
+		}
+		if end == -1 {
+			continue
+		}
+		for k := start; k < end; k++ {
+			if out[k] != '\n' {
+				out[k] = ' '
+			}
+		}
+		pos = end
+	}
+	return string(out)
+}
+
 var (
 	linkRe   = regexp.MustCompile(`\[[^\]]*\]\(([^)]+)\)`)
 	refUseRe = regexp.MustCompile(`\[([^\]]+)\]\[([^\]]*)\]`)
@@ -355,6 +397,7 @@ func TestInternalMarkdownLinksResolve(t *testing.T) {
 			t.Errorf("%s: %v", relTo(root, f), ferr)
 			continue
 		}
+		prose = stripInlineCode(prose)
 		for _, m := range linkRe.FindAllStringSubmatch(prose, -1) {
 			checkLinkTarget(t, root, f, m[1], slugCache)
 		}
@@ -410,5 +453,53 @@ func TestReferenceStyleLinksResolveAgainstDefinitions(t *testing.T) {
 	}
 	if len(undefined) != 1 || undefined[0] != "missing" {
 		t.Errorf("undefined = %v, want [missing]", undefined)
+	}
+}
+
+func TestStripInlineCodeHidesBracketPairsInSingleBacktickSpans(t *testing.T) {
+	src := "`KV.Get` returns `map[string][]byte` values."
+	out := stripInlineCode(src)
+	if strings.Contains(out, "map[string][]byte") {
+		t.Error("single-backtick code span was not stripped")
+	}
+}
+
+func TestStripInlineCodeHandlesMultiBacktickSpans(t *testing.T) {
+	src := "See ``[X][Y]`` here, not ``` [P][Q] ``` either."
+	out := stripInlineCode(src)
+	if strings.Contains(out, "[X][Y]") {
+		t.Error("double-backtick code span was not stripped")
+	}
+	if strings.Contains(out, "[P][Q]") {
+		t.Error("triple-backtick inline span was not stripped")
+	}
+}
+
+func TestStripInlineCodeLeavesRealMarkdownLinksAlone(t *testing.T) {
+	src := "See `map[string][]byte` and [glossary](docs/glossary.md)."
+	out := stripInlineCode(src)
+	matches := linkRe.FindAllStringSubmatch(out, -1)
+	if len(matches) != 1 || matches[0][1] != "docs/glossary.md" {
+		t.Errorf("matches = %v, want one link to docs/glossary.md", matches)
+	}
+}
+
+func TestReferenceStyleLinksIgnoreCodeSpanBracketPairs(t *testing.T) {
+	src := "`KV.Get` returns `map[string][]byte` values.\n"
+	_, undefined := refTargets(stripInlineCode(src))
+	if len(undefined) != 0 {
+		t.Errorf("undefined = %v, want none — a code span's bracket pairs must not read as a reference link", undefined)
+	}
+}
+
+func TestReferenceStyleLinkStillResolvesNextToCodeSpan(t *testing.T) {
+	src := "See `map[string][]byte` in [the reference][apiref].\n\n" +
+		"[apiref]: docs/reference/kernel.md\n"
+	targets, undefined := refTargets(stripInlineCode(src))
+	if len(undefined) != 0 {
+		t.Errorf("undefined = %v, want none", undefined)
+	}
+	if len(targets) != 1 || targets[0] != "docs/reference/kernel.md" {
+		t.Errorf("targets = %v, want [docs/reference/kernel.md]", targets)
 	}
 }
