@@ -74,7 +74,7 @@ Every background job is one of exactly two things:
 
 | | **`reconcile`** | **`worker`** |
 |---|---|---|
-| Style | level-triggered | edge-triggered |
+| Style | level-triggered — you are given *what to look at* | edge-triggered — you are given *what to do* |
 | You write | `Reconcile(ctx, id) error` | `Handle(ctx, payload) error` |
 | A message is | a *[hint](../glossary.md#hint)* — "re-check this ID" | the *work itself* |
 | Lost message means | slightly later convergence (the scheduled pass catches it) | lost work — so delivery is at-least-once (ack, retry, [DLQ](../glossary.md#dead-letter-dlq)), to the durability of your MQ |
