@@ -42,6 +42,9 @@ A file's imports declare its model: code importing `worker` but not
 - [9. Running it in production](09-operations.md) — looking at a running
   job from outside the process, pausing it, and working the
   [dead-letter](../glossary.md#dead-letter-dlq) queue.
+- [10. Seeing what it is doing](10-observability.md) — turning what
+  converge reports into metrics, and setting the one alert that catches a
+  job that quietly stopped running.
 - [Cookbook](../cookbook/scenario-a-safety-net.md) — worked scenarios A–F.
 - [Reference](../reference/kernel.md) — the condensed API.
 
