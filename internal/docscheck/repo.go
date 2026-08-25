@@ -44,7 +44,7 @@ func MarkdownFiles(root string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			if skipDir(d.Name()) {
+			if path != root && skipDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
