@@ -78,8 +78,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = reconcile.Periodic(rt, "refresh-licenses", reconcile.Every(2*time.Second), func(ctx context.Context) error {
-		fmt.Println("refreshing licenses")
+	err = reconcile.Periodic(rt, "sync-inventory", reconcile.Every(2*time.Second), func(ctx context.Context) error {
+		fmt.Println("syncing inventory with the warehouse")
 		return nil
 	})
 	if err != nil {
@@ -99,10 +99,10 @@ cd examples && go run ./guide/01-first-job
 ```
 
 ```
-refreshing licenses
-refreshing licenses
-refreshing licenses
-refreshing licenses
+syncing inventory with the warehouse
+syncing inventory with the warehouse
+syncing inventory with the warehouse
+syncing inventory with the warehouse
 ```
 
 **A worker job**, from [chapter 4](docs/guide/04-worker.md): two messages,
@@ -122,8 +122,8 @@ import (
 	"github.com/GareArc/converge/worker"
 )
 
-type Welcome struct {
-	Email string `json:"email"`
+type ChargeOrder struct {
+	OrderID string `json:"order_id"`
 }
 
 func main() {
@@ -136,10 +136,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	sendWelcome := worker.NewTask[Welcome]("send-welcome", worker.TaskOpts{Queue: "email"})
+	chargeOrder := worker.NewTask[ChargeOrder]("charge-order", worker.TaskOpts{Queue: "payments"})
 
-	err = worker.Handle(rt, sendWelcome, func(ctx context.Context, p Welcome) error {
-		fmt.Println("sending welcome email to", p.Email)
+	err = worker.Handle(rt, chargeOrder, func(ctx context.Context, p ChargeOrder) error {
+		fmt.Println("charging order", p.OrderID)
 		return nil
 	}, worker.HandleOpts{Concurrency: 1})
 	if err != nil {
@@ -150,8 +150,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	for _, addr := range []string{"ada@example.com", "grace@example.com"} {
-		if err := sendWelcome.Enqueue(context.Background(), producer, Welcome{Email: addr}, worker.EnqueueOpts{}); err != nil {
+	for _, id := range []string{"ORD-4417", "ORD-4418"} {
+		if err := chargeOrder.Enqueue(context.Background(), producer, ChargeOrder{OrderID: id}, worker.EnqueueOpts{}); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -169,8 +169,8 @@ cd examples && go run ./guide/04-worker
 ```
 
 ```
-sending welcome email to ada@example.com
-sending welcome email to grace@example.com
+charging order ORD-4417
+charging order ORD-4418
 ```
 
 Both examples use `converge/inmem`. Swapping those storage lines for Redis

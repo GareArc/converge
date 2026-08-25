@@ -20,8 +20,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = reconcile.Periodic(rt, "refresh-licenses", reconcile.Every(2*time.Second), func(ctx context.Context) error {
-		fmt.Println("refreshing licenses")
+	err = reconcile.Periodic(rt, "sync-inventory", reconcile.Every(2*time.Second), func(ctx context.Context) error {
+		fmt.Println("syncing inventory with the warehouse")
 		return nil
 	})
 	if err != nil {

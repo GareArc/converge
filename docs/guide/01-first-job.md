@@ -1,6 +1,6 @@
 # 1. A first job
 
-You have something that needs doing every so often — refreshing licenses,
+You have something that needs doing every so often — syncing inventory with the warehouse,
 expiring sessions, pulling a table back into line with an upstream — and you
 have more than one copy of your service running. Cron gives you the "every so
 often" and stops there: all your copies fire at once, and keeping that from
@@ -37,8 +37,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = reconcile.Periodic(rt, "refresh-licenses", reconcile.Every(2*time.Second), func(ctx context.Context) error {
-		fmt.Println("refreshing licenses")
+	err = reconcile.Periodic(rt, "sync-inventory", reconcile.Every(2*time.Second), func(ctx context.Context) error {
+		fmt.Println("syncing inventory with the warehouse")
 		return nil
 	})
 	if err != nil {
@@ -60,10 +60,10 @@ cd examples && go run ./guide/01-first-job
 ```
 
 ```
-refreshing licenses
-refreshing licenses
-refreshing licenses
-refreshing licenses
+syncing inventory with the warehouse
+syncing inventory with the warehouse
+syncing inventory with the warehouse
+syncing inventory with the warehouse
 ```
 
 ## What happened
@@ -71,7 +71,8 @@ refreshing licenses
 1. The first line appeared straight away: converge did not wait out the first
    interval before calling your function. That is what happens the first time
    a [job](../glossary.md#job) ever runs — after that converge works from a
-   record of when the job last ran, which [chapter 3](03-triggers.md) covers.
+   record of when the job last ran, which [chapter 6](06-production.md)
+   puts somewhere it survives a restart.
 2. Three more followed, one every two seconds — at roughly two, four and six
    seconds in.
 3. At seven seconds the context deadline passed, `rt.Run` returned, and the
@@ -112,7 +113,7 @@ once, one per customer or one per workspace, and that is the general form:
 Delete the `KV: inmem.NewKV(),` line and run it again:
 
 ```
-2026/08/24 16:57:56 reconcile: job "refresh-licenses": Schedule needs Options.KV
+2026/08/24 16:57:56 reconcile: job "sync-inventory": Schedule needs Options.KV
 exit status 1
 ```
 

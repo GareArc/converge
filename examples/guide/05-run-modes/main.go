@@ -19,7 +19,7 @@ func replica(runs *atomic.Int64, lease converge.Lease, kv converge.KV, mode conv
 		log.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "rebuild-cache",
+		Name: "refresh-price-cache",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			runs.Add(1)
 			return nil

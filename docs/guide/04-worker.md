@@ -4,10 +4,10 @@ Chapters 1 through 3 all answered the same question, in different shapes: is
 everything as it should be? A schedule, or a [poke](../glossary.md#poke),
 told your function which one thing to look at, and your function checked
 the truth and fixed it if it needed fixing. This chapter answers a
-different question — not "is everything as it should be", but "send this
-person their email". A customer signed up once; the welcome email should go
-out once, for that one signup, not on some later pass that notices it's
-missing. By the end of this chapter you will have queued two of those and
+different question — not "is everything as it should be", but "charge this
+one order". A customer checked out once; the card should be charged once,
+for that one checkout, not on some later pass that notices it hasn't
+happened. By the end of this chapter you will have queued two of those and
 watched converge deliver both, once each, with nothing installed.
 
 ## The code
@@ -28,8 +28,8 @@ import (
 	"github.com/GareArc/converge/worker"
 )
 
-type Welcome struct {
-	Email string `json:"email"`
+type ChargeOrder struct {
+	OrderID string `json:"order_id"`
 }
 
 func main() {
@@ -42,10 +42,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	sendWelcome := worker.NewTask[Welcome]("send-welcome", worker.TaskOpts{Queue: "email"})
+	chargeOrder := worker.NewTask[ChargeOrder]("charge-order", worker.TaskOpts{Queue: "payments"})
 
-	err = worker.Handle(rt, sendWelcome, func(ctx context.Context, p Welcome) error {
-		fmt.Println("sending welcome email to", p.Email)
+	err = worker.Handle(rt, chargeOrder, func(ctx context.Context, p ChargeOrder) error {
+		fmt.Println("charging order", p.OrderID)
 		return nil
 	}, worker.HandleOpts{Concurrency: 1})
 	if err != nil {
@@ -56,8 +56,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	for _, addr := range []string{"ada@example.com", "grace@example.com"} {
-		if err := sendWelcome.Enqueue(context.Background(), producer, Welcome{Email: addr}, worker.EnqueueOpts{}); err != nil {
+	for _, id := range []string{"ORD-4417", "ORD-4418"} {
+		if err := chargeOrder.Enqueue(context.Background(), producer, ChargeOrder{OrderID: id}, worker.EnqueueOpts{}); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -75,11 +75,11 @@ is where the [queue](../glossary.md#queue) itself lives. It is in memory here
 like the two lines beside it, which is why this example still needs nothing
 installed; [chapter 6](06-production.md) is where all three become Redis.
 
-`sendWelcome` is a `worker.Task[Welcome]`: a name, a payload type, and a
+`chargeOrder` is a `worker.Task[ChargeOrder]`: a name, a payload type, and a
 queue, agreed once and shared by whatever sends the message and whatever
 handles it. `worker.Handle` registers the function that runs when a message
-for `sendWelcome` arrives. `worker.ProducerFrom` gets you something that can
-send messages on this runtime's own queues, and `sendWelcome.Enqueue` is how
+for `chargeOrder` arrives. `worker.ProducerFrom` gets you something that can
+send messages on this runtime's own queues, and `chargeOrder.Enqueue` is how
 you actually send one. `Concurrency: 1` keeps this example's two lines
 printing in a fixed order — the default is 4, and at that setting either
 line could come first.
@@ -91,8 +91,8 @@ cd examples && go run ./guide/04-worker
 ```
 
 ```
-sending welcome email to ada@example.com
-sending welcome email to grace@example.com
+charging order ORD-4417
+charging order ORD-4418
 ```
 
 ## What happened
@@ -100,7 +100,7 @@ sending welcome email to grace@example.com
 1. Nothing printed the moment either `Enqueue` call returned — enqueuing
    only puts a message on the queue; nothing runs until `rt.Run` starts.
 2. Both lines appeared together, right after `rt.Run` started:
-   `ada@example.com` first, then `grace@example.com`, each printed once, in
+   `ORD-4417` first, then `ORD-4418`, each printed once, in
    the order the two `Enqueue` calls happened.
 3. Nothing printed again after that. Unlike chapters 1 through 3, nothing
    here walks a list every so often — a worker message is handled once, and
@@ -114,10 +114,10 @@ sending welcome email to grace@example.com
 Chapters 1 through 3 all worked from something you could always re-read:
 lose track of one round and the next round re-checks the same truth, so
 nothing is actually lost. A worker message doesn't work that way —
-`Welcome{Email: "ada@example.com"}` doesn't point at something you can go
-re-read later, it *is* the work: send this address a welcome email. Lose
-that message and there is no later round that notices ada never got one.
-That's why converge treats it differently: if `sendWelcome`'s handler
+`ChargeOrder{OrderID: "ORD-4417"}` doesn't point at something you can go
+re-read later, it *is* the work: charge this order. Lose that message and
+there is no later round that notices `ORD-4417` was never charged.
+That's why converge treats it differently: if `chargeOrder`'s handler
 returns an error, converge doesn't move on to the next message on the
 [queue](../glossary.md#queue) — it redelivers the same one, with a delay
 that grows each time it fails again. And if it keeps failing, converge
@@ -145,12 +145,12 @@ interact with visibility and the retry budget — is in the
 
 Change the handler to return an error instead of `nil`, cap the retry
 budget with `Retry: worker.RetryPolicy{MaxAttempts: 2}` so it stops
-quickly, and enqueue only `ada@example.com` so there's nothing else
+quickly, and enqueue only `ORD-4417` so there's nothing else
 competing for attention. Run it again, giving it three seconds:
 
 ```
-sending welcome email to ada@example.com
-sending welcome email to ada@example.com
+charging order ORD-4417
+charging order ORD-4417
 ```
 
 Two attempts, not one and not more — `MaxAttempts: 2` bounded it exactly.
@@ -159,7 +159,7 @@ did not crash the process or drop the message: converge redelivered it
 after a short delay, ran the handler a second time, and then — the retry
 budget spent — went quiet. Nothing prints a third time; the process runs
 out its three seconds and exits with status 0, same as the working
-version. `ada@example.com` didn't vanish, though — it's sitting in the
+version. `ORD-4417` didn't vanish, though — it's sitting in the
 dead-letter queue this chapter's principle described, waiting for someone
 to requeue it.
 
@@ -170,12 +170,15 @@ message; it never silently drops one, but it may call your handler more
 than once for the same message. If your process dies after sending the
 email but before converge records that the message succeeded, converge
 redelivers it, and your handler runs again for the same
-`Welcome{Email: "ada@example.com"}`. A handler can run twice for one
-message, so make it safe to run twice: sending the same welcome email
-twice is a minor annoyance, and worth checking for; charging a card twice
-is not, and worth designing against. `sendWelcome`'s handler here just
-prints a line, so it happens to tolerate that without any extra care —
-real handlers usually need to earn it.
+`ChargeOrder{OrderID: "ORD-4417"}`. A handler can run twice for one
+message, so make it safe to run twice — and this chapter's example is
+deliberately the hard case. Charging a card twice is not a minor annoyance,
+and "converge might call your handler again" is not a hypothetical. A real
+`charge-order` handler earns that safety by sending the payment provider an
+idempotency key derived from the order — `ORD-4417`, not a fresh UUID per
+call — so the second charge is recognised as the first one and does
+nothing. The handler here just prints a line, so it tolerates a second call
+for free. Yours will not.
 
 Next: [5. More than one copy](05-run-modes.md) — running three copies of
 your service, and which one does the work.

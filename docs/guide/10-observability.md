@@ -55,7 +55,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = reconcile.Periodic(rt, "refresh-licenses", reconcile.Every(500*time.Millisecond), func(ctx context.Context) error {
+	err = reconcile.Periodic(rt, "sync-inventory", reconcile.Every(500*time.Millisecond), func(ctx context.Context) error {
 		return nil
 	})
 	if err != nil {
@@ -70,7 +70,7 @@ func main() {
 }
 ```
 
-`refresh-licenses` is the same job chapter 1 started with, on the same
+`sync-inventory` is the same job chapter 1 started with, on the same
 schedule. Everything above `converge.New` is plain OpenTelemetry setup, not
 anything converge-specific: `stdoutmetric.New` builds an **exporter** — the
 thing that takes whatever metrics were collected and sends them somewhere,
@@ -111,7 +111,7 @@ cut:
             "DataPoints": [
               {
                 "Attributes": [
-                  { "Key": "converge.job", "Value": { "Type": "STRING", "Value": "refresh-licenses" } },
+                  { "Key": "converge.job", "Value": { "Type": "STRING", "Value": "sync-inventory" } },
                   { "Key": "converge.status", "Value": { "Type": "STRING", "Value": "ok" } },
                   { "Key": "converge.surface", "Value": { "Type": "STRING", "Value": "reconcile" } }
                 ],
@@ -128,7 +128,7 @@ cut:
               {
                 "Attributes": [
                   { "Key": "converge.acquired", "Value": { "Type": "BOOL", "Value": true } },
-                  { "Key": "converge.job", "Value": { "Type": "STRING", "Value": "refresh-licenses" } }
+                  { "Key": "converge.job", "Value": { "Type": "STRING", "Value": "sync-inventory" } }
                 ],
                 "Value": 1
               }
@@ -143,7 +143,7 @@ cut:
 
 ## What happened
 
-1. The moment `go run` started, `refresh-licenses` fired its first pass
+1. The moment `go run` started, `sync-inventory` fired its first pass
    immediately, then again every 500ms after — the same immediate first
    fire every scheduled job in this guide has had since chapter 1. Taking
    charge of the job called `observer.Observe` with a
@@ -153,7 +153,7 @@ cut:
    `converge` metric names are already there: `converge.run.duration` has
    recorded two runs (`"Count": 2`), each carrying `converge.job`,
    `converge.status`, and `converge.surface`; `converge.lease.transitions`
-   shows the one lease acquisition that let `refresh-licenses` start
+   shows the one lease acquisition that let `sync-inventory` start
    running at all. converge's own metric names showed up in the exporter's
    output within a second of the job running, without this program doing
    anything to make that happen beyond the four setup lines above.
@@ -179,7 +179,7 @@ This chapter's example only shows two of the six things `convotel` can
 report — a run and a lease transition, not an ID going
 [parked](../glossary.md#parked) or a message reaching the
 [dead-letter](../glossary.md#dead-letter-dlq) store — because
-`refresh-licenses` never fails, so no ID ever parks, and this program runs
+`sync-inventory` never fails, so no ID ever parks, and this program runs
 no worker job, so no message ever reaches that store. The complete
 inventory, and the only names this chapter will use, is this:
 
@@ -239,7 +239,7 @@ value without declaring a new one: `err` already exists in this scope
 `observer, err := convotel.NewObserver(...)` to the plain assignment
 `_, err = convotel.NewObserver(...)` — no `:=`, since `_` never counts as
 the "new variable" a short declaration requires. Run it again. This time
-it builds, `refresh-licenses` runs on its schedule exactly as before, and
+it builds, `sync-inventory` runs on its schedule exactly as before, and
 nothing calls `log.Fatal` or panics. Its stdout reports come back like
 this (trimmed to the JSON, as above — stderr can separately print one
 unrelated line here too, if the periodic reader's own shutdown happens to
@@ -257,7 +257,7 @@ Every report, for the whole three seconds: an empty `ScopeMetrics` list.
 The exporter is still running, the periodic reader is still asking it to
 print once a second, and `convotel.NewObserver` still built its six
 instruments against the meter — but with no `Observer` in `Options`, none
-of `refresh-licenses`'s runs ever reached it, so there was never anything
+of `sync-inventory`'s runs ever reached it, so there was never anything
 for those instruments to report. The program gives no sign that reporting
 has gone missing — "A caveat" below shows the other way this happens.
 
@@ -291,7 +291,7 @@ rt, err := converge.New(converge.Options{
 its six instrument registrations, for instance. `obs, _ := ...` throws that
 error away. If it happened, `obs` is `nil`, and a `nil` `Observer` in
 `Options` is exactly what "Try breaking it" above just showed you: converge
-silently swaps in its own no-op, `refresh-licenses` keeps running, and
+silently swaps in its own no-op, `sync-inventory` keeps running, and
 reporting is gone with nothing anywhere saying so. The version worth
 writing checks the error, the same as every other line in this chapter's
 example:
