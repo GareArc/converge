@@ -76,9 +76,11 @@ anything converge-specific: `stdoutmetric.New` builds an **exporter** — the
 thing that takes whatever metrics were collected and sends them somewhere,
 here just standard out — and `sdkmetric.NewPeriodicReader` asks that
 exporter to report once a second. `sdkmetric.NewMeterProvider` ties the two
-together into a provider you can hand out named meters from. None of that
-is converge. The one line that is: `convotel.NewObserver(provider.Meter(...))`
-wraps that meter as a `converge.Observer` — and passing the result as
+together into a **provider** you can hand out named **meters** from — a
+meter being just the handle `convotel` registers its instruments against.
+None of that is converge. The one line that is:
+`convotel.NewObserver(provider.Meter(...))` wraps that meter as a
+`converge.Observer` — and passing the result as
 `Observer: observer` in `converge.Options` is what actually connects it. A
 built observer that never reaches `Options.Observer` reports nothing; more
 on that in "A caveat" below.
@@ -189,8 +191,10 @@ only names this chapter will use, is this:
 A **histogram** buckets a number by size instead of just counting it —
 `converge.run.duration` is the one histogram, and its bucket counts are
 what tells you a run took, say, between 50ms and 75ms. A **counter** only
-ever goes up; the other five are counters. Beyond the two this chapter's
-run produced, the attributes available across all six are `converge.job`,
+ever goes up; the other five are counters. Each one also carries a set of
+key/value **attributes** — you already saw them as `"Attributes"` in "Run
+it" above. Beyond the two this chapter's run produced, the attributes
+available across all six are `converge.job`,
 `converge.surface`, `converge.status`, `converge.queue`, `converge.reason`,
 `converge.kind`, and `converge.acquired` — which ones apply depends on the
 instrument, exactly as `converge.status` only shows up on
@@ -226,12 +230,18 @@ guide/10-observability/main.go:25:2: declared and not used: observer
 
 Go's compiler catches the now-unused `observer` before the program ever
 starts — that half of the mistake never reaches production. Discard the
-value instead of naming it: change
-`observer, err := convotel.NewObserver(...)` to
-`_, err := convotel.NewObserver(...)`, and run it again. This time it
-builds, `refresh-licenses` runs on its schedule exactly as before, and
-nothing calls `log.Fatal` or panics. But the exporter's reports come back
-like this:
+value without declaring a new one: `err` already exists in this scope
+(from `stdoutmetric.New` above), so change
+`observer, err := convotel.NewObserver(...)` to the plain assignment
+`_, err = convotel.NewObserver(...)` — no `:=`, since `_` never counts as
+the "new variable" a short declaration requires. Run it again. This time
+it builds, `refresh-licenses` runs on its schedule exactly as before, and
+nothing calls `log.Fatal` or panics. Its stdout reports come back like
+this (trimmed to the JSON, as above — stderr can separately print one
+unrelated line here too, if the periodic reader's own shutdown happens to
+land in the middle of an export; that is an OpenTelemetry-internal timing
+artifact of shutting the reader down, not anything `Observer` or `Options`
+produced, and it is not shown below):
 
 ```json
 {
