@@ -1,5 +1,8 @@
 # Scenario B: Event-driven deploy reconciler
 
+> Assumes [chapter 03, triggers](../guide/03-triggers.md) and
+> [chapter 07, stale writes](../guide/07-versions.md).
+
 Composite IDs, version tracking, self-requeue.
 
 *"Converge each app's runner deployment to its saved config. React to events

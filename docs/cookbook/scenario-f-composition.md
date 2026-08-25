@@ -1,5 +1,7 @@
 # Scenario F: Composition roots
 
+> Assumes [chapter 06, going to production](../guide/06-production.md).
+
 A kratos service:
 
 ```go
@@ -39,11 +41,18 @@ func main() {
 }
 ```
 
+`obs, err := convotel.NewObserver(meter)` is checked before it is wired in —
+an inline `Observer: convotel.NewObserver(meter)` does not compile, and
+`obs, _ := convotel.NewObserver(meter)` compiles but throws the error away;
+see [chapter 10's caveat](../guide/10-observability.md) for what a discarded
+`Observer` construction error costs later.
+
 A framework-free service (gateway, collector) skips the bridge:
 `rt.Run(ctx)` directly.
 
-For what `OpsHandler`'s verbs actually do — poke, run-pass, pause/resume,
-DLQ ops, and which replica's response you get back — see
+For what `OpsHandler`'s verbs actually do — [poke](../glossary.md#poke),
+run-pass, pause/resume, [DLQ](../glossary.md#dead-letter-dlq) ops, and which
+replica's response you get back — see
 [Operations reference → Ops verbs](../reference/operations.md#ops-verbs).
 
 ## Configuration

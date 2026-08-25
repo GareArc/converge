@@ -1,5 +1,7 @@
 # Scenario A: Safety-net reconciler over all workspaces
 
+> Assumes [chapter 02, IDs](../guide/02-ids.md).
+
 *"Every workspace must have its credentials synced; events might be missed;
 re-check everything nightly."*
 

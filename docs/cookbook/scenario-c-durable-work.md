@@ -1,5 +1,7 @@
 # Scenario C: Durable work across services
 
+> Assumes [chapter 04, the other kind of job](../guide/04-worker.md).
+
 Producer and consumer are different processes.
 
 *"When an admin invites a member, send the invite email. The email content

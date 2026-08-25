@@ -1,6 +1,9 @@
 # Scenario E: A custom trigger
 
-Any wake source is ~20 lines. Redis pub/sub cache invalidation:
+> Assumes [chapter 03, triggers](../guide/03-triggers.md).
+
+Any [wake](../glossary.md#wake) source is ~20 lines. Redis pub/sub cache
+invalidation:
 
 ```go
 type pubsubTrigger struct {
@@ -16,8 +19,8 @@ func (t *pubsubTrigger) Run(ctx context.Context, wake func(reconcile.ID)) error 
         if err != nil {
             return err // engine logs, backs off, restarts Run
         }
-        // msg.Payload is the published ID string (a type conversion, see
-        // the concepts guide's "IDs — work items" section).
+        // msg.Payload is the published ID string (a type conversion — see
+        // chapter 2's IDs section).
         // wake = "engine, re-check this ID soon": non-blocking, cheap,
         // bounded — under overload wakes are dropped WITH a counted event
         // (safe: the schedule covers). Empty IDs are rejected + counted.
@@ -26,5 +29,6 @@ func (t *pubsubTrigger) Run(ctx context.Context, wake func(reconcile.ID)) error 
 }
 ```
 
-Which replicas run it follows the job's run mode — the trigger never needs
-to know. If the source dies, the job gets slower, never wrong.
+Which replicas run it follows the job's
+[run mode](../glossary.md#run-mode) — the trigger never needs to know. If
+the source dies, the job gets slower, never wrong.
