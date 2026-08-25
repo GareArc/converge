@@ -136,9 +136,14 @@ func maskLinkTargets(out []byte) {
 			return
 		}
 		a += i
-		b := strings.IndexByte(s[a:], ')')
+		rest := s[a:]
+		if nl := strings.IndexByte(rest, '\n'); nl != -1 {
+			rest = rest[:nl]
+		}
+		b := strings.IndexByte(rest, ')')
 		if b == -1 {
-			return
+			i = a + len("](")
+			continue
 		}
 		b = a + b + 1
 		for k := a; k < b; k++ {

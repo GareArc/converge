@@ -109,3 +109,20 @@ func TestFirstGlossGlossaryLinkRequiresWordBoundary(t *testing.T) {
 		t.Error("glossary link pattern did not match a real Lease link")
 	}
 }
+
+func TestUnclosedLinkTargetDoesNotMaskALaterLine(t *testing.T) {
+	src := "See [the reference](../reference/kernel.md for details.\n\n" +
+		"The job parks the ID after too many failures.\n\n" +
+		"Rate limiting (process-local) is configured separately.\n"
+	masked := MaskNonProse(src)
+	if FirstProseUse(masked, "parks") == -1 {
+		t.Error("a cold term below a link missing its closing paren was masked away")
+	}
+}
+
+func TestMaskNonProseStillHidesALinkTargetOnItsOwnLine(t *testing.T) {
+	masked := MaskNonProse("See [the reference](../reference/parks.md) for details.\n")
+	if FirstProseUse(masked, "parks") != -1 {
+		t.Error("a link target on a single line was left unmasked")
+	}
+}
