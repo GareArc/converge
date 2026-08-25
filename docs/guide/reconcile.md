@@ -77,7 +77,7 @@ type IDFunc func(payload []byte) (ID, error)       // escape hatch
 
 ## Outcomes
 
-`reconcile`'s outcome table (see [Outcome values](concepts.md#outcome-values)
+`reconcile`'s outcome table (see [Outcome values](02-ids.md)
 for the shared mechanics — detection, wrapping, wrong-surface protection):
 
 | Return | Engine does |
@@ -87,7 +87,7 @@ for the shared mechanics — detection, wrapping, wrong-surface protection):
 | `reconcile.ErrOutdated` (from `MarkApplied`) | lost a race to newer intent — immediate requeue, no backoff, not a failure |
 | ctx canceled by shutdown or lease loss | **neutral** — no backoff stamp, no failure count, no `RunCompleted` event, and it does not count in `Stats()`; the ID re-runs after restart/handoff |
 | any other error | per-ID exponential backoff + jitter (jitter range **[d/2, d]** of the current delay); counted as failure |
-| failure count reaches `DeadLetterAfter` | ID parked; revived by version change or poke (see [IDs — work items](concepts.md#ids--work-items)) |
+| failure count reaches `DeadLetterAfter` | ID parked; revived by version change or poke (see [IDs — work items](02-ids.md)) |
 | panic | recovered, treated as error |
 
 ## Version tracking, briefly

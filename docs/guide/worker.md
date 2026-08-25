@@ -2,7 +2,7 @@
 
 ## Outcomes
 
-`worker`'s outcome table (see [Outcome values](concepts.md#outcome-values)
+`worker`'s outcome table (see [Outcome values](02-ids.md)
 for the shared mechanics — detection, wrapping, wrong-surface protection):
 
 | Return | Engine does |
@@ -35,7 +35,7 @@ are two different numbers, and the difference matters for retry logic:
   forward in the `converge.attempt` header.
 
 The no-backoff Snooze loop guard (see
-[Outcome values](concepts.md#outcome-values)) is tracked in its own header,
+[Outcome values](02-ids.md)) is tracked in its own header,
 `converge.snoozes` — separate from `converge.attempt`. If `converge.snoozes`
 is missing or unparseable, the guard self-heals: it's read with a
 best-effort parse that falls back to zero rather than failing the message,

@@ -56,7 +56,7 @@ Control-flow signals (`reconcile.CheckAgain`, `reconcile.ErrOutdated`,
 `worker.Snooze`, `worker.Discard`) implement an unexported kernel interface —
 only converge's own types can be signals; wrong-surface returns park/DLQ with
 a `WrongSurfaceSignal` event (see
-[Outcome values](../guide/concepts.md#outcome-values)).
+[Outcome values](../guide/02-ids.md)).
 
 ## Ports
 
