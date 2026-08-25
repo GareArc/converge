@@ -84,10 +84,10 @@ refreshing licenses
 
 The two `inmem` lines are converge's own bookkeeping: where it writes down
 which job last ran when, and which copy of your service is currently in
-charge. It is not a store for your own data; you never read or write it
-yourself. Here it is kept in memory, which is why this example needs nothing
-installed — and why it only holds up inside one process, because there is
-nothing there for a second copy of your service to read.
+charge. You never read or write it yourself. Here it is kept in memory, which
+is why this example needs nothing installed — and why it only holds up inside
+one process, because there is nothing there for a second copy of your service
+to read.
 
 Swapping those two lines for Redis is the whole of
 [chapter 6](06-production.md): with one shared place to keep the bookkeeping,
