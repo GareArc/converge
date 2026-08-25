@@ -34,7 +34,8 @@ A file's imports declare its model: code importing `worker` but not
   and which one does the work.
 - [7. Stale writes](07-versions.md) — protecting a write when "safe to run
   twice" isn't enough on its own.
-- [Testing](testing.md) — `convergetest`, the harness over the real engine.
+- [8. Testing your jobs](08-testing.md) — running the real engine in a Go
+  test, against in-memory storage and a clock you control.
 - [Operations](operations.md) — runtime lifecycle, introspection, ops
   verbs.
 - [Cookbook](../cookbook/scenario-a-safety-net.md) — worked scenarios A–F.
