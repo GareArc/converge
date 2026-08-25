@@ -1,4 +1,8 @@
-# Operations
+# Operations reference
+
+The condensed reference for running converge in production — see
+[9. Running it in production](../guide/09-operations.md) for a worked
+walkthrough.
 
 ## Runtime lifecycle
 
@@ -42,7 +46,7 @@ omitted when empty for every key below except `Tracker` — see its note):
 
 `adapters/redis` additionally namespaces its own bookkeeping (streams,
 pending ZSETs, attempts) under a fixed `convredis:` prefix — see
-[Adapters → Auxiliary key prefixes](../reference/adapters.md).
+[Adapters → Auxiliary key prefixes](adapters.md#auxiliary-key-prefixes).
 
 ## Introspection and ops handlers
 
@@ -65,9 +69,8 @@ publicMux.Handle("/debug/jobs/", debughttp.ReadOnlyHandler(rt))
 
 Both handlers register their listing route at `/debug/jobs` **and**
 `/debug/jobs/{$}` — the trailing-slash exact-match alias — so a
-`http.Handle("/debug/jobs/", ...)` mount (as used in the
-[ten-minute tour](tour.md)) serves the job list correctly instead of 404ing
-on the bare trailing slash.
+`http.Handle("/debug/jobs/", ...)` mount serves the job list correctly
+instead of 404ing on the bare trailing slash.
 
 ## Ops verbs
 
@@ -94,6 +97,23 @@ early-return: because a durable pause must be authoritative cluster-wide,
 their dispatch waits (up to the timeout) and returns one response per
 replica that answered.
 
+Each `OpsHandler` verb is one route:
+
+| Verb | Route | ID required | Dispatch |
+|---|---|---|---|
+| Poke | `POST /debug/jobs/{job}/poke` | yes (`id` form value) | early-return |
+| Run a full pass now | `POST /debug/jobs/{job}/run-pass` | no | early-return, leaseholder only |
+| Pause | `POST /debug/jobs/{job}/pause` | no | waits out the full timeout |
+| Resume | `POST /debug/jobs/{job}/resume` | no | waits out the full timeout |
+| List dead letters | `GET /debug/jobs/{job}/dlq` | no | direct KV read, not cluster-dispatched |
+| Requeue a dead letter | `POST /debug/jobs/{job}/dlq/{id}/requeue` | yes (path segment) | direct KV/MQ write, not cluster-dispatched |
+| Purge one dead letter | `DELETE /debug/jobs/{job}/dlq/{id}` | yes (path segment) | direct KV write, not cluster-dispatched |
+| Purge all dead letters for a job | `DELETE /debug/jobs/{job}/dlq` | no | direct KV write, not cluster-dispatched |
+
+The four DLQ ops act on whichever replica received the request — a
+dead-letter record lives in KV, which every replica can read and write
+directly, so there's nothing to broadcast.
+
 ### Pause and resume
 
 Pausing a job writes a durable flag to KV before broadcasting, so a pause
@@ -103,8 +123,7 @@ the schedule itself: a paused reconciler's trigger still runs its passes and
 still enumerates the full ID space on schedule, at the same cost as when
 unpaused (DB queries, cursor pages) — only the resulting wakes are dropped.
 Budget for that cost when a job you plan to pause has an expensive ID
-source. See [Reconcile → Triggers and the schedule](reconcile.md) for the
-schedule-side detail.
+source.
 
 ## Operational visibility
 
@@ -117,7 +136,7 @@ event or a metric. Pair converge with your own backend monitoring
 Redis is down.
 
 **Steady-state cost of an idle Redis-backed consumer.** With the shipped
-[Redis adapter](../reference/adapters.md), every consume iteration issues
+[Redis adapter](adapters.md), every consume iteration issues
 **four** Redis round trips, whether or not there's any work: the
 delayed-release claim script (against the delayed ZSET), the `XPENDING`
 call that drives PEL reconciliation, the redelivery claim script (against

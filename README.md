@@ -1,18 +1,27 @@
 # Converge
 
-converge gives services **one model for all background work**: a
-**level-triggered reconcile surface** (messages are hints; handlers re-read
-truth and converge state) and an **edge-triggered worker surface** (the
-message is the work; at-least-once with retry and dead-lettering) on one
-hexagonal kernel. The kernel owns the ports (MQ, Lease, KV, Clock,
-Observer), the runtime, and the shared value types; surfaces and adapters
-plug in around it.
+You've written a job that runs on a schedule, and a worker that drains a
+queue. Both work fine with one copy of your service running. Run more than
+one copy and the scheduled job fires on every replica at once unless you
+bolt on a distributed lock, and the queue consumer needs its own retry
+logic — a message that keeps failing has nowhere to go unless you build
+somewhere for it to land.
+
+converge is a Go library that gives you both kinds of job, with that
+infrastructure built in. Every job you register is one of two kinds: a
+[reconcile](docs/glossary.md#reconcile) job, which answers "is everything
+as it should be?" — you hand converge a list of things to check and how
+often, and it calls your function once per thing, which looks at how
+things actually are and fixes what's wrong; or a worker job, which answers
+"do this one specific thing that just happened?" — something sends a
+message, converge hands it to your function, and retries it if that
+function fails. The package layout says which kind a piece of code is:
 
 ```go
 import (
-    "github.com/GareArc/converge"           // the kernel: runtime, ports, run modes
-    "github.com/GareArc/converge/reconcile" // the level-triggered model
-    "github.com/GareArc/converge/worker"    // the edge-triggered model
+    "github.com/GareArc/converge"           // runtime, Options, run modes
+    "github.com/GareArc/converge/reconcile" // "is everything as it should be?"
+    "github.com/GareArc/converge/worker"    // "do this one specific thing that just happened?"
 )
 ```
 
@@ -35,111 +44,193 @@ go get github.com/GareArc/converge/adapters/otel    # convotel: Observer over Op
 go get github.com/GareArc/converge/bridges/kratos   # convkratos: Runtime as a kratos transport.Server
 ```
 
-## Ten-minute tour
+## Two examples
 
-The smallest real job: a function that runs hourly on exactly one replica —
-what you'd previously build with a cron entry plus a Redis lock:
+Both are copied verbatim from the guide, and both run with nothing
+installed.
 
-```go
+**A reconcile job**, from [chapter 1](docs/guide/01-first-job.md): one
+function, called on a schedule, that only one copy of your service runs. The
+in-memory bookkeeping it uses is process-local, so that holds inside one
+process; [chapter 6](docs/guide/06-production.md) swaps those two lines for
+Redis and it holds across replicas.
+
+```go title=examples/guide/01-first-job/main.go
 package main
 
 import (
-    "context"
-    "log"
-    "net/http"
-    "os"
-    "os/signal"
-    "syscall"
-    "time"
+	"context"
+	"fmt"
+	"log"
+	"time"
 
-    "github.com/GareArc/converge"
-    convredis "github.com/GareArc/converge/adapters/redis"
-    "github.com/GareArc/converge/debughttp"
-    "github.com/GareArc/converge/reconcile"
-    "github.com/redis/go-redis/v9"
+	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/reconcile"
 )
 
 func main() {
-    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-    defer stop()
+	rt, err := converge.New(converge.Options{
+		Lease: inmem.NewLease(),
+		KV:    inmem.NewKV(),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+	err = reconcile.Periodic(rt, "refresh-licenses", reconcile.Every(2*time.Second), func(ctx context.Context) error {
+		fmt.Println("refreshing licenses")
+		return nil
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    rt, err := converge.New(converge.Options{
-        Lease: convredis.NewLease(rdb), // needed by the OnOneReplica run mode
-        KV:    convredis.NewKV(rdb),    // engine state: last-fire times, dead-letter marks
-    })
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    if err := reconcile.Periodic(rt, "license-refresh", reconcile.Every(time.Hour), refreshLicense); err != nil {
-        log.Fatal(err)
-    }
-
-    http.Handle("/debug/jobs/", debughttp.ReadOnlyHandler(rt))
-    go http.ListenAndServe(":6060", nil)
-
-    // Blocks until ctx cancels; then stops intake, drains in-flight work,
-    // and releases leases. Returns nil on a clean shutdown.
-    if err := rt.Run(ctx); err != nil {
-        log.Fatal(err)
-    }
-}
-
-func refreshLicense(ctx context.Context) error {
-    // re-read truth, converge, return nil on success
-    return nil
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+	if err := rt.Run(ctx); err != nil {
+		log.Fatal(err)
+	}
 }
 ```
 
-No Redis handy? `converge/inmem` provides in-memory `MQ`, `Lease`, and `KV` —
-swap the two adapter lines and the whole program runs self-contained (single
-process only; for development and tests).
+```sh
+cd examples && go run ./guide/01-first-job
+```
 
-What this bought you over cron+lock:
+```
+refreshing licenses
+refreshing licenses
+refreshing licenses
+refreshing licenses
+```
 
-- **One replica runs it** (default run mode): lease + heartbeat + hand-off on
-  crash. Other replicas skip, they don't fail.
-- **A missed tick isn't lost**: last-fire time is persisted; if the leader
-  crashes across the hourly boundary, the new leader runs the missed pass
-  (`MissedTick` policy, default `RunOnce`).
-- **Failure handling**: an error return retries with exponential backoff and
-  jitter — it doesn't wait an hour for the next tick.
-- **Panic recovery**: a panic is an error, not a dead service.
-- **Introspection**: the job appears at `:6060/debug/jobs` with its schedule,
-  last run, and effective settings.
-- **A dead-loop alarm** — once you wire an `Observer`: a
-  `converge_job`-grouped query over the run counter, not a gauge,
-  that catches silently dead loops.
+**A worker job**, from [chapter 4](docs/guide/04-worker.md): two messages,
+sent once each and delivered to your handler.
 
-`reconcile.Periodic` is sugar for the one-unit case. The rest of the guide
-uses the full `Spec`, which is where IDs, triggers, and the interesting jobs
-live — continue with the [full guide](docs/guide/index.md).
+```go title=examples/guide/04-worker/main.go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/worker"
+)
+
+type Welcome struct {
+	Email string `json:"email"`
+}
+
+func main() {
+	rt, err := converge.New(converge.Options{
+		MQ:    inmem.NewMQ(),
+		Lease: inmem.NewLease(),
+		KV:    inmem.NewKV(),
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	sendWelcome := worker.NewTask[Welcome]("send-welcome", worker.TaskOpts{Queue: "email"})
+
+	err = worker.Handle(rt, sendWelcome, func(ctx context.Context, p Welcome) error {
+		fmt.Println("sending welcome email to", p.Email)
+		return nil
+	}, worker.HandleOpts{Concurrency: 1})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	producer, err := worker.ProducerFrom(rt)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, addr := range []string{"ada@example.com", "grace@example.com"} {
+		if err := sendWelcome.Enqueue(context.Background(), producer, Welcome{Email: addr}, worker.EnqueueOpts{}); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := rt.Run(ctx); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+```sh
+cd examples && go run ./guide/04-worker
+```
+
+```
+sending welcome email to ada@example.com
+sending welcome email to grace@example.com
+```
+
+Both examples use `converge/inmem`. Swapping those storage lines for Redis
+— so the guarantees hold across a real deployment instead of inside one
+process — is [chapter 6](docs/guide/06-production.md).
+
+## When to reach for which
+
+If a job's answer to "what needs to happen" is "make sure everything is as
+it should be," write a [reconcile](docs/glossary.md#reconcile) job — it
+runs on a schedule, so even if it never hears about a change some other
+way, the next scheduled pass catches it. If the answer is "do this one
+specific thing that just happened," write a worker job — the message is
+the only copy of that work, so converge retries it until your function
+succeeds, and keeps a copy around if it never does.
+
+## What it deliberately does not do
+
+- **No exactly-once execution.** converge retries on failure — your
+  function has to be safe to run twice, not just once.
+- **No workflow orchestration.** A job is one function, not a saga —
+  coordinating a sequence of steps across failures is what a tool like
+  Temporal is for.
+- **No built-in batching.** A reconcile function is called once per thing
+  it's checking; group things yourself inside the call if a downstream
+  service needs bulk requests.
+- **No ordering guarantee between worker messages by default.** Messages
+  for the same job can be handled at the same time, in any order —
+  getting them in order takes both `OnOneReplica` and `Concurrency: 1`,
+  not just one.
+- **No scheduling work for a specific clock time, and no cancelling it
+  once queued.** A worker delay is relative ("run this in ten minutes");
+  cancelling a reminder means checking your own state before you act on
+  it.
+- **No per-customer rate limits.** A rate limit applies to a whole job,
+  not to one customer within it.
+
+Batching's precise shape is on [`reconcile`](docs/reference/reconcile.md);
+ordering and delay are on [`worker`](docs/reference/worker.md); rate
+limits are on [`converge`][apiref].
 
 ## Documentation
 
-- [Guide](docs/guide/index.md) — concepts, the reconcile and worker
-  surfaces, run modes, version tracking, testing, operations.
-- [Cookbook](docs/cookbook/scenario-a-safety-net.md) — six worked scenarios,
-  plus the outbox/inbox recipes.
-- [Reference](docs/reference/kernel.md) — the condensed kernel, reconcile,
-  worker, and adapters API.
-- [`CONTEXT.md`](CONTEXT.md) — the project's canonical terminology; binding
-  for identifiers, docs, and messages throughout.
+- [Guide](docs/guide/index.md) — a numbered path through ten chapters; the
+  first six are the core path, from one scheduled job to running in
+  production, and the rest cover stale writes, testing, and watching it
+  run.
+- [Cookbook](docs/cookbook/scenario-a-safety-net.md) — six worked
+  scenarios, plus the outbox/inbox recipes.
+- [Reference][apiref] — the API reference: `Options`, what a backend
+  implements, and where the shipped adapters live.
+- [Glossary](docs/glossary.md) — every converge-specific word, defined
+  once.
 
-## Verify
-
-```sh
-set -e
-make check                      # gofmt gate, vet, dependency gate, race tests — every module
-for m in . adapters/redis adapters/otel bridges/kratos examples; do  # ./... does not cross module boundaries
-  (cd "$m" && go test -race -count=2 ./...)
-done
-```
-
-Every change must leave `make check` green.
+Contributing to converge? [`AGENT.md`](AGENT.md) has the verification
+commands this project runs; [`CONTEXT.md`](CONTEXT.md) is the terminology
+contract the docs and code follow.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+[apiref]: docs/reference/kernel.md

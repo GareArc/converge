@@ -1,5 +1,10 @@
 # `converge/reconcile` — the level-triggered model
 
+[Reconcile](../glossary.md#reconcile) jobs keep something true: converge
+calls your function once per ID on a schedule, and your function re-reads
+the world and puts it right — messages only say *what* to look at, never
+*what to do*.
+
 ```go
 type ID string
 func JoinID(parts ...string) ID
@@ -34,8 +39,11 @@ type Spec struct {
 }
 
 // outcome values — implement error; keyed fields required
+
+// after 10 consecutive CheckAgain returns for one ID the failure backoff
+// curve applies anyway, reported as BackoffFallback
 type CheckAgain struct {
-    In time.Duration
+    In time.Duration // floored: under 250ms becomes 250-375ms
 }
 var ErrOutdated error
 
@@ -44,7 +52,11 @@ func SingleID() IDSource
 func IDs(fn func(ctx context.Context) ([]ID, error)) IDSource
 func StringIDs(fn func(ctx context.Context) ([]string, error)) IDSource
 func IDsByPage(fn func(ctx context.Context, cursor string) ([]ID, string, error)) IDSource
-    // cursor MUST be keyset-stable (see Concepts → "ID sources")
+    // cursor MUST be keyset-stable: a value that is both order-stable and
+    // unique across calls (e.g. an auto-incrementing ID, or a timestamp
+    // paired with a tiebreaker column when it isn't already unique), not
+    // a positional offset — get either property wrong and concurrent
+    // inserts, deletes, or tied boundary values silently skip IDs
 
 // triggers
 type Trigger interface {
@@ -67,9 +79,8 @@ type CronOpts struct {
 func OnMessage(queue string, id IDFunc, o OnMessageOpts) Trigger
 type OnMessageOpts struct {
     MQ       converge.MQ           // non-default transport
-    Delivery converge.DeliveryMode // Group | Broadcast; default follows run mode
-                                   // (see the reconcile guide's "Triggers
-                                   // and the schedule" section)
+    Delivery converge.DeliveryMode // Group | Broadcast; default follows run mode;
+                                   // OnAllReplicas requires Broadcast
 }
 
 // ID extraction
@@ -91,6 +102,5 @@ func (t *Tracker) MarkApplied(ctx context.Context, id ID, v Version) error
 func (t *Tracker) Forget(ctx context.Context, id ID) error // GC when the entity is deleted
 ```
 
-See [Reconcile](../guide/reconcile.md) for the trigger/schedule guide and the
-outcome table, and [Version tracking](../guide/versions.md) for `Tracker`'s
-namespace and revival rules.
+See [7. Stale writes](../guide/07-versions.md) for `Tracker`'s namespace and
+revival rules.

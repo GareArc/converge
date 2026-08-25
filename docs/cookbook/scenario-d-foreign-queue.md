@@ -1,10 +1,13 @@
 # Scenario D: Consuming a queue owned by another language
 
+> Assumes [chapter 04, the other kind of job](../guide/04-worker.md).
+
 *"The Python side LPUSHes `{"type": "...", "workspace_id": "..."}` onto a
 frozen Redis list. We must react."*
 
-Apply the decision test: the message is an ID plus a kind — a *hint*. This is
-a reconciler, and the foreign list is just a trigger source:
+Apply the decision test: the message is an ID plus a kind — a
+*[hint](../glossary.md#hint)*. This is a reconciler, and the foreign list is
+just a trigger source:
 
 ```go
 // package tasksync — the frozen Redis key name is part of the contract
@@ -27,9 +30,10 @@ func NewMemberSync(rt *converge.Runtime, rdb *redis.Client, repo *MemberRepo) (*
 }
 ```
 
-No ack machinery, no retry counters, no DLQ lists, no kind router — any
-message, including kinds Python invents next year, collapses to "re-check
-workspace X"; a dropped message costs at most one schedule period.
+No ack machinery, no retry counters, no
+[DLQ](../glossary.md#dead-letter-dlq) lists, no kind router — any message,
+including kinds Python invents next year, collapses to "re-check workspace
+X"; a dropped message costs at most one schedule period.
 
 When the foreign queue carries true verbs (data you cannot re-read) and you
 *can't* change the producer, see the

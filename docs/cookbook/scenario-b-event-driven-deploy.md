@@ -1,5 +1,8 @@
 # Scenario B: Event-driven deploy reconciler
 
+> Assumes [chapter 03, reacting to events](../guide/03-triggers.md) and
+> [chapter 07, stale writes](../guide/07-versions.md).
+
 Composite IDs, version tracking, self-requeue.
 
 *"Converge each app's runner deployment to its saved config. React to events
@@ -39,7 +42,7 @@ func (r *RunnerReconciler) Reconcile(ctx context.Context, id reconcile.ID) error
         return err // malformed ID (bad poke input) — no panic
     }
 
-    v, err := r.tracker.Latest(ctx, id) // version first, then truth (see the versions guide)
+    v, err := r.tracker.Latest(ctx, id) // version first, then truth (see chapter 7, stale writes)
     if err != nil {
         return err
     }
@@ -63,10 +66,10 @@ Producer side (the API handler saving a deploy config):
 
 ```go
 if _, err := r.tracker.MarkChanged(ctx, reconcile.JoinID(tenantID, appID)); err != nil {
-    return err // must not be dropped — see the versions guide
+    return err // must not be dropped — see chapter 7, stale writes
 }
 publishAppEvent(ctx, tenantID, appID) // best-effort; the schedule covers message loss
 ```
 
-See also: [Version tracking](../guide/versions.md) for the ordering rule
+See also: [7. Stale writes](../guide/07-versions.md) for the ordering rule
 (`Latest` before truth, `v` as the write guard) this example follows.

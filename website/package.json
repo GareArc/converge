@@ -1,0 +1,14 @@
+{
+  "name": "converge-website",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "docs:project": "node scripts/project.mjs",
+    "docs:dev": "pnpm run docs:project && vitepress dev",
+    "docs:build": "pnpm run docs:project && vitepress build",
+    "docs:preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  }
+}

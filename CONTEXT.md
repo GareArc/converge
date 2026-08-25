@@ -2,7 +2,7 @@
 
 One model for all background work: a level-triggered reconcile surface and an
 edge-triggered worker surface on one kernel. This glossary is the project's
-canonical language; the terminology map in the user guide links these terms
+canonical language; the terminology map in the reference links these terms
 to their names in the literature.
 
 ## Language

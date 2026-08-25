@@ -129,6 +129,9 @@ internal/keys   the KV and queue key layout — every key string is built here
 internal/ctl    control-plane primitives: ops verbs, Request/Response, control
                 key helpers over internal/keys
 internal/mw     middleware chain composition
+internal/docscheck
+                the documentation gates: tagged-snippet equality, terminology
+                coverage, link resolution
 internal/backoff, internal/tokenbucket, internal/durfmt, internal/pausegate
                 shared engine primitives: the retry curve (jitter is its
                 unexported detail), rate limiting, duration rendering, pause
@@ -145,9 +148,10 @@ adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
                              keys; ListTrigger over lists — separate module
 adapters/otel (convotel)     Observer over OpenTelemetry metrics — counters and
                              histograms only, no gauges — separate module
-examples/                    runnable programs (tour, worker, otel) — separate
-                             module
+examples/                    runnable programs (guide, cookbook, worker, otel)
+                             — separate module
 bridges/kratos (convkratos)  Runtime as a kratos transport.Server — separate module
+website/                     VitePress site built from docs/ — holds no content
 docs/superpowers/            local-only working docs — gitignored, never commit
 ```
 

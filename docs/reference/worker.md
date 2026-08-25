@@ -1,5 +1,10 @@
 # `converge/worker` — the edge-triggered model
 
+[Worker](../glossary.md#worker) jobs do one specific thing that just
+happened: something enqueues a message, and converge hands it to your
+function exactly as sent, retrying on failure and setting it aside rather
+than dropping it if the retries run out.
+
 ```go
 func NewTask[T any](name string, o TaskOpts) Task[T]
 
@@ -58,6 +63,32 @@ type Discard struct {
 }
 ```
 
+## Outcomes
+
+| Return | Engine does |
+|---|---|
+| `nil` | ack — done |
+| `Snooze{In: d}` | ack, republish after `d`; logical attempt untouched — capped by `Retry.MaxAge`, not `Retry.MaxAttempts` |
+| `Discard{Reason: s}` | ack, `MessageDiscarded` observer event; never redelivered |
+| the engine's handler context canceled (shutdown, or losing the lease under `converge.OnOneReplica`) | ack, republish immediately — not after `Visibility` — logical attempt preserved, no failure counted |
+| any other error | attempt++, redeliver after backoff |
+| `Retry.MaxAttempts` reached, or age exceeds `Retry.MaxAge` | dead-lettered — payload and final error kept |
+| panic | recovered, converted to an error, then handled as "any other error" above |
+
+That cancellation row means the context converge itself hands your handler
+and later cancels. The engine derives it with `context.WithCancel` and never
+puts a deadline on it, so it only ever reports `context.Canceled`. A deadline
+you impose on your own work is a different thing: returning
+`context.DeadlineExceeded` from a context you derived is an ordinary error,
+counting a failure, redelivering after backoff, and dead-lettering at
+`Retry.MaxAttempts` like any other. Neutral republish is not a way to
+express "this attempt timed out, give it back unharmed".
+
+While a handler runs, the engine automatically extends the delivery's
+visibility (heartbeats at `Visibility/3`); reclaim by another worker only
+happens once those heartbeats stop — i.e. the process holding the message
+has actually died.
+
 `Meta.EnqueuedAt` reflects the message's `converge.enqueued-at` header, not
 necessarily the moment your code first called `Enqueue` — see
 [Adapters → EnqueuedAt divergence](adapters.md#enqueuedat-divergence) for
@@ -65,10 +96,11 @@ how the shipped Redis adapter stamps it on a delayed message.
 
 The dead-letter queue (list/get/requeue/purge) is exposed through
 `debughttp.OpsHandler`, not through this package directly — see
-[Operations](../guide/operations.md). Its listing is backed by `KV.Scan`,
-which is at-least-once under concurrent mutation on the Redis adapter (see
-[Adapters → KV](adapters.md#kv--newkv)); the DLQ list dedups by key so a
+[Operations reference → Ops verbs](operations.md#ops-verbs). Its listing
+is backed by `KV.Scan`, which is at-least-once under concurrent mutation
+on the Redis adapter (see
+[Adapters → KV](adapters.md#kv-—-newkv)); the DLQ list dedups by key so a
 duplicate-returning `Scan` can never surface a duplicate dead-letter record.
 
-See [Worker](../guide/worker.md) for the outcome table, logical-attempt vs.
-transport-delivery distinction, and `OnAllReplicas` semantics.
+See [4. The other kind of job](../guide/04-worker.md) for a walkthrough of
+what a handler can return.

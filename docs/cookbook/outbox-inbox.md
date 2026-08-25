@@ -1,8 +1,12 @@
 # Outbox and inbox recipes
 
+> Assumes [chapter 04, the other kind of job](../guide/04-worker.md) and
+> [chapter 05, more than one copy](../guide/05-run-modes.md).
+
 Two recipes for the same underlying problem: converge's queue boundary
 doesn't span your database transaction. Both compose the two surfaces —
-worker for the durable unit of work, reconcile for the drain loop.
+worker for the durable unit of work,
+[reconcile](../glossary.md#reconcile) for the drain loop.
 
 ## Outbox
 
@@ -14,10 +18,10 @@ enqueue must ride the transaction, use the outbox pattern:
 
 1. In the **same transaction** as the domain write, insert the payload into
    an outbox table. Commit = the work durably exists.
-2. A small reconciler (`"outbox-drain"`, `OnOneReplica`, `Every(2s)` + a poke
-   from the committing handler) reads unsent rows, `Enqueue`s them, marks
-   them sent. At-least-once end to end; the worker's idempotency absorbs
-   the duplicates.
+2. A small reconciler (`"outbox-drain"`, `OnOneReplica`, `Every(2s)` + a
+   [poke](../glossary.md#poke) from the committing handler) reads unsent
+   rows, `Enqueue`s them, marks them sent. At-least-once end to end; the
+   worker's idempotency absorbs the duplicates.
 
 ## Inbox
 

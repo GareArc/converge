@@ -30,8 +30,7 @@ var OnOneReplica RunMode        // lease per job
 var SplitAcrossReplicas RunMode // worker surface only in v1; reconcile → registration error
 var OnAllReplicas RunMode
 
-// message delivery mode for hint queues (see the reconcile guide's
-// "Triggers and the schedule" section); zero value follows the run mode
+// message delivery mode for hint queues; zero value follows the run mode
 var Group DeliveryMode     // competing consumers — each message wakes one replica
 var Broadcast DeliveryMode // every replica sees every message
 
@@ -55,8 +54,7 @@ type Run struct {           // normalized view of one execution
 Control-flow signals (`reconcile.CheckAgain`, `reconcile.ErrOutdated`,
 `worker.Snooze`, `worker.Discard`) implement an unexported kernel interface —
 only converge's own types can be signals; wrong-surface returns park/DLQ with
-a `WrongSurfaceSignal` event (see
-[Outcome values](../guide/concepts.md#outcome-values)).
+a `WrongSurfaceSignal` event.
 
 ## Ports
 
@@ -99,8 +97,8 @@ type Lease interface {
 type LeaseHandle interface {
     Extend(ctx context.Context, ttl time.Duration) error
     Release(ctx context.Context) error
-    Done() <-chan struct{} // closed on loss → engine cancels in-flight ctx
-                           // (a neutral outcome — see the reconcile/worker guides)
+    Done() <-chan struct{} // closed on loss → engine cancels in-flight ctx;
+                           // neither surface counts this as a failure
 }
 
 type KV interface {
@@ -121,6 +119,28 @@ type Observer interface {
 type Clock interface { Now() time.Time /* ... */ }
 ```
 
+## v1 limits
+
+- **No exactly-once.** At-least-once + idempotent handlers.
+- **No correctness-by-lock.** [Leases](../glossary.md#lease) reduce
+  duplicate work; version tracking provides correctness.
+- **No workflow orchestration** — multi-step sagas are Temporal's territory.
+- **No CRD controllers** — keep controller-runtime.
+- **No batching** (v1): `Reconcile` is per-ID. If your downstream demands
+  bulk calls, aggregate inside the handler's own storage layer, or ask for
+  `ReconcileBatch` when a real job needs it.
+- **No per-key ordering on the worker surface** (v1): ordered verbs need
+  `OnOneReplica` + `Concurrency: 1`, or a future partition-key capability.
+- **No absolute-time or cancellable delayed jobs** (v1): `Delay` is
+  relative; "cancel the reminder" is a reconciler over your own table.
+- **No per-tenant keyed rate limits** (v1): `RateLimit` is per-job and
+  process-local; keyed fairness is planned against a real consumer.
+- **No priorities, no unique-job dedup on the worker surface** (dedup is
+  what the reconcile surface *is*), **no hot config reload**.
+- **No sharded reconcilers** (v1): `SplitAcrossReplicas` on a reconcile
+  spec is a clear registration error.
+
 See [Adapters](adapters.md) for the shipped implementations of these ports,
-and [Operations](../guide/operations.md) for the introspection handlers
-(`debughttp.ReadOnlyHandler`, `debughttp.OpsHandler`) built on top of them.
+and [Operations reference](operations.md#introspection-and-ops-handlers) for
+the introspection handlers (`debughttp.ReadOnlyHandler`,
+`debughttp.OpsHandler`) built on top of them.
