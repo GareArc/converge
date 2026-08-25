@@ -93,14 +93,14 @@ the data) → `worker`.
 **The rule that prevents the classic [reconcile](../glossary.md#reconcile)
 incident:** your reconcile handler runs **every time the schedule comes
 around, whether or not anything has changed**. So every side effect it
-performs has to depend on what it finds, not on the fact that it ran. "Notify
-the workspace when it exceeds quota" must not send a notification every time
-— write it to work toward "a notification exists": read the stored
+performs has to depend on what it finds, not on the fact that it ran. "Email
+the buyer when a SKU is back in stock" must not send an email every time —
+write it to work toward "a notification exists": read the stored
 `notified_at` fact, send only if it is absent, and record that you sent it. A
 side effect you cannot make conditional like that is a one-time action; send
 it through `worker` instead.
 
 When in doubt, it is a reconcile job. A queue whose messages carry
-`{"workspace_id": X, "type": "changed"}` is not carrying work — it is
+`{"sku": X, "type": "changed"}` is not carrying work — it is
 carrying a name to go and look at, which makes it a reconcile job dressed as
 a worker.

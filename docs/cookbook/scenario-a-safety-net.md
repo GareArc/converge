@@ -1,20 +1,20 @@
-# Scenario A: Safety-net reconciler over all workspaces
+# Scenario A: Safety-net reconciler over the whole catalog
 
 > Assumes [chapter 02, many things to check](../guide/02-ids.md).
 
-*"Every workspace must have its credentials synced; events might be missed;
-re-check everything nightly."*
+*"Every SKU's stock level must match the warehouse; stock events might be
+missed; re-check everything nightly."*
 
 ```go
-// package credcheck
-func NewReconciler(rt *converge.Runtime, repo *WorkspaceRepo) (*Reconciler, error) {
+// package stockcheck
+func NewReconciler(rt *converge.Runtime, repo *CatalogRepo) (*Reconciler, error) {
     r := &Reconciler{repo: repo}
     err := reconcile.Register(rt, reconcile.Spec{
-        Name:       "workspace-credentials",
+        Name:       "sync-inventory",
         Reconciler: r,
         Triggers: []reconcile.Trigger{
             reconcile.Schedule(
-                reconcile.StringIDs(repo.AllWorkspaceIDs), // func(ctx) ([]string, error)
+                reconcile.StringIDs(repo.AllSKUs), // func(ctx) ([]string, error)
                 reconcile.Cron("0 3 * * *", reconcile.CronOpts{}), // UTC
             ),
         },
@@ -26,11 +26,11 @@ func NewReconciler(rt *converge.Runtime, repo *WorkspaceRepo) (*Reconciler, erro
 }
 
 func (r *Reconciler) Reconcile(ctx context.Context, id reconcile.ID) error {
-    ws, err := r.repo.Get(ctx, string(id))
+    sku, err := r.repo.Get(ctx, string(id))
     if err != nil {
         return err
     }
-    return r.ensureCredentials(ctx, ws) // convergent: only writes what's missing
+    return r.ensureStockMatches(ctx, sku) // convergent: only writes what's wrong
 }
 ```
 

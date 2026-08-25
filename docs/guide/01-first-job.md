@@ -105,7 +105,7 @@ looking after exactly one thing. The [reconcile](../glossary.md#reconcile) in
 the name is converge's word for work that fixes drift — your function reads
 how things actually are and puts them right, rather than being handed a piece
 of work and told to do it. Most work of that kind looks after many things at
-once, one per customer or one per workspace, and that is the general form:
+once, one per customer or one per product, and that is the general form:
 [chapter 2](02-ids.md).
 
 ## Try breaking it
