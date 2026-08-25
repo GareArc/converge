@@ -108,9 +108,14 @@ func maskSpans(out []byte, open, close string) {
 			return
 		}
 		a += i
-		b := strings.Index(s[a+len(open):], close)
+		rest := s[a+len(open):]
+		if nl := strings.IndexByte(rest, '\n'); nl != -1 {
+			rest = rest[:nl]
+		}
+		b := strings.Index(rest, close)
 		if b == -1 {
-			return
+			i = a + len(open)
+			continue
 		}
 		b = a + len(open) + b + len(close)
 		for k := a; k < b; k++ {

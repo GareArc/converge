@@ -294,7 +294,7 @@ func stripInlineCode(src string) string {
 		runLen := pos - start
 		end := -1
 		scan := pos
-		for scan < len(out) {
+		for scan < len(out) && out[scan] != '\n' {
 			if out[scan] != '`' {
 				scan++
 				continue
@@ -483,6 +483,17 @@ func TestStripInlineCodeHandlesMultiBacktickSpans(t *testing.T) {
 	}
 	if strings.Contains(out, "[P][Q]") {
 		t.Error("triple-backtick inline span was not stripped")
+	}
+}
+
+func TestUnpairedBacktickDoesNotMaskALaterLine(t *testing.T) {
+	src := "Prices are quoted in ` per unit.\n\n" +
+		"See [the missing page](does-not-exist.md) for details.\n\n" +
+		"The symbol ` closes nothing in particular.\n"
+	out := stripInlineCode(src)
+	matches := linkRe.FindAllStringSubmatch(out, -1)
+	if len(matches) != 1 || matches[0][1] != "does-not-exist.md" {
+		t.Errorf("matches = %v, want one link to does-not-exist.md", matches)
 	}
 }
 

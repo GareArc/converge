@@ -64,6 +64,23 @@ func TestColdPageHasNoGloss(t *testing.T) {
 	}
 }
 
+func TestMaskNonProseUnpairedBacktickDoesNotMaskALaterLine(t *testing.T) {
+	src := "Prices are quoted in ` per unit.\n\n" +
+		"The job parks the ID after too many failures.\n\n" +
+		"The symbol ` closes nothing in particular.\n"
+	masked := MaskNonProse(src)
+	if FirstProseUse(masked, "parks") == -1 {
+		t.Error("a cold term one line below an unpaired backtick was masked away")
+	}
+}
+
+func TestMaskNonProseStillHidesASingleLineCodeSpan(t *testing.T) {
+	masked := MaskNonProse("The `parks` identifier is code, not prose.\n")
+	if FirstProseUse(masked, "parks") != -1 {
+		t.Error("a single-line code span was left unmasked")
+	}
+}
+
 func TestSearchAliasesSplitsParentheticalAndPlain(t *testing.T) {
 	cases := map[string][]string{
 		"Dead-letter (DLQ)": {"Dead-letter", "DLQ"},
