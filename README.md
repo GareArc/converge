@@ -20,8 +20,8 @@ function fails. The package layout says which kind a piece of code is:
 ```go
 import (
     "github.com/GareArc/converge"           // runtime, Options, run modes
-    "github.com/GareArc/converge/reconcile" // the level-triggered model
-    "github.com/GareArc/converge/worker"    // the edge-triggered model
+    "github.com/GareArc/converge/reconcile" // "is everything as it should be?"
+    "github.com/GareArc/converge/worker"    // "do this one specific thing that just happened?"
 )
 ```
 
@@ -194,9 +194,10 @@ succeeds, and keeps a copy around if it never does.
 - **No built-in batching.** A reconcile function is called once per thing
   it's checking; group things yourself inside the call if a downstream
   service needs bulk requests.
-- **No ordering guarantee between worker messages.** Two messages for the
-  same job can be handled at the same time, in either order, unless you
-  cap concurrency at one.
+- **No ordering guarantee between worker messages by default.** Messages
+  for the same job can be handled at the same time, in any order —
+  getting them in order takes both `OnOneReplica` and `Concurrency: 1`,
+  not just one.
 - **No scheduling work for a specific clock time, and no cancelling it
   once queued.** A worker delay is relative ("run this in ten minutes");
   cancelling a reminder means checking your own state before you act on
@@ -204,7 +205,9 @@ succeeds, and keeps a copy around if it never does.
 - **No per-customer rate limits.** A rate limit applies to a whole job,
   not to one customer within it.
 
-The precise shape of each of these is in the [reference][apiref].
+Batching's precise shape is on [`reconcile`](docs/reference/reconcile.md);
+ordering and delay are on [`worker`](docs/reference/worker.md); rate
+limits are on [`converge`][apiref].
 
 ## Documentation
 
@@ -215,7 +218,7 @@ The precise shape of each of these is in the [reference][apiref].
 - [Cookbook](docs/cookbook/scenario-a-safety-net.md) — six worked
   scenarios, plus the outbox/inbox recipes.
 - [Reference][apiref] — the API reference: `Options`, what a backend
-  implements, and the shipped adapters.
+  implements, and where the shipped adapters live.
 - [Glossary](docs/glossary.md) — every converge-specific word, defined
   once.
 
