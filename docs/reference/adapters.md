@@ -258,8 +258,8 @@ No ID and no message ID is ever an attribute, on any instrument.
 Worker discard reasons specifically are excluded too:
 `converge.MessageDiscarded.Reason` is a free-form `string`, copied
 straight from the value a handler returns in `worker.Discard{Reason:
-…}`. A handler that returns `Discard{Reason: fmt.Sprintf("no tenant
-%s", id)}` would create one time series per tenant if that string
+…}`. A handler that returns `Discard{Reason: fmt.Sprintf("no such SKU
+%s", id)}` would create one time series per SKU if that string
 became a label. Reconcile discard reasons are attributes, by
 contrast, because `WakeDiscardReason` is a sealed type with five
 fixed values — its cardinality is bounded by the type, not by

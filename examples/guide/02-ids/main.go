@@ -11,8 +11,8 @@ import (
 	"github.com/GareArc/converge/reconcile"
 )
 
-func tenantIDs(ctx context.Context) ([]string, error) {
-	return []string{"acme", "globex"}, nil
+func skuIDs(ctx context.Context) ([]string, error) {
+	return []string{"SKU-1001", "SKU-1002"}, nil
 }
 
 func main() {
@@ -25,13 +25,13 @@ func main() {
 	}
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "sync-tenants",
+		Name: "sync-inventory",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			fmt.Println("checking tenant", id)
+			fmt.Println("checking stock for", id)
 			return nil
 		}),
 		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.StringIDs(tenantIDs), reconcile.Every(2*time.Second)),
+			reconcile.Schedule(reconcile.StringIDs(skuIDs), reconcile.Every(2*time.Second)),
 		},
 	})
 	if err != nil {

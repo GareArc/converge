@@ -1,21 +1,22 @@
 # Converge
 
-You've written a job that runs on a schedule, and a worker that drains a
-queue. Both work fine with one copy of your service running. Run more than
-one copy and the scheduled job fires on every replica at once unless you
-bolt on a distributed lock, and the queue consumer needs its own retry
-logic — a message that keeps failing has nowhere to go unless you build
-somewhere for it to land.
+converge is a Go library providing one runtime for two kinds of background
+job, with the infrastructure both kinds need across replicas built in:
+leader election, schedule state that survives restarts, bounded retries with
+backoff, and [dead-letter](docs/glossary.md#dead-letter-dlq) storage.
 
-converge is a Go library that gives you both kinds of job, with that
-infrastructure built in. Every job you register is one of two kinds: a
-[reconcile](docs/glossary.md#reconcile) job, which answers "is everything
-as it should be?" — you hand converge a list of things to check and how
-often, and it calls your function once per thing, which looks at how
-things actually are and fixes what's wrong; or a worker job, which answers
-"do this one specific thing that just happened?" — something sends a
-message, converge hands it to your function, and retries it if that
-function fails. The package layout says which kind a piece of code is:
+- A [reconcile](docs/glossary.md#reconcile) job answers "is everything as it
+  should be?" It takes a set of IDs and a
+  [cadence](docs/glossary.md#cadence), and calls one function per ID; that
+  function reads current state and corrects it. A message on this surface is
+  a [hint](docs/glossary.md#hint) that something may have changed — never
+  the work itself.
+- A worker job answers "do this one thing that just happened." The message
+  is the work: it is delivered at least once, retried with backoff when the
+  handler returns an error, and dead-lettered once the retry budget is
+  spent.
+
+The package layout makes the model explicit:
 
 ```go
 import (
@@ -78,8 +79,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = reconcile.Periodic(rt, "refresh-licenses", reconcile.Every(2*time.Second), func(ctx context.Context) error {
-		fmt.Println("refreshing licenses")
+	err = reconcile.Periodic(rt, "sync-inventory", reconcile.Every(2*time.Second), func(ctx context.Context) error {
+		fmt.Println("syncing inventory with the warehouse")
 		return nil
 	})
 	if err != nil {
@@ -99,10 +100,10 @@ cd examples && go run ./guide/01-first-job
 ```
 
 ```
-refreshing licenses
-refreshing licenses
-refreshing licenses
-refreshing licenses
+syncing inventory with the warehouse
+syncing inventory with the warehouse
+syncing inventory with the warehouse
+syncing inventory with the warehouse
 ```
 
 **A worker job**, from [chapter 4](docs/guide/04-worker.md): two messages,
@@ -122,8 +123,8 @@ import (
 	"github.com/GareArc/converge/worker"
 )
 
-type Welcome struct {
-	Email string `json:"email"`
+type ChargeOrder struct {
+	OrderID string `json:"order_id"`
 }
 
 func main() {
@@ -136,10 +137,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	sendWelcome := worker.NewTask[Welcome]("send-welcome", worker.TaskOpts{Queue: "email"})
+	chargeOrder := worker.NewTask[ChargeOrder]("charge-order", worker.TaskOpts{Queue: "payments"})
 
-	err = worker.Handle(rt, sendWelcome, func(ctx context.Context, p Welcome) error {
-		fmt.Println("sending welcome email to", p.Email)
+	err = worker.Handle(rt, chargeOrder, func(ctx context.Context, p ChargeOrder) error {
+		fmt.Println("charging order", p.OrderID)
 		return nil
 	}, worker.HandleOpts{Concurrency: 1})
 	if err != nil {
@@ -150,8 +151,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	for _, addr := range []string{"ada@example.com", "grace@example.com"} {
-		if err := sendWelcome.Enqueue(context.Background(), producer, Welcome{Email: addr}, worker.EnqueueOpts{}); err != nil {
+	for _, id := range []string{"ORD-4417", "ORD-4418"} {
+		if err := chargeOrder.Enqueue(context.Background(), producer, ChargeOrder{OrderID: id}, worker.EnqueueOpts{}); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -169,25 +170,25 @@ cd examples && go run ./guide/04-worker
 ```
 
 ```
-sending welcome email to ada@example.com
-sending welcome email to grace@example.com
+charging order ORD-4417
+charging order ORD-4418
 ```
 
 Both examples use `converge/inmem`. Swapping those storage lines for Redis
 — so the guarantees hold across a real deployment instead of inside one
 process — is [chapter 6](docs/guide/06-production.md).
 
-## When to reach for which
+## Choosing a surface
 
 If a job's answer to "what needs to happen" is "make sure everything is as
-it should be," write a [reconcile](docs/glossary.md#reconcile) job — it
-runs on a schedule, so even if it never hears about a change some other
-way, the next scheduled pass catches it. If the answer is "do this one
-specific thing that just happened," write a worker job — the message is
-the only copy of that work, so converge retries it until your function
-succeeds, and keeps a copy around if it never does.
+it should be," it belongs on the [reconcile](docs/glossary.md#reconcile)
+surface: it runs on a schedule, so a change it never hears about is still
+caught by the next pass. If the answer is "do this one specific thing that
+just happened," it belongs on the worker surface: the message is the only
+copy of that work, so converge retries it until the handler succeeds and
+retains it if that never happens.
 
-## What it deliberately does not do
+## Non-goals
 
 - **No exactly-once execution.** converge retries on failure — your
   function has to be safe to run twice, not just once.
@@ -225,9 +226,9 @@ limits are on [`converge`][apiref].
 - [Glossary](docs/glossary.md) — every converge-specific word, defined
   once.
 
-Contributing to converge? [`AGENT.md`](AGENT.md) has the verification
-commands this project runs; [`CONTEXT.md`](CONTEXT.md) is the terminology
-contract the docs and code follow.
+For contributors, [`AGENT.md`](AGENT.md) documents the verification
+commands this project runs, and [`CONTEXT.md`](CONTEXT.md) is the
+terminology contract the docs and code follow.
 
 ## License
 

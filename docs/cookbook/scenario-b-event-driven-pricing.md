@@ -1,32 +1,32 @@
-# Scenario B: Event-driven deploy reconciler
+# Scenario B: Event-driven repricing reconciler
 
 > Assumes [chapter 03, reacting to events](../guide/03-triggers.md) and
 > [chapter 07, stale writes](../guide/07-versions.md).
 
 Composite IDs, version tracking, self-requeue.
 
-*"Converge each app's runner deployment to its saved config. React to events
+*"Converge each region's shelf price to the price we saved. React to events
 within seconds; guarantee convergence within minutes; protect against stale
 replicas."*
 
 ```go
-// package appdeploy
-func NewRunnerReconciler(rt *converge.Runtime, db *DB, runner RunnerAPI, kv converge.KV) (*RunnerReconciler, error) {
-    r := &RunnerReconciler{
+// package pricing
+func NewPriceReconciler(rt *converge.Runtime, db *DB, pricing PricingAPI, kv converge.KV) (*PriceReconciler, error) {
+    r := &PriceReconciler{
         db:      db,
-        runner:  runner,
-        tracker: reconcile.NewTracker(kv, "app-runner"), // == Spec.Name, validated
+        pricing: pricing,
+        tracker: reconcile.NewTracker(kv, "apply-price-change"), // == Spec.Name, validated
     }
     err := reconcile.Register(rt, reconcile.Spec{
-        Name:            "app-runner",
+        Name:            "apply-price-change",
         Reconciler:      r,
         Concurrency:     8,
         DeadLetterAfter: 10,        // park hopeless IDs...
         Versions:        r.tracker, // ...revive them when intent changes
         Triggers: []reconcile.Trigger{
-            reconcile.Schedule(reconcile.IDsByPage(r.pageDeployIDs), reconcile.Every(5*time.Minute)),
-            reconcile.OnMessage("app-events",
-                reconcile.IDFromJSONFields("tenant_id", "app_id"),
+            reconcile.Schedule(reconcile.IDsByPage(r.pageSKUs), reconcile.Every(5*time.Minute)),
+            reconcile.OnMessage("price-events",
+                reconcile.IDFromJSONFields("region", "sku"),
                 reconcile.OnMessageOpts{}), // Group delivery — default for OnOneReplica
         },
     })
@@ -36,8 +36,8 @@ func NewRunnerReconciler(rt *converge.Runtime, db *DB, runner RunnerAPI, kv conv
     return r, nil
 }
 
-func (r *RunnerReconciler) Reconcile(ctx context.Context, id reconcile.ID) error {
-    tenantID, appID, err := reconcile.Split2(id)
+func (r *PriceReconciler) Reconcile(ctx context.Context, id reconcile.ID) error {
+    region, sku, err := reconcile.Split2(id)
     if err != nil {
         return err // malformed ID (bad poke input) — no panic
     }
@@ -46,29 +46,29 @@ func (r *RunnerReconciler) Reconcile(ctx context.Context, id reconcile.ID) error
     if err != nil {
         return err
     }
-    cfg, err := r.db.LoadDeployConfig(ctx, tenantID, appID)
+    price, err := r.db.LoadPrice(ctx, region, sku)
     if err != nil {
         return err
     }
 
-    status, err := r.runner.Apply(ctx, cfg, v) // runner checks v — prevention, not detection
+    status, err := r.pricing.Apply(ctx, price, v) // the API checks v — prevention, not detection
     if err != nil {
         return err
     }
-    if status.Rolling {
+    if status.Propagating {
         return reconcile.CheckAgain{In: 10 * time.Second}
     }
     return r.tracker.MarkApplied(ctx, id, v)
 }
 ```
 
-Producer side (the API handler saving a deploy config):
+Producer side (the API handler saving a new price):
 
 ```go
-if _, err := r.tracker.MarkChanged(ctx, reconcile.JoinID(tenantID, appID)); err != nil {
+if _, err := r.tracker.MarkChanged(ctx, reconcile.JoinID(region, sku)); err != nil {
     return err // must not be dropped — see chapter 7, stale writes
 }
-publishAppEvent(ctx, tenantID, appID) // best-effort; the schedule covers message loss
+publishPriceEvent(ctx, region, sku) // best-effort; the schedule covers message loss
 ```
 
 See also: [7. Stale writes](../guide/07-versions.md) for the ordering rule

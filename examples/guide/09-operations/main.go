@@ -22,7 +22,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = reconcile.Periodic(rt, "refresh-licenses", reconcile.Every(time.Second), func(ctx context.Context) error {
+	err = reconcile.Periodic(rt, "sync-inventory", reconcile.Every(time.Second), func(ctx context.Context) error {
 		return nil
 	})
 	if err != nil {

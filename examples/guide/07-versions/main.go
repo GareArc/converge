@@ -19,10 +19,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tracker := reconcile.NewTracker(kv, "apply-config")
+	tracker := reconcile.NewTracker(kv, "apply-price-change")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "apply-config",
+		Name: "apply-price-change",
 		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
 			version, err := tracker.Latest(ctx, id)
 			if err != nil {
@@ -36,7 +36,7 @@ func main() {
 
 			err = tracker.MarkApplied(ctx, id, version)
 			if errors.Is(err, reconcile.ErrOutdated) {
-				fmt.Println("refused: config changed while we were applying it")
+				fmt.Println("refused: the price changed while we were applying it")
 				return nil
 			}
 			return err
@@ -50,7 +50,7 @@ func main() {
 
 	go func() {
 		<-rt.Ready()
-		if err := rt.Poke("apply-config", "app-1"); err != nil {
+		if err := rt.Poke("apply-price-change", "SKU-1001"); err != nil {
 			log.Println("poke:", err)
 		}
 	}()

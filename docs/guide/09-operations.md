@@ -40,7 +40,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	err = reconcile.Periodic(rt, "refresh-licenses", reconcile.Every(time.Second), func(ctx context.Context) error {
+	err = reconcile.Periodic(rt, "sync-inventory", reconcile.Every(time.Second), func(ctx context.Context) error {
 		return nil
 	})
 	if err != nil {
@@ -71,7 +71,7 @@ func main() {
 }
 ```
 
-`refresh-licenses` is the same job chapter 1 started with, minus the
+`sync-inventory` is the same job chapter 1 started with, minus the
 `fmt.Println` — this chapter cares about what the job looks like from
 outside, not what it prints. Three things are new over chapter 1's shape:
 an HTTP mux with `debughttp.ReadOnlyHandler(rt)` mounted at `/debug/jobs/`,
@@ -91,13 +91,13 @@ wait
 ```
 
 ```
-{"jobs":[{"job":"refresh-licenses","surface":"reconcile","run_mode":"OnOneReplica","queue":"","paused":false,"settings":{"concurrency":"1","schedule":"every 1s","triggers":"schedule"},"queue_depth":0,"parked":0,"last_success":"2026-08-25T04:26:53.919396Z","consecutive_fails":0}]}
-{Job:refresh-licenses Surface:reconcile RunMode:OnOneReplica QueueDepth:0 Parked:0 LastSuccess:2026-08-24 21:26:55.918817 -0700 PDT m=+3.002647251 ConsecutiveFails:0}
+{"jobs":[{"job":"sync-inventory","surface":"reconcile","run_mode":"OnOneReplica","queue":"","paused":false,"settings":{"concurrency":"1","schedule":"every 1s","triggers":"schedule"},"queue_depth":0,"parked":0,"last_success":"2026-08-25T04:26:53.919396Z","consecutive_fails":0}]}
+{Job:sync-inventory Surface:reconcile RunMode:OnOneReplica QueueDepth:0 Parked:0 LastSuccess:2026-08-24 21:26:55.918817 -0700 PDT m=+3.002647251 ConsecutiveFails:0}
 ```
 
 ## What happened
 
-1. The moment `go run` started, `refresh-licenses` fired its first pass
+1. The moment `go run` started, `sync-inventory` fired its first pass
    immediately — the same thing every scheduled job in this guide has done
    from chapter 1 on — and the HTTP server started listening on
    `localhost:6060` at the same time.
@@ -139,22 +139,22 @@ routes. This chapter's example only mounts `ReadOnlyHandler`, on
 `localhost:6060` — pausing isn't available there. `OpsHandler` carries no
 auth of its own, so it belongs on a separate, admin-only listener you
 mount yourself, alongside the one this example already runs. If you
-mounted it on, say, `localhost:6061`, pausing `refresh-licenses` would be
+mounted it on, say, `localhost:6061`, pausing `sync-inventory` would be
 one call:
 
 ```sh
-curl -X POST http://localhost:6061/debug/jobs/refresh-licenses/pause
+curl -X POST http://localhost:6061/debug/jobs/sync-inventory/pause
 ```
 
 **Putting a message back.** A worker message that runs out of retries ends
 up as a [dead-letter](../glossary.md#dead-letter-dlq), kept for a person to
-look at instead of thrown away — chapter 4's `sendWelcome` task showed one
+look at instead of thrown away — chapter 4's `chargeOrder` task showed one
 going there once `MaxAttempts` ran out. Given that message's ID — found
 with `dlq.List(ctx)`, or the `GET /debug/jobs/{job}/dlq` route if you're
 driving this over HTTP — putting it back is `worker.DLQFrom` plus one call:
 
 ```go
-dlq, err := worker.DLQFrom(rt, "send-welcome")
+dlq, err := worker.DLQFrom(rt, "charge-order")
 if err != nil {
 	log.Fatal(err)
 }
