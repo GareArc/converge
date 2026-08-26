@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
+	"github.com/GareArc/converge/inmem"
 )
 
 type bumpingVersions struct {
@@ -36,7 +38,6 @@ func TestVersionAheadOfSnapshotDefersInsteadOfFailing(t *testing.T) {
 		calls++
 		if calls == 1 {
 			versions.bump()
-			return ErrOutdated
 		}
 		return nil
 	})
@@ -44,6 +45,28 @@ func TestVersionAheadOfSnapshotDefersInsteadOfFailing(t *testing.T) {
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	advanceUntil(t, te, 100*time.Millisecond, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 0 {
-		t.Fatalf("ErrOutdated from a version bump must defer, not fail: %+v", s)
+		t.Fatalf("a version bump during the run must defer, not fail: %+v", s)
+	}
+	if n := te.rec.Count(func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Err != nil
+	}); n != 0 {
+		t.Fatalf("a version bump during the run reported %d failed runs, want 0", n)
+	}
+}
+
+func TestVersionsDoNotNeedKV(t *testing.T) {
+	e, err := newEngine(Spec{
+		Name:      "job",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{customPeriodic{}},
+		Versions:  fakeVersions{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}}
+	if err := e.bind(deps); err != nil {
+		t.Fatalf("bind with Versions and no KV = %v, want nil", err)
 	}
 }

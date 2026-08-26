@@ -307,6 +307,17 @@ func (e *engine) preRunVersion(ctx context.Context, id ID) versionSnapshot {
 	return versionSnapshot{v: v, known: true}
 }
 
+func (e *engine) versionAdvanced(ctx context.Context, id ID, snap versionSnapshot) bool {
+	if !snap.known {
+		return false
+	}
+	v, err := e.cfg.versions.Latest(ctx, id)
+	if err != nil {
+		return false
+	}
+	return v > snap.v
+}
+
 func (e *engine) runOne(hctx context.Context, id ID) {
 	start := e.deps.Clock.Now()
 	snap := e.preRunVersion(hctx, id)
@@ -344,6 +355,8 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 	)
 	s, isSig := sig.FromError(err)
 	switch {
+	case err == nil && e.versionAdvanced(hctx, id, snap):
+		kind = finishDelay
 	case err == nil:
 		kind = finishSuccess
 	case isSig:
@@ -436,9 +449,6 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	e.deps = deps
 	if e.cfg.runMode == converge.OnOneReplica && deps.Lease == nil {
 		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.name)
-	}
-	if e.cfg.versions != nil && deps.KV == nil {
-		return fmt.Errorf("reconcile: job %q: Versions needs Options.KV", e.cfg.name)
 	}
 	for _, t := range e.cfg.triggers {
 		switch tr := t.(type) {
