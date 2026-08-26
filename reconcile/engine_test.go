@@ -395,7 +395,7 @@ func TestNotifyOnSingleJobCoercesIDToEmpty(t *testing.T) {
 	})
 }
 
-func TestNotifyRespectsBackoff(t *testing.T) {
+func TestNotifyBypassesBackoff(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
@@ -412,7 +412,7 @@ func TestNotifyRespectsBackoff(t *testing.T) {
 	if err := te.e.Notify("a"); err != nil {
 		t.Fatal(err)
 	}
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 }
 
 func TestNotifyDoesNotPanicRacingShutdown(t *testing.T) {

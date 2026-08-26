@@ -106,7 +106,7 @@ func (e *engine) Notify(id string) error {
 	if e.cfg.single {
 		id = ""
 	}
-	e.notifyVia(context.Background(), q, ID(id), wakeSweep)
+	e.notifyVia(context.Background(), q, ID(id), wakeNotify)
 	return nil
 }
 
