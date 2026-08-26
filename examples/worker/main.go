@@ -44,7 +44,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	producer, err := worker.NewProducer(mq)
+	producer, err := converge.NewProducer(mq, converge.ProducerOpts{})
 	if err != nil {
 		log.Fatal(err)
 	}

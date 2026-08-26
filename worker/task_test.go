@@ -11,15 +11,15 @@ func TestNewTaskDefaults(t *testing.T) {
 	if tk.err != nil {
 		t.Fatal(tk.err)
 	}
-	if tk.queue != "send-invite" || tk.version != 1 {
-		t.Fatalf("defaults = %q, %d", tk.queue, tk.version)
+	if tk.version != 1 {
+		t.Fatalf("default version = %d, want 1", tk.version)
 	}
 	if _, ok := tk.codec.(jsonCodec); !ok {
 		t.Fatalf("default codec = %T", tk.codec)
 	}
-	custom := NewTask[string]("send-invite", TaskOpts{Queue: "mail", Version: 3})
-	if custom.queue != "mail" || custom.version != 3 {
-		t.Fatalf("opts = %q, %d", custom.queue, custom.version)
+	custom := NewTask[string]("send-invite", TaskOpts{Version: 3})
+	if custom.version != 3 {
+		t.Fatalf("opts version = %d, want 3", custom.version)
 	}
 }
 
@@ -48,13 +48,6 @@ func TestTaskAccessors(t *testing.T) {
 	tk := NewTask[string]("send-invite", TaskOpts{})
 	if tk.Name() != "send-invite" {
 		t.Fatalf("Name() = %q, want %q", tk.Name(), "send-invite")
-	}
-	if tk.Queue() != "send-invite" {
-		t.Fatalf("Queue() = %q, want %q", tk.Queue(), "send-invite")
-	}
-	custom := NewTask[string]("send-invite", TaskOpts{Queue: "mail"})
-	if custom.Queue() != "mail" {
-		t.Fatalf("Queue() = %q, want %q", custom.Queue(), "mail")
 	}
 }
 

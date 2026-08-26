@@ -158,7 +158,7 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 		return false
 	})
 
-	prod, err := worker.ProducerFrom(rt)
+	prod, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,6 +16,8 @@ func Probe(ns string) string {
 	return join(ns, []string{"converge", "probe"}, nil)
 }
 
+func Inbox(ns, job string) string { return join(ns, []string{"converge", "inbox"}, []string{job}) }
+
 func Worker(ns, job string, parts ...string) string {
 	return join(ns, []string{"converge", "worker", job}, parts)
 }

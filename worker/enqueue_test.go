@@ -12,6 +12,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 func assertNoDelivery(t *testing.T, ch <-chan converge.Delivery, wait time.Duration) {
@@ -47,6 +48,15 @@ func requireHexID(t *testing.T, id string) {
 	}
 }
 
+func mustProducerWith(t *testing.T, mq converge.MQ, o converge.ProducerOpts) *converge.Producer {
+	t.Helper()
+	p, err := converge.NewProducer(mq, o)
+	if err != nil {
+		t.Fatalf("converge.NewProducer: %v", err)
+	}
+	return p
+}
+
 type publishConsumeOnlyMQ struct {
 	inner converge.MQ
 }
@@ -61,15 +71,12 @@ func (m publishConsumeOnlyMQ) Consume(ctx context.Context, queue string, deliver
 
 func TestEnqueuePublishesMessage(t *testing.T) {
 	mq := inmem.NewMQ()
-	p, err := NewProducer(mq)
-	if err != nil {
-		t.Fatalf("NewProducer: %v", err)
-	}
+	p := mustProducerWith(t, mq, converge.ProducerOpts{})
 	type payload struct {
 		Name string
 	}
 	tk := NewTask[payload]("send-invite", TaskOpts{})
-	ch := startConsumer(t, mq, tk.queue)
+	ch := startConsumer(t, mq, keys.Inbox("", tk.Name()))
 	ctx := context.Background()
 
 	if err := tk.Enqueue(ctx, p, payload{Name: "Alice"}, EnqueueOpts{Headers: map[string]string{"x-custom": "1"}}); err != nil {
@@ -114,14 +121,26 @@ func TestEnqueuePublishesMessage(t *testing.T) {
 	}
 }
 
+func TestEnqueueAddressesTheNamespacedInbox(t *testing.T) {
+	mq := inmem.NewMQ()
+	p := mustProducerWith(t, mq, converge.ProducerOpts{Namespace: "acme"})
+	tk := NewTask[string]("send-invite", TaskOpts{})
+	ch := startConsumer(t, mq, "acme/converge/inbox/send-invite")
+
+	if err := tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{}); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	convergetest.Await(t, func() bool { return len(ch) >= 1 })
+
+	bare := startConsumer(t, mq, "send-invite")
+	assertNoDelivery(t, bare, 50*time.Millisecond)
+}
+
 func TestEnqueueSchemaVersionFromTaskOpts(t *testing.T) {
 	mq := inmem.NewMQ()
-	p, err := NewProducer(mq)
-	if err != nil {
-		t.Fatalf("NewProducer: %v", err)
-	}
+	p := mustProducerWith(t, mq, converge.ProducerOpts{})
 	tk := NewTask[int]("bump", TaskOpts{Version: 5})
-	ch := startConsumer(t, mq, tk.queue)
+	ch := startConsumer(t, mq, keys.Inbox("", tk.Name()))
 
 	if err := tk.Enqueue(context.Background(), p, 1, EnqueueOpts{}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -135,14 +154,11 @@ func TestEnqueueSchemaVersionFromTaskOpts(t *testing.T) {
 
 func TestEnqueueReservedHeaderPrefixRejected(t *testing.T) {
 	mq := inmem.NewMQ()
-	p, err := NewProducer(mq)
-	if err != nil {
-		t.Fatalf("NewProducer: %v", err)
-	}
+	p := mustProducerWith(t, mq, converge.ProducerOpts{})
 	tk := NewTask[string]("send-invite", TaskOpts{})
-	ch := startConsumer(t, mq, tk.queue)
+	ch := startConsumer(t, mq, keys.Inbox("", tk.Name()))
 
-	err = tk.Enqueue(context.Background(), p, "x", EnqueueOpts{Headers: map[string]string{converge.HeaderPrefix + "x": "1"}})
+	err := tk.Enqueue(context.Background(), p, "x", EnqueueOpts{Headers: map[string]string{converge.HeaderPrefix + "x": "1"}})
 	if err == nil || !strings.Contains(err.Error(), "reserved") {
 		t.Fatalf("err = %v, want mention of reserved", err)
 	}
@@ -152,12 +168,9 @@ func TestEnqueueReservedHeaderPrefixRejected(t *testing.T) {
 func TestEnqueueDelay(t *testing.T) {
 	clock := convergetest.NewClock(time.Now())
 	mq := inmem.NewMQWithClock(clock)
-	p, err := NewProducer(mq)
-	if err != nil {
-		t.Fatalf("NewProducer: %v", err)
-	}
+	p := mustProducerWith(t, mq, converge.ProducerOpts{Clock: clock})
 	tk := NewTask[string]("send-invite", TaskOpts{})
-	ch := startConsumer(t, mq, tk.queue)
+	ch := startConsumer(t, mq, keys.Inbox("", tk.Name()))
 
 	if err := tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{Delay: time.Minute}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -169,13 +182,10 @@ func TestEnqueueDelay(t *testing.T) {
 
 func TestEnqueueDelayWithoutDelayedPublisher(t *testing.T) {
 	mq := publishConsumeOnlyMQ{inner: inmem.NewMQ()}
-	p, err := NewProducer(mq)
-	if err != nil {
-		t.Fatalf("NewProducer: %v", err)
-	}
+	p := mustProducerWith(t, mq, converge.ProducerOpts{})
 	tk := NewTask[string]("send-invite", TaskOpts{})
 
-	err = tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{Delay: time.Minute})
+	err := tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{Delay: time.Minute})
 	if err == nil || !strings.Contains(err.Error(), "DelayedPublisher") {
 		t.Fatalf("err = %v, want mention of DelayedPublisher", err)
 	}
@@ -183,73 +193,48 @@ func TestEnqueueDelayWithoutDelayedPublisher(t *testing.T) {
 
 func TestEnqueueNegativeDelay(t *testing.T) {
 	mq := inmem.NewMQ()
-	p, err := NewProducer(mq)
-	if err != nil {
-		t.Fatalf("NewProducer: %v", err)
-	}
+	p := mustProducerWith(t, mq, converge.ProducerOpts{})
 	tk := NewTask[string]("send-invite", TaskOpts{})
 
-	err = tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{Delay: -time.Second})
+	err := tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{Delay: -time.Second})
 	if err == nil || !strings.Contains(err.Error(), "negative") {
 		t.Fatalf("err = %v, want mention of negative", err)
 	}
 }
 
-func TestNewProducerNilMQ(t *testing.T) {
-	p, err := NewProducer(nil)
-	if err == nil || p != nil {
-		t.Fatalf("p, err = %v, %v, want error and nil producer", p, err)
+func TestEnqueueNilProducer(t *testing.T) {
+	tk := NewTask[string]("send-invite", TaskOpts{})
+	err := tk.Enqueue(context.Background(), nil, "hi", EnqueueOpts{})
+	if err == nil || !strings.Contains(err.Error(), "needs a Producer") {
+		t.Fatalf("err = %v, want mention of a missing Producer", err)
 	}
 }
 
-func TestProducerFromNilRuntime(t *testing.T) {
-	p, err := ProducerFrom(nil)
-	if err == nil || p != nil {
-		t.Fatalf("p, err = %v, %v, want error and nil producer", p, err)
+func TestEnqueueUnbuiltProducer(t *testing.T) {
+	tk := NewTask[string]("send-invite", TaskOpts{})
+	err := tk.Enqueue(context.Background(), &converge.Producer{}, "hi", EnqueueOpts{})
+	if err == nil || !strings.Contains(err.Error(), "NewProducer") {
+		t.Fatalf("err = %v, want it to point at converge.NewProducer", err)
 	}
 }
 
 func TestEnqueueMisconstructedTask(t *testing.T) {
 	mq := inmem.NewMQ()
-	p, err := NewProducer(mq)
-	if err != nil {
-		t.Fatalf("NewProducer: %v", err)
-	}
+	p := mustProducerWith(t, mq, converge.ProducerOpts{})
 	tk := NewTask[string]("", TaskOpts{})
 
-	err = tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{})
+	err := tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{})
 	if err == nil || !errors.Is(err, tk.err) {
 		t.Fatalf("err = %v, want wrapping %v", err, tk.err)
 	}
 }
 
-func TestNewProducerAlwaysUsesGivenMQ(t *testing.T) {
-	mq := inmem.NewMQ()
-	p, err := NewProducer(mq)
-	if err != nil {
-		t.Fatalf("NewProducer: %v", err)
-	}
-	if p.mq != converge.MQ(mq) {
-		t.Fatalf("p.mq = %v, want %v", p.mq, mq)
-	}
-	if p.queueMQ != nil {
-		t.Fatal("p.queueMQ should be nil for a Producer built with NewProducer")
-	}
-}
-
-func TestProducerFromUsesOptionsMQAndClock(t *testing.T) {
+func TestEnqueueStampsTheProducerClock(t *testing.T) {
 	clock := convergetest.NewClock(time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC))
 	mq := inmem.NewMQWithClock(clock)
-	rt, err := converge.New(converge.Options{MQ: mq, Clock: clock})
-	if err != nil {
-		t.Fatalf("converge.New: %v", err)
-	}
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatalf("ProducerFrom: %v", err)
-	}
+	p := mustProducerWith(t, mq, converge.ProducerOpts{Clock: clock})
 	tk := NewTask[string]("send-invite", TaskOpts{})
-	ch := startConsumer(t, mq, tk.queue)
+	ch := startConsumer(t, mq, keys.Inbox("", tk.Name()))
 
 	if err := tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -262,19 +247,32 @@ func TestProducerFromUsesOptionsMQAndClock(t *testing.T) {
 	}
 }
 
-func TestProducerFromNoMQNoBindingErrors(t *testing.T) {
-	rt, err := converge.New(converge.Options{})
-	if err != nil {
-		t.Fatalf("converge.New: %v", err)
+func TestEnqueueFromAProducerWithNoRuntime(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	task := NewTask[string]("greet", TaskOpts{})
+	got := make(chan string, 1)
+	if err := Handle(rt, task, func(_ context.Context, s string) error {
+		got <- s
+		return nil
+	}, HandleOpts{}); err != nil {
+		t.Fatal(err)
 	}
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatalf("ProducerFrom: %v", err)
-	}
-	tk := NewTask[string]("send-invite", TaskOpts{Queue: "invites"})
+	h.Drain(t)
 
-	err = tk.Enqueue(context.Background(), p, "hi", EnqueueOpts{})
-	if err == nil || !strings.Contains(err.Error(), "invites") {
-		t.Fatalf("err = %v, want mention of queue name", err)
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := task.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case s := <-got:
+		if s != "hello" {
+			t.Fatalf("payload = %q, want %q", s, "hello")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never ran")
 	}
 }

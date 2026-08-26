@@ -18,10 +18,20 @@ import (
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/reconcile"
 )
 
 var wstart = time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
+
+const wns = "wt"
+
+func wInbox(job string) string { return keys.Inbox(wns, job) }
+
+func wProducer(t *testing.T, mq converge.MQ, clock converge.Clock) *converge.Producer {
+	t.Helper()
+	return mustProducerWith(t, mq, converge.ProducerOpts{Namespace: wns, Clock: clock})
+}
 
 func eventCount(events []converge.Event, match func(converge.Event) bool) int {
 	n := 0
@@ -87,10 +97,7 @@ func TestHandleRunsAndAcks(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	enqueuedAt := w.Clock.Now()
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
@@ -130,6 +137,27 @@ func TestHandleRunsAndAcks(t *testing.T) {
 	}
 }
 
+func TestInfoReportsTheNamespacedInboxOnceBound(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
+	rt := w.Build(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	if err := Handle(rt, tk, func(context.Context, string) error { return nil }, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	raw, err := hook.Inspect(rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	infos, ok := raw.([]converge.JobInfo)
+	if !ok || len(infos) != 1 {
+		t.Fatalf("Inspect = %v, want exactly one JobInfo", raw)
+	}
+	if infos[0].Queue != wInbox("job") {
+		t.Fatalf("Queue = %q, want %q", infos[0].Queue, wInbox("job"))
+	}
+}
+
 func TestErrorRetriesWithBackoffThenDeadLetters(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
@@ -143,10 +171,7 @@ func TestErrorRetriesWithBackoffThenDeadLetters(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -209,10 +234,7 @@ func TestMetaAttemptCountsTransportRedeliveries(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +275,7 @@ func TestDecodeFailureDeadLettersImmediately(t *testing.T) {
 		converge.HeaderEnqueuedAt:    w.Clock.Now().UTC().Format(time.RFC3339Nano),
 		converge.HeaderAttempt:       "0",
 	}
-	if err := w.MQ.Publish(context.Background(), "job", converge.Message{Kind: "job", Headers: h, Payload: []byte(`{not valid json`)}); err != nil {
+	if err := w.MQ.Publish(context.Background(), wInbox("job"), converge.Message{Kind: "job", Headers: h, Payload: []byte(`{not valid json`)}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -283,15 +305,13 @@ func TestReceiptGuardsDeadLetter(t *testing.T) {
 	type tc struct {
 		name       string
 		mutate     func(h map[string]string)
-		kind       string
 		wantReason converge.DeadLetterReason
 	}
 	cases := []tc{
-		{"wrong kind", func(map[string]string) {}, "not-job", converge.DeadLetterWrongKind},
-		{"missing schema header", func(h map[string]string) { delete(h, converge.HeaderSchemaVersion) }, "job", converge.DeadLetterSchemaVersion},
-		{"wrong schema version", func(h map[string]string) { h[converge.HeaderSchemaVersion] = "2" }, "job", converge.DeadLetterSchemaVersion},
-		{"unparseable attempt", func(h map[string]string) { h[converge.HeaderAttempt] = "nope" }, "job", converge.DeadLetterUndecodable},
-		{"attempt header overflow", func(h map[string]string) { h[converge.HeaderAttempt] = strconv.Itoa(math.MaxInt) }, "job", converge.DeadLetterUndecodable},
+		{"missing schema header", func(h map[string]string) { delete(h, converge.HeaderSchemaVersion) }, converge.DeadLetterSchemaVersion},
+		{"wrong schema version", func(h map[string]string) { h[converge.HeaderSchemaVersion] = "2" }, converge.DeadLetterSchemaVersion},
+		{"unparseable attempt", func(h map[string]string) { h[converge.HeaderAttempt] = "nope" }, converge.DeadLetterUndecodable},
+		{"attempt header overflow", func(h map[string]string) { h[converge.HeaderAttempt] = strconv.Itoa(math.MaxInt) }, converge.DeadLetterUndecodable},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -314,7 +334,7 @@ func TestReceiptGuardsDeadLetter(t *testing.T) {
 				converge.HeaderAttempt:       "0",
 			}
 			c.mutate(h)
-			if err := w.MQ.Publish(context.Background(), "job", converge.Message{Kind: c.kind, Headers: h, Payload: []byte(`"x"`)}); err != nil {
+			if err := w.MQ.Publish(context.Background(), wInbox("job"), converge.Message{Kind: tk.Name(), Headers: h, Payload: []byte(`"x"`)}); err != nil {
 				t.Fatal(err)
 			}
 			convergetest.Await(t, func() bool {
@@ -339,6 +359,38 @@ func TestReceiptGuardsDeadLetter(t *testing.T) {
 				t.Fatalf("reason = %q, want %q", rec.Reason, c.wantReason.String())
 			}
 		})
+	}
+}
+
+func TestForeignKindInTheInboxStillRuns(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
+	rt := w.Build(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	var ran int32
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
+		atomic.AddInt32(&ran, 1)
+		return nil
+	}, HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	h := map[string]string{
+		converge.HeaderMessageID:     "msg-foreign-kind",
+		converge.HeaderSchemaVersion: "1",
+		converge.HeaderEnqueuedAt:    w.Clock.Now().UTC().Format(time.RFC3339Nano),
+		converge.HeaderAttempt:       "0",
+	}
+	msg := converge.Message{Kind: "some-other-name", Headers: h, Payload: []byte(`"x"`)}
+	if err := w.MQ.Publish(context.Background(), wInbox("job"), msg); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return atomic.LoadInt32(&ran) == 1 })
+	if n := eventCount(w.Events(), func(e converge.Event) bool {
+		_, ok := e.(converge.MessageDeadLettered)
+		return ok
+	}); n != 0 {
+		t.Fatalf("MessageDeadLettered count = %d, want 0; the inbox is the job, so Kind is not routing", n)
 	}
 }
 
@@ -396,10 +448,7 @@ func TestDeadLetterKVFailureNacksAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -439,10 +488,7 @@ func TestQueueDepthEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -492,10 +538,7 @@ func TestConcurrencyBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	for i := 0; i < 4; i++ {
 		if err := tk.Enqueue(context.Background(), p, fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
 			t.Fatal(err)
@@ -533,10 +576,7 @@ func TestDiscardAcksWithEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -589,10 +629,7 @@ func TestSnoozeRedeliversWithoutConsumingAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -634,10 +671,7 @@ func TestSnoozeFloorAndBackoffFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -666,10 +700,7 @@ func TestSnoozeClampedToMaxAge(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -725,10 +756,7 @@ func TestSnoozeWithSpentBudgetDeadLettersImmediately(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -803,7 +831,7 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 		}
 		return converge.Message{Kind: "job", Headers: h, Payload: []byte(`"anon-payload"`)}
 	}
-	if err := w.MQ.Publish(context.Background(), "job", anonMsg()); err != nil {
+	if err := w.MQ.Publish(context.Background(), wInbox("job"), anonMsg()); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -812,7 +840,7 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 			return ok
 		}) == 1
 	})
-	if err := w.MQ.Publish(context.Background(), "job", anonMsg()); err != nil {
+	if err := w.MQ.Publish(context.Background(), wInbox("job"), anonMsg()); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -856,10 +884,7 @@ func TestWrongSurfaceSignalDeadLetters(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -908,10 +933,7 @@ func TestShutdownIsNeutral(t *testing.T) {
 
 	w1.Runtime(t)
 
-	p, err := ProducerFrom(rt1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w1.MQ, w1.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1024,10 +1046,7 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 
 	w1.Runtime(t)
 
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, pmq, w1.Clock)
 	if err := tk.Enqueue(context.Background(), p, "one", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1106,10 +1125,7 @@ func TestVisibilityHeartbeatExtends(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, cmq, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1152,10 +1168,7 @@ func TestUnknownWorkerSignalFallsBackToError(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1200,10 +1213,7 @@ func TestPointerOutcomeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "discard-me", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1243,10 +1253,10 @@ func TestPointerOutcomeDispatch(t *testing.T) {
 	}
 }
 
-func newLeaseHarnessPair(t *testing.T) (wa, wb *convergetest.Harness, lease *inmem.Lease) {
+func newLeaseHarnessPair(t *testing.T) (wa, wb *convergetest.Harness, mq *inmem.MQ, lease *inmem.Lease) {
 	t.Helper()
 	clock := convergetest.NewClock(wstart)
-	mq := inmem.NewMQWithClock(clock)
+	mq = inmem.NewMQWithClock(clock)
 	kv := inmem.NewKVWithClock(clock)
 	lease = inmem.NewLeaseWithClock(clock)
 	build := func() *convergetest.Harness {
@@ -1259,7 +1269,7 @@ func newLeaseHarnessPair(t *testing.T) (wa, wb *convergetest.Harness, lease *inm
 			Lease:     func(*convergetest.Clock) converge.Lease { return lease },
 		})
 	}
-	return build(), build(), lease
+	return build(), build(), mq, lease
 }
 
 func leaseAcquired(e converge.Event) bool {
@@ -1268,7 +1278,7 @@ func leaseAcquired(e converge.Event) bool {
 }
 
 func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
-	wa, wb, _ := newLeaseHarnessPair(t)
+	wa, wb, mq, _ := newLeaseHarnessPair(t)
 	rta := wa.Build(t)
 	rtb := wb.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -1291,10 +1301,7 @@ func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
 	wa.Runtime(t)
 	wb.Runtime(t)
 
-	p, err := ProducerFrom(rta)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, mq, wa.Clock)
 	for i := 0; i < 3; i++ {
 		if err := tk.Enqueue(context.Background(), p, fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
 			t.Fatal(err)
@@ -1323,7 +1330,7 @@ func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
 }
 
 func TestLeaseLossCancelsInFlight(t *testing.T) {
-	wa, wb, lease := newLeaseHarnessPair(t)
+	wa, wb, mq, lease := newLeaseHarnessPair(t)
 	rta := wa.Build(t)
 	rtb := wb.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -1353,10 +1360,7 @@ func TestLeaseLossCancelsInFlight(t *testing.T) {
 	wa.Runtime(t)
 	wb.Runtime(t)
 
-	p, err := ProducerFrom(rta)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, mq, wa.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1467,10 +1471,7 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	wa.Runtime(t)
 	wb.Runtime(t)
 
-	p, err := NewProducer(mq)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, mq, clock)
 
 	awaitLive := func(tk Task[string], a, b *int32) {
 		t.Helper()
@@ -1541,10 +1542,7 @@ func TestRateLimitSpacesRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	for i := 0; i < 3; i++ {
 		if err := tk.Enqueue(context.Background(), p, fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
 			t.Fatal(err)
@@ -1572,10 +1570,7 @@ func TestRateLimitWaitIsHeartbeatCovered(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "a", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1624,10 +1619,7 @@ func TestPanicIsRecoveredAsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1710,10 +1702,7 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -1760,10 +1749,7 @@ func TestQuietFlipsFalseWhileHandlerInFlight(t *testing.T) {
 		t.Fatal("engine must start quiet")
 	}
 	tk := NewTask[string]("job", TaskOpts{})
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}

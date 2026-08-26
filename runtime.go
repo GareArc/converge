@@ -21,15 +21,6 @@ type job interface {
 	RunPassNow(ctx context.Context) error
 }
 
-type queueBound interface {
-	QueueBinding() (queue string, mq MQ)
-}
-
-type queueBinding struct {
-	job string
-	mq  MQ
-}
-
 type Runtime struct {
 	opts    Options
 	ready   chan struct{}
@@ -38,7 +29,6 @@ type Runtime struct {
 	mu     sync.Mutex
 	jobs   map[string]job
 	order  []string
-	queues map[string]queueBinding
 	frozen bool
 }
 
@@ -60,9 +50,8 @@ func init() {
 			return hook.ProducerWiring{}, fmt.Errorf("converge: producer: %T is not a usable *converge.Runtime", rt)
 		}
 		return hook.ProducerWiring{
-			MQ:      r.opts.MQ,
-			Clock:   r.opts.Clock,
-			QueueMQ: r.queueMQ,
+			MQ:    r.opts.MQ,
+			Clock: r.opts.Clock,
 		}, nil
 	}
 	hook.Inspect = func(rt any) (any, error) {
@@ -93,7 +82,6 @@ func init() {
 			Clock:     r.opts.Clock,
 			Namespace: r.opts.Namespace,
 			Replica:   r.replica,
-			QueueMQ:   r.queueMQ,
 		}, nil
 	}
 	hook.Hint = func(rt any, jobName, id string) error {
@@ -150,25 +138,8 @@ func init() {
 	}
 }
 
-func (rt *Runtime) queueMQ(queue string) any {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	b, ok := rt.queues[queue]
-	if !ok || b.mq == nil {
-		return nil
-	}
-	return b.mq
-}
-
 func (rt *Runtime) register(j job) error {
 	name := j.Name()
-	var queue string
-	var binding *queueBinding
-	if qb, ok := j.(queueBound); ok {
-		q, mq := qb.QueueBinding()
-		queue = q
-		binding = &queueBinding{job: name, mq: mq}
-	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.frozen {
@@ -180,16 +151,8 @@ func (rt *Runtime) register(j job) error {
 	if _, dup := rt.jobs[name]; dup {
 		return fmt.Errorf("converge: duplicate job name %q", name)
 	}
-	if binding != nil {
-		if existing, ok := rt.queues[queue]; ok {
-			return fmt.Errorf("converge: job %q: queue %q is already handled by job %q", name, queue, existing.job)
-		}
-	}
 	rt.jobs[name] = j
 	rt.order = append(rt.order, name)
-	if binding != nil {
-		rt.queues[queue] = *binding
-	}
 	return nil
 }
 

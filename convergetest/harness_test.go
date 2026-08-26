@@ -163,7 +163,7 @@ func TestWorkerRoundTripAndAssertEnqueued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestFailNextPublishSurfacesOnEnqueue(t *testing.T) {
 	if err := worker.Handle(rt, tk, func(context.Context, string) error { return nil }, worker.HandleOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestLeaseExpireCancelsInFlightHandler(t *testing.T) {
 	if err := worker.Handle(rt, tk, handler, worker.HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestNewWithCustomKVReachesRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -111,7 +111,7 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	}
 	w.Runtime(t)
 
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(w.MQ, converge.ProducerOpts{Namespace: "dt", Clock: w.Clock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,8 +177,8 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	if wk["surface"] != "worker" {
 		t.Fatalf("surface = %v, want worker", wk["surface"])
 	}
-	if wk["queue"] != "send-invite" {
-		t.Fatalf("queue = %v, want send-invite", wk["queue"])
+	if wk["queue"] != "dt/converge/inbox/send-invite" {
+		t.Fatalf("queue = %v, want the namespaced inbox", wk["queue"])
 	}
 	if wk["last_success"] == "" {
 		t.Fatal("last_success = empty, want a populated RFC3339Nano timestamp after a successful run")

@@ -36,7 +36,6 @@ type DLQ struct {
 	clock     converge.Clock
 	namespace string
 	job       string
-	queueMQ   func(queue string) converge.MQ
 }
 
 func DLQFrom(rt *converge.Runtime, job string) (*DLQ, error) {
@@ -47,11 +46,10 @@ func DLQFrom(rt *converge.Runtime, job string) (*DLQ, error) {
 	if job == "" {
 		return nil, errors.New("worker: DLQFrom needs a job name")
 	}
-	q := &DLQ{kv: w.KV, mq: w.MQ, clock: wallClock{}, namespace: w.Namespace, job: job, queueMQ: w.QueueMQ}
-	if w.Clock != nil {
-		q.clock = w.Clock
+	if w.Clock == nil {
+		return nil, fmt.Errorf("worker: job %q: DLQ needs a runtime clock", job)
 	}
-	return q, nil
+	return &DLQ{kv: w.KV, mq: w.MQ, clock: w.Clock, namespace: w.Namespace, job: job}, nil
 }
 
 func (q *DLQ) requireKV() error {
@@ -138,12 +136,11 @@ func (q *DLQ) Requeue(ctx context.Context, messageID string) error {
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return fmt.Errorf("worker: job %q: requeue %q: %w", q.job, messageID, err)
 	}
-	mq, err := resolveQueue(q.queueMQ, q.mq, rec.Queue)
-	if err != nil {
-		return err
+	if q.mq == nil {
+		return fmt.Errorf("worker: job %q: requeue %q: needs Options.MQ", q.job, messageID)
 	}
 	msg := requeueMessage(rec, q.clock.Now())
-	if err := mq.Publish(ctx, rec.Queue, msg); err != nil {
+	if err := q.mq.Publish(ctx, rec.Queue, msg); err != nil {
 		return err
 	}
 	if err := q.kv.Delete(ctx, key); err != nil {

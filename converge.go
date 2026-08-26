@@ -46,7 +46,6 @@ func New(o Options) (*Runtime, error) {
 	rt := &Runtime{
 		opts:    o,
 		jobs:    map[string]job{},
-		queues:  map[string]queueBinding{},
 		ready:   make(chan struct{}),
 		replica: newReplicaID(),
 	}

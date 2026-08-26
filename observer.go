@@ -104,7 +104,6 @@ const (
 	deadLetterReasonUnset deadLetterReasonKind = iota
 	deadLetterMaxAttempts
 	deadLetterMaxAge
-	deadLetterWrongKind
 	deadLetterSchemaVersion
 	deadLetterUndecodable
 	deadLetterWrongSurface
@@ -115,7 +114,6 @@ type DeadLetterReason struct{ kind deadLetterReasonKind }
 var (
 	DeadLetterMaxAttempts   = DeadLetterReason{deadLetterMaxAttempts}
 	DeadLetterMaxAge        = DeadLetterReason{deadLetterMaxAge}
-	DeadLetterWrongKind     = DeadLetterReason{deadLetterWrongKind}
 	DeadLetterSchemaVersion = DeadLetterReason{deadLetterSchemaVersion}
 	DeadLetterUndecodable   = DeadLetterReason{deadLetterUndecodable}
 	DeadLetterWrongSurface  = DeadLetterReason{deadLetterWrongSurface}
@@ -129,8 +127,6 @@ func (r DeadLetterReason) String() string {
 		return "max-attempts"
 	case deadLetterMaxAge:
 		return "max-age"
-	case deadLetterWrongKind:
-		return "wrong-kind"
 	case deadLetterSchemaVersion:
 		return "schema-version"
 	case deadLetterUndecodable:

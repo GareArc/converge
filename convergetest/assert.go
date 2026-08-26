@@ -5,11 +5,11 @@ import (
 	"testing"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 type TaskRef interface {
 	Name() string
-	Queue() string
 	Encode(v any) ([]byte, error)
 }
 
@@ -50,8 +50,8 @@ func (h *Harness) AssertEnqueued(t testing.TB, task TaskRef, want any) {
 		t.Fatalf("convergetest: AssertEnqueued: encode want: %v", err)
 		return
 	}
-	queue := task.Queue()
 	kind := task.Name()
+	queue := keys.Inbox(h.namespace, kind)
 	pollUntil(t, pollSpec{
 		deadline: awaitDeadline,
 		step:     pollStep,

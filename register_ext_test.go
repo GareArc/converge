@@ -67,38 +67,6 @@ func (s *stubJob) Info() converge.JobInfo {
 	}
 }
 
-type stubQueueJob struct {
-	name  string
-	queue string
-	mq    converge.MQ
-	ready chan struct{}
-}
-
-func newStubQueueJob(name, queue string, mq converge.MQ) *stubQueueJob {
-	return &stubQueueJob{name: name, queue: queue, mq: mq, ready: make(chan struct{})}
-}
-
-func (s *stubQueueJob) Name() string { return s.name }
-
-func (s *stubQueueJob) Run(ctx context.Context, d converge.JobDeps) error {
-	<-ctx.Done()
-	return nil
-}
-
-func (s *stubQueueJob) Ready() <-chan struct{} { return s.ready }
-
-func (s *stubQueueJob) Quiet() bool { return true }
-
-func (s *stubQueueJob) Hint(id string) error { return nil }
-
-func (s *stubQueueJob) RunPassNow(ctx context.Context) error { return nil }
-
-func (s *stubQueueJob) Stats() converge.JobStats { return converge.JobStats{Job: s.name} }
-
-func (s *stubQueueJob) Info() converge.JobInfo { return converge.JobInfo{Job: s.name} }
-
-func (s *stubQueueJob) QueueBinding() (string, converge.MQ) { return s.queue, s.mq }
-
 func mustRuntime(t *testing.T) *converge.Runtime {
 	t.Helper()
 	rt, err := converge.New(converge.Options{})
@@ -154,9 +122,6 @@ func TestProducerDepsRoundTripsWiring(t *testing.T) {
 	}
 	if wiring.Clock != clock {
 		t.Fatalf("Clock not round-tripped: got %v", wiring.Clock)
-	}
-	if got := wiring.QueueMQ("unbound"); got != nil {
-		t.Fatalf("QueueMQ for unbound queue = %v, want nil", got)
 	}
 }
 
@@ -218,14 +183,10 @@ func TestInspectRejectsForeignRuntime(t *testing.T) {
 
 func TestOpsDepsRoundTripsWiring(t *testing.T) {
 	mq := inmem.NewMQ()
-	boundMQ := inmem.NewMQ()
 	kv := inmem.NewKV()
 	clock := convergetest.NewClock(time.Unix(0, 0))
 	rt, err := converge.New(converge.Options{Namespace: "svc", MQ: mq, KV: kv, Clock: clock})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := hook.RegisterJob(rt, newStubQueueJob("q-job", "bound-queue", boundMQ)); err != nil {
 		t.Fatal(err)
 	}
 	wiring, err := hook.OpsDeps(rt)
@@ -240,12 +201,6 @@ func TestOpsDepsRoundTripsWiring(t *testing.T) {
 	}
 	if len(wiring.Replica) != 32 {
 		t.Fatalf("Replica = %q, want 32 hex chars", wiring.Replica)
-	}
-	if got := wiring.QueueMQ("bound-queue"); got != boundMQ {
-		t.Fatalf("QueueMQ(bound-queue) = %v, want %v", got, boundMQ)
-	}
-	if got := wiring.QueueMQ("unbound"); got != nil {
-		t.Fatalf("QueueMQ(unbound) = %v, want nil", got)
 	}
 }
 

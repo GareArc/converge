@@ -35,7 +35,6 @@ type config struct {
 	runMode     converge.RunMode
 	retry       RetryPolicy
 	visibility  time.Duration
-	mq          converge.MQ
 	rateLimit   converge.Rate
 	middleware  []converge.Middleware
 }
@@ -43,7 +42,6 @@ type config struct {
 type engine struct {
 	cfg       config
 	deps      converge.JobDeps
-	mq        converge.MQ
 	limit     *tokenbucket.Bucket
 	handler   converge.Handler
 	ready     chan struct{}
@@ -61,8 +59,6 @@ func (e *engine) Name() string { return e.cfg.info.name }
 func (e *engine) Ready() <-chan struct{} { return e.ready }
 
 func (e *engine) markReady() { e.readyOnce.Do(func() { close(e.ready) }) }
-
-func (e *engine) QueueBinding() (string, converge.MQ) { return e.cfg.info.queue, e.cfg.mq }
 
 func (e *engine) Quiet() bool {
 	e.mu.Lock()
@@ -116,9 +112,15 @@ func (e *engine) Info() converge.JobInfo {
 		Job:      e.cfg.info.name,
 		Surface:  converge.SurfaceWorker,
 		RunMode:  e.cfg.runMode,
-		Queue:    e.cfg.info.queue,
+		Queue:    e.inbox(),
 		Settings: settings,
 	}
+}
+
+func (e *engine) inbox() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg.info.queue
 }
 
 func retrySetting(r RetryPolicy) string {
@@ -128,20 +130,19 @@ func retrySetting(r RetryPolicy) string {
 
 func (e *engine) bind(deps converge.JobDeps) error {
 	e.deps = deps
-	e.mq = e.cfg.mq
-	if e.mq == nil {
-		e.mq = deps.MQ
-	}
-	if e.mq == nil {
-		return fmt.Errorf("worker: job %q: needs an MQ (HandleOpts.MQ or Options.MQ)", e.cfg.info.name)
+	e.mu.Lock()
+	e.cfg.info.queue = keys.Inbox(deps.Namespace, e.cfg.info.name)
+	e.mu.Unlock()
+	if deps.MQ == nil {
+		return fmt.Errorf("worker: job %q: needs Options.MQ", e.cfg.info.name)
 	}
 	switch e.cfg.runMode {
 	case converge.Competing:
-		if _, ok := e.mq.(converge.GroupConsumer); !ok {
+		if _, ok := deps.MQ.(converge.GroupConsumer); !ok {
 			return fmt.Errorf("worker: job %q: Competing needs the GroupConsumer capability", e.cfg.info.name)
 		}
 	case converge.OnAllReplicas:
-		if _, ok := e.mq.(converge.BroadcastConsumer); !ok {
+		if _, ok := deps.MQ.(converge.BroadcastConsumer); !ok {
 			return fmt.Errorf("worker: job %q: OnAllReplicas needs the BroadcastConsumer capability", e.cfg.info.name)
 		}
 	case converge.OnOneReplica:
@@ -153,7 +154,7 @@ func (e *engine) bind(deps converge.JobDeps) error {
 		if deps.KV == nil {
 			return fmt.Errorf("worker: job %q: dead-lettering needs Options.KV", e.cfg.info.name)
 		}
-		if _, ok := e.mq.(converge.DelayedPublisher); !ok {
+		if _, ok := deps.MQ.(converge.DelayedPublisher); !ok {
 			return fmt.Errorf("worker: job %q: Snooze needs the DelayedPublisher capability", e.cfg.info.name)
 		}
 	}
@@ -269,11 +270,11 @@ func (e *engine) intake(ictx, hctx context.Context, wg *sync.WaitGroup) {
 func (e *engine) startConsumer(ctx context.Context, deliver func(converge.Delivery)) {
 	switch e.cfg.runMode {
 	case converge.OnOneReplica:
-		e.mq.Consume(ctx, e.cfg.info.queue, deliver)
+		e.deps.MQ.Consume(ctx, e.cfg.info.queue, deliver)
 	case converge.OnAllReplicas:
-		e.mq.(converge.BroadcastConsumer).ConsumeBroadcast(ctx, e.cfg.info.queue, deliver)
+		e.deps.MQ.(converge.BroadcastConsumer).ConsumeBroadcast(ctx, e.cfg.info.queue, deliver)
 	default:
-		e.mq.(converge.GroupConsumer).ConsumeGroup(ctx, e.cfg.info.queue, e.key("group"), deliver)
+		e.deps.MQ.(converge.GroupConsumer).ConsumeGroup(ctx, e.cfg.info.queue, e.key("group"), deliver)
 	}
 }
 
@@ -321,9 +322,6 @@ func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, conver
 	}
 	if !e.durable() {
 		return meta, converge.DeadLetterReason{}
-	}
-	if m.Kind != e.cfg.info.name {
-		return meta, converge.DeadLetterWrongKind
 	}
 	if env.schemaVersion() != strconv.Itoa(e.cfg.info.version) {
 		return meta, converge.DeadLetterSchemaVersion
@@ -497,7 +495,7 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 		delay = remaining
 	}
 	republished := env.forSnooze()
-	if err := e.mq.(converge.DelayedPublisher).PublishDelayed(sctx, e.cfg.info.queue, republished, delay); err != nil {
+	if err := e.deps.MQ.(converge.DelayedPublisher).PublishDelayed(sctx, e.cfg.info.queue, republished, delay); err != nil {
 		d.Nack(sctx, delay)
 		e.observeRun(meta, took, nil)
 		return
@@ -613,7 +611,7 @@ func (e *engine) neutral(ctx context.Context, d converge.Delivery, m converge.Me
 		d.Nack(ctx, 0)
 		return
 	}
-	if err := e.mq.Publish(ctx, e.cfg.info.queue, env.forNeutral()); err != nil {
+	if err := e.deps.MQ.Publish(ctx, e.cfg.info.queue, env.forNeutral()); err != nil {
 		d.Nack(ctx, 0)
 		return
 	}

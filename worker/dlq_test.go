@@ -28,10 +28,7 @@ func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +54,8 @@ func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
 	if entry.Task != "job" {
 		t.Fatalf("Task = %q, want %q", entry.Task, "job")
 	}
-	if entry.Queue != "job" {
-		t.Fatalf("Queue = %q, want %q", entry.Queue, "job")
+	if entry.Queue != wInbox("job") {
+		t.Fatalf("Queue = %q, want %q", entry.Queue, wInbox("job"))
 	}
 	if entry.Reason != converge.DeadLetterMaxAttempts.String() {
 		t.Fatalf("Reason = %q, want %q", entry.Reason, converge.DeadLetterMaxAttempts.String())
@@ -172,10 +169,7 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock)
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +248,7 @@ func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	rt := w.Build(t)
 	rec := DeadLetter{
 		Task:           "job",
-		Queue:          "job",
+		Queue:          wInbox("job"),
 		MessageID:      "anon-deadbeef",
 		Attempt:        1,
 		Reason:         converge.DeadLetterMaxAttempts.String(),
@@ -277,7 +271,7 @@ func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ch := startConsumer(t, w.MQ, "job")
+	ch := startConsumer(t, w.MQ, wInbox("job"))
 	dlq, err := DLQFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
@@ -350,7 +344,7 @@ func TestDLQListDedupesAcrossScanPages(t *testing.T) {
 	ctx := context.Background()
 	rec := DeadLetter{
 		Task:           "job",
-		Queue:          "job",
+		Queue:          wInbox("job"),
 		MessageID:      "id-0",
 		Attempt:        1,
 		Reason:         converge.DeadLetterMaxAttempts.String(),
@@ -399,7 +393,7 @@ func TestDLQPurgeAllReturnsCount(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		rec := DeadLetter{
 			Task:           "job",
-			Queue:          "job",
+			Queue:          wInbox("job"),
 			MessageID:      fmt.Sprintf("id-%d", i),
 			Attempt:        1,
 			Reason:         converge.DeadLetterMaxAttempts.String(),
@@ -435,6 +429,13 @@ func TestDLQPurgeAllReturnsCount(t *testing.T) {
 
 func TestDLQFromNilRuntimeErrors(t *testing.T) {
 	dlq, err := DLQFrom(nil, "job")
+	if err == nil || dlq != nil {
+		t.Fatalf("dlq, err = %v, %v, want error and nil DLQ", dlq, err)
+	}
+}
+
+func TestDLQFromUnbuiltRuntimeErrors(t *testing.T) {
+	dlq, err := DLQFrom(&converge.Runtime{}, "job")
 	if err == nil || dlq != nil {
 		t.Fatalf("dlq, err = %v, %v, want error and nil DLQ", dlq, err)
 	}
@@ -480,7 +481,7 @@ func TestDLQRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 	rt := w.Build(t)
 	rec := DeadLetter{
 		Task:           "job",
-		Queue:          "job",
+		Queue:          wInbox("job"),
 		MessageID:      "msg-1",
 		Attempt:        1,
 		Reason:         converge.DeadLetterMaxAttempts.String(),
@@ -523,7 +524,7 @@ func TestDLQRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 	if got.MessageID != rec.MessageID {
 		t.Fatalf("got.MessageID = %q, want %q", got.MessageID, rec.MessageID)
 	}
-	if n := len(cmq.Published("job")); n != 0 {
+	if n := len(cmq.Published(wInbox("job"))); n != 0 {
 		t.Fatalf("Published(job) = %d messages, want 0 (publish must have failed before the record was deleted)", n)
 	}
 }
@@ -536,7 +537,7 @@ func TestDLQListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
 	for i := 0; i < total; i++ {
 		rec := DeadLetter{
 			Task:           "job",
-			Queue:          "job",
+			Queue:          wInbox("job"),
 			MessageID:      fmt.Sprintf("id-%03d", i),
 			Attempt:        1,
 			Reason:         converge.DeadLetterMaxAttempts.String(),
@@ -631,7 +632,7 @@ func TestDLQPurgeAllPartialFailureReturnsCountAndError(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		rec := DeadLetter{
 			Task:           "job",
-			Queue:          "job",
+			Queue:          wInbox("job"),
 			MessageID:      fmt.Sprintf("id-%d", i),
 			Attempt:        1,
 			Reason:         converge.DeadLetterMaxAttempts.String(),
@@ -672,7 +673,7 @@ func TestDLQRequeueNoMQErrors(t *testing.T) {
 	ctx := context.Background()
 	rec := DeadLetter{
 		Task:           "job",
-		Queue:          "job",
+		Queue:          wInbox("job"),
 		MessageID:      "msg-1",
 		Attempt:        1,
 		Reason:         converge.DeadLetterMaxAttempts.String(),
@@ -693,7 +694,7 @@ func TestDLQRequeueNoMQErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = dlq.Requeue(ctx, "msg-1")
-	if err == nil || !strings.Contains(err.Error(), "no handler binding and no default Options.MQ") {
+	if err == nil || !strings.Contains(err.Error(), "Options.MQ") {
 		t.Fatalf("err = %v, want mention of no MQ", err)
 	}
 

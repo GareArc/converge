@@ -13,7 +13,7 @@ import (
 )
 
 func okTaskInfo() taskInfo {
-	return taskInfo{name: "job", queue: "job", version: 1}
+	return taskInfo{name: "job", version: 1}
 }
 
 func okRun() runFunc {
@@ -130,9 +130,6 @@ func TestEngineInfoRendersDefaults(t *testing.T) {
 	if info.Job != "job" || info.Surface != converge.SurfaceWorker || info.RunMode != converge.Competing {
 		t.Fatalf("identity = %+v", info)
 	}
-	if info.Queue != "job" {
-		t.Fatalf("Queue = %q, want job", info.Queue)
-	}
 	want := map[string]string{
 		"concurrency":    strconv.Itoa(DefaultConcurrency),
 		"visibility":     "5m",
@@ -186,26 +183,13 @@ func TestHandleNilFn(t *testing.T) {
 
 func TestHandleDuplicateTaskName(t *testing.T) {
 	rt := mustHandleRuntime(t, converge.Options{})
-	tk1 := NewTask[string]("job", TaskOpts{Queue: "q1"})
-	tk2 := NewTask[string]("job", TaskOpts{Queue: "q2"})
+	tk1 := NewTask[string]("job", TaskOpts{})
+	tk2 := NewTask[string]("job", TaskOpts{Version: 2})
 	if err := Handle(rt, tk1, noopHandler, HandleOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Handle(rt, tk2, noopHandler, HandleOpts{}); err == nil {
 		t.Fatal("duplicate task name must be rejected")
-	}
-}
-
-func TestHandleDuplicateQueue(t *testing.T) {
-	rt := mustHandleRuntime(t, converge.Options{})
-	tk1 := NewTask[string]("job-a", TaskOpts{Queue: "shared"})
-	tk2 := NewTask[string]("job-b", TaskOpts{Queue: "shared"})
-	if err := Handle(rt, tk1, noopHandler, HandleOpts{}); err != nil {
-		t.Fatal(err)
-	}
-	err := Handle(rt, tk2, noopHandler, HandleOpts{})
-	if err == nil || !strings.Contains(err.Error(), "shared") {
-		t.Fatalf("err = %v, want mention of queue %q", err, "shared")
 	}
 }
 
@@ -220,36 +204,36 @@ func TestBindFailures(t *testing.T) {
 			name:    "no mq anywhere",
 			opts:    converge.Options{},
 			handle:  HandleOpts{},
-			wantErr: "needs an MQ",
+			wantErr: "Options.MQ",
 		},
 		{
 			name:    "competing without group consumer",
-			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: publishConsumeMQ{inmem.NewMQ()}, RunMode: converge.Competing},
+			opts:    converge.Options{MQ: publishConsumeMQ{inmem.NewMQ()}},
+			handle:  HandleOpts{RunMode: converge.Competing},
 			wantErr: "GroupConsumer",
 		},
 		{
 			name:    "all replicas without broadcast consumer",
-			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: publishConsumeMQ{inmem.NewMQ()}, RunMode: converge.OnAllReplicas},
+			opts:    converge.Options{MQ: publishConsumeMQ{inmem.NewMQ()}},
+			handle:  HandleOpts{RunMode: converge.OnAllReplicas},
 			wantErr: "BroadcastConsumer",
 		},
 		{
 			name:    "one replica without lease",
-			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: inmem.NewMQ(), RunMode: converge.OnOneReplica},
+			opts:    converge.Options{MQ: inmem.NewMQ()},
+			handle:  HandleOpts{RunMode: converge.OnOneReplica},
 			wantErr: "Options.Lease",
 		},
 		{
 			name:    "competing without kv",
-			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: inmem.NewMQ(), RunMode: converge.Competing},
+			opts:    converge.Options{MQ: inmem.NewMQ()},
+			handle:  HandleOpts{RunMode: converge.Competing},
 			wantErr: "Options.KV",
 		},
 		{
 			name:    "competing mq without delayed publisher",
-			opts:    converge.Options{KV: inmem.NewKV()},
-			handle:  HandleOpts{MQ: groupOnlyMQ{inmem.NewMQ()}, RunMode: converge.Competing},
+			opts:    converge.Options{MQ: groupOnlyMQ{inmem.NewMQ()}, KV: inmem.NewKV()},
+			handle:  HandleOpts{RunMode: converge.Competing},
 			wantErr: "DelayedPublisher",
 		},
 	}

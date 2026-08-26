@@ -8,9 +8,8 @@ import (
 )
 
 type Producer struct {
-	MQ      converge.MQ
-	Clock   converge.Clock
-	QueueMQ func(queue string) converge.MQ
+	MQ    converge.MQ
+	Clock converge.Clock
 }
 
 func ProducerFor(rt *converge.Runtime) (Producer, error) {
@@ -18,7 +17,7 @@ func ProducerFor(rt *converge.Runtime) (Producer, error) {
 	if err != nil {
 		return Producer{}, err
 	}
-	return Producer{MQ: asMQ(w.MQ), Clock: asClock(w.Clock), QueueMQ: queueFunc(w.QueueMQ)}, nil
+	return Producer{MQ: asMQ(w.MQ), Clock: asClock(w.Clock)}, nil
 }
 
 type Ops struct {
@@ -27,7 +26,6 @@ type Ops struct {
 	Clock     converge.Clock
 	Namespace string
 	Replica   string
-	QueueMQ   func(queue string) converge.MQ
 }
 
 func OpsFor(rt *converge.Runtime) (Ops, error) {
@@ -41,7 +39,6 @@ func OpsFor(rt *converge.Runtime) (Ops, error) {
 		Clock:     asClock(w.Clock),
 		Namespace: w.Namespace,
 		Replica:   w.Replica,
-		QueueMQ:   queueFunc(w.QueueMQ),
 	}, nil
 }
 
@@ -85,11 +82,4 @@ func asClock(v any) converge.Clock {
 		return c
 	}
 	return nil
-}
-
-func queueFunc(f func(queue string) any) func(string) converge.MQ {
-	if f == nil {
-		return nil
-	}
-	return func(queue string) converge.MQ { return asMQ(f(queue)) }
 }

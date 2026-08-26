@@ -31,7 +31,6 @@ type HandleOpts struct {
 	RunMode     converge.RunMode
 	Retry       RetryPolicy
 	Visibility  time.Duration
-	MQ          converge.MQ
 	RateLimit   converge.Rate
 	Middleware  []converge.Middleware
 }
@@ -56,7 +55,7 @@ func Handle[T any](rt *converge.Runtime, t Task[T], fn func(ctx context.Context,
 		}
 		return fn(ctx, p)
 	}
-	e, err := newEngine(taskInfo{name: t.name, queue: t.queue, version: t.version}, run, o)
+	e, err := newEngine(taskInfo{name: t.name, version: t.version}, run, o)
 	if err != nil {
 		return err
 	}
@@ -88,7 +87,6 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 		runMode:     o.RunMode,
 		retry:       r,
 		visibility:  o.Visibility,
-		mq:          o.MQ,
 		rateLimit:   o.RateLimit,
 		middleware:  slices.Clone(o.Middleware),
 	}

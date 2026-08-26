@@ -1,16 +1,22 @@
 package hook
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 var RegisterJob func(rt any, job any) error
 
 type ProducerWiring struct {
-	MQ      any
-	Clock   any
-	QueueMQ func(queue string) any
+	MQ    any
+	Clock any
 }
 
 var ProducerDeps func(rt any) (ProducerWiring, error)
+
+var ProducerSend func(p any, ctx context.Context, job string, m any, delay time.Duration) error
+
+var ProducerNow func(p any) (time.Time, bool)
 
 var AttachOptions func(o any, attach func(rt any)) any
 
@@ -22,7 +28,6 @@ type OpsWiring struct {
 	Clock     any
 	Namespace string
 	Replica   string
-	QueueMQ   func(queue string) any
 }
 
 var OpsDeps func(rt any) (OpsWiring, error)

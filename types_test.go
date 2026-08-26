@@ -106,7 +106,6 @@ func TestDeadLetterReasonString(t *testing.T) {
 	cases := map[string]DeadLetterReason{
 		"max-attempts":   DeadLetterMaxAttempts,
 		"max-age":        DeadLetterMaxAge,
-		"wrong-kind":     DeadLetterWrongKind,
 		"schema-version": DeadLetterSchemaVersion,
 		"undecodable":    DeadLetterUndecodable,
 		"wrong-surface":  DeadLetterWrongSurface,
