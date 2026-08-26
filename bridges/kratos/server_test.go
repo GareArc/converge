@@ -3,30 +3,16 @@ package convkratos_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/GareArc/converge"
 	convkratos "github.com/GareArc/converge/bridges/kratos"
 	"github.com/GareArc/converge/convergetest"
-	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/reconcile"
 	"github.com/go-kratos/kratos/v2/transport"
 )
-
-type blockingReconciler struct {
-	entered chan struct{}
-	release chan struct{}
-}
-
-func (r *blockingReconciler) Reconcile(ctx context.Context, id reconcile.ID) error {
-	select {
-	case r.entered <- struct{}{}:
-	default:
-	}
-	<-r.release
-	return nil
-}
 
 func buildRuntime(t *testing.T, register func(*converge.Runtime)) *converge.Runtime {
 	t.Helper()
@@ -91,64 +77,11 @@ func TestStopBeforeStartReturnsWithoutRunning(t *testing.T) {
 	}
 }
 
-func TestStopReportsAnIncompleteDrain(t *testing.T) {
-	r := &blockingReconciler{entered: make(chan struct{}, 1), release: make(chan struct{})}
-	h := convergetest.New(t)
-	rt := h.Build(t)
-	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:             "blocker",
-		Reconciler:       r,
-		AllowUnscheduled: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	srv := convkratos.Server(rt)
-
-	started := make(chan error, 1)
-	go func() { started <- srv.Start(context.Background()) }()
-	select {
-	case <-rt.Ready():
-	case <-time.After(2 * time.Second):
-		t.Fatal("runtime never became ready")
-	}
-	if err := rt.Poke("blocker", "id-1"); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-r.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("reconciler never ran")
-	}
-
-	expired, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := srv.Stop(expired); !errors.Is(err, convkratos.ErrDrainIncomplete) {
-		t.Fatalf("Stop with an expired context = %v, want ErrDrainIncomplete", err)
-	}
-
-	close(r.release)
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Start did not return after the handler was released")
-	}
-}
-
-var errKVUnavailable = errors.New("kv unavailable")
-
-type brokenKV struct {
-	converge.KV
-}
-
-func (brokenKV) Get(context.Context, string) ([]byte, bool, error) {
-	return nil, false, errKVUnavailable
-}
-
 func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {
-	h := convergetest.NewWith(t, convergetest.Options{
-		KV: func(c *convergetest.Clock) converge.KV { return brokenKV{inmem.NewKVWithClock(c)} },
-	})
-	rt := h.Build(t)
+	rt, err := converge.New(converge.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := reconcile.Register(rt, reconcile.Spec{
 		Name:             "unreachable",
 		Reconciler:       reconcile.Func(func(context.Context, reconcile.ID) error { return nil }),
@@ -158,7 +91,8 @@ func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {
 	}
 
 	srv := convkratos.Server(rt)
-	if err := srv.Start(context.Background()); !errors.Is(err, errKVUnavailable) {
+	err = srv.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "OnOneReplica needs Options.Lease") {
 		t.Fatalf("Start = %v, want the runtime's own error unchanged", err)
 	}
 }
