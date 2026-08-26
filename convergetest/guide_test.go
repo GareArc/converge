@@ -11,6 +11,7 @@ import (
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/convergetest/internal/credcheck"
 	"github.com/GareArc/converge/convergetest/internal/jobs"
+	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/worker"
 )
 
@@ -121,29 +122,29 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 	h.Drain(t)
 	baselineReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
 
-	h.Wake("workspace-credentials", "ws_42")
+	h.Notify("workspace-credentials", "ws_42")
 
 	h.Drain(t)
 
-	afterWakeReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
-	if afterWakeReconciled <= baselineReconciled {
-		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Wake+Drain = %d, want > %d (the wake must drive a real run, not just the startup pass)", afterWakeReconciled, baselineReconciled)
+	afterNotifyReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
+	if afterNotifyReconciled <= baselineReconciled {
+		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Notify+Drain = %d, want > %d (the notify must drive a real run, not just the startup pass)", afterNotifyReconciled, baselineReconciled)
 	}
 
-	h.Clock.Advance(24 * time.Hour)
+	h.Clock().Advance(24 * time.Hour)
 
 	h.Drain(t)
 
 	afterAdvanceReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
-	if afterAdvanceReconciled <= afterWakeReconciled {
-		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Advance+Drain = %d, want > %d (the 24h advance must cross the schedule boundary and drive a real run)", afterAdvanceReconciled, afterWakeReconciled)
+	if afterAdvanceReconciled <= afterNotifyReconciled {
+		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Advance+Drain = %d, want > %d (the 24h advance must cross the schedule boundary and drive a real run)", afterAdvanceReconciled, afterNotifyReconciled)
 	}
 
-	h.RunPass(t, "workspace-credentials")
+	h.Sweep(t, "workspace-credentials")
 
-	afterRunPassReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
-	if afterRunPassReconciled <= afterAdvanceReconciled {
-		t.Fatalf("workspace-credentials ws_42 RunCompleted count after RunPass = %d, want > %d (RunPass must force a real additional pass)", afterRunPassReconciled, afterAdvanceReconciled)
+	afterSweepReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
+	if afterSweepReconciled <= afterAdvanceReconciled {
+		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Sweep = %d, want > %d (Sweep must force a real additional pass)", afterSweepReconciled, afterAdvanceReconciled)
 	}
 
 	h.AssertReconciled(t, "workspace-credentials", "ws_42")
@@ -158,7 +159,7 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 		return false
 	})
 
-	prod, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock})
+	prod, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,15 +178,15 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 	}
 
 	fakeRepo.enableAppBlock()
-	beforeWake := len(h.Events())
-	h.Wake("app-runner", "app_14")
+	beforeNotify := len(h.Events())
+	h.Notify("app-runner", "app_14")
 	select {
 	case <-fakeRepo.runStarted:
 	case <-time.After(2 * time.Second):
 		t.Fatal("app_14 blocking run never started")
 	}
 
-	h.Lease.Expire("app-runner")
+	h.Lease.Expire(keys.ReconcileLease("test", "app-runner"))
 
 	select {
 	case <-fakeRepo.runCanceled:
@@ -201,7 +202,7 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 		}
 		return false
 	})
-	for _, e := range h.Events()[beforeWake:] {
+	for _, e := range h.Events()[beforeNotify:] {
 		rc, ok := e.(converge.RunCompleted)
 		if ok && rc.Job == "app-runner" && rc.ID == "app_14" {
 			t.Fatalf("app_14 cancellation must be neutral, not observed as a completed run: %+v", rc)

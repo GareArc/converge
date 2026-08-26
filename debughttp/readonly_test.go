@@ -88,7 +88,7 @@ func (j *foreignJob) Quiet() bool { return true }
 
 func (j *foreignJob) Notify(id string) error { return nil }
 
-func (j *foreignJob) RunPassNow(ctx context.Context) error { return nil }
+func (j *foreignJob) Sweep(ctx context.Context) error { return nil }
 
 func (j *foreignJob) Stats() converge.JobStats { return converge.JobStats{Job: j.name} }
 
@@ -113,7 +113,7 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	}
 	w.Runtime(t)
 
-	p, err := converge.NewProducer(w.MQ, converge.ProducerOpts{Namespace: "dt", Clock: w.Clock})
+	p, err := converge.NewProducer(w.MQ, converge.ProducerOpts{Namespace: "dt", Clock: w.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}

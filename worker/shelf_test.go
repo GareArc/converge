@@ -28,7 +28,7 @@ func TestShelfListAndGetSeeRealShelvedMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock)
+	p := wProducer(t, w.MQ, w.Clock())
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestShelfRequeueFullLoopSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock)
+	p := wProducer(t, w.MQ, w.Clock())
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
@@ -188,8 +188,8 @@ func TestShelfRequeueFullLoopSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	fail.Store(false)
-	w.Clock.Advance(time.Hour)
-	wantEnqueuedAt := w.Clock.Now()
+	w.Clock().Advance(time.Hour)
+	wantEnqueuedAt := w.Clock().Now()
 	if err := shelf.Requeue(context.Background(), rec.MessageID); err != nil {
 		t.Fatal(err)
 	}
@@ -243,11 +243,11 @@ func TestShelfRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 		Attempt:    1,
 		Reason:     reasonMaxAttempts,
 		Error:      "boom",
-		EnqueuedAt: w.Clock.Now(),
-		ShelvedAt:  w.Clock.Now(),
+		EnqueuedAt: w.Clock().Now(),
+		ShelvedAt:  w.Clock().Now(),
 		Headers: map[string]string{
 			converge.HeaderSchemaVersion: "1",
-			converge.HeaderEnqueuedAt:    w.Clock.Now().UTC().Format(time.RFC3339Nano),
+			converge.HeaderEnqueuedAt:    w.Clock().Now().UTC().Format(time.RFC3339Nano),
 			converge.HeaderAttempt:       "0",
 		},
 		Payload: []byte(`"hello"`),
@@ -338,8 +338,8 @@ func TestShelfListDedupesAcrossScanPages(t *testing.T) {
 		MessageID:  "id-0",
 		Attempt:    1,
 		Reason:     reasonMaxAttempts,
-		EnqueuedAt: w.Clock.Now(),
-		ShelvedAt:  w.Clock.Now(),
+		EnqueuedAt: w.Clock().Now(),
+		ShelvedAt:  w.Clock().Now(),
 		Payload:    []byte(`"hello"`),
 	}
 	raw, err := json.Marshal(rec)
@@ -387,8 +387,8 @@ func TestShelfPurgeAllRemovesEverything(t *testing.T) {
 			MessageID:  fmt.Sprintf("id-%d", i),
 			Attempt:    1,
 			Reason:     reasonMaxAttempts,
-			EnqueuedAt: w.Clock.Now(),
-			ShelvedAt:  w.Clock.Now(),
+			EnqueuedAt: w.Clock().Now(),
+			ShelvedAt:  w.Clock().Now(),
 			Payload:    []byte(`"hello"`),
 		}
 		raw, err := json.Marshal(rec)
@@ -472,12 +472,12 @@ func TestShelfRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 		Attempt:    1,
 		Reason:     reasonMaxAttempts,
 		Error:      "boom",
-		EnqueuedAt: w.Clock.Now(),
-		ShelvedAt:  w.Clock.Now(),
+		EnqueuedAt: w.Clock().Now(),
+		ShelvedAt:  w.Clock().Now(),
 		Headers: map[string]string{
 			converge.HeaderMessageID:     "msg-1",
 			converge.HeaderSchemaVersion: "1",
-			converge.HeaderEnqueuedAt:    w.Clock.Now().UTC().Format(time.RFC3339Nano),
+			converge.HeaderEnqueuedAt:    w.Clock().Now().UTC().Format(time.RFC3339Nano),
 			converge.HeaderAttempt:       "0",
 		},
 		Payload: []byte(`"hello"`),
@@ -527,8 +527,8 @@ func TestShelfListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
 			MessageID:  fmt.Sprintf("id-%03d", i),
 			Attempt:    1,
 			Reason:     reasonMaxAttempts,
-			EnqueuedAt: w.Clock.Now(),
-			ShelvedAt:  w.Clock.Now(),
+			EnqueuedAt: w.Clock().Now(),
+			ShelvedAt:  w.Clock().Now(),
 			Payload:    []byte(`"hello"`),
 		}
 		raw, err := json.Marshal(rec)

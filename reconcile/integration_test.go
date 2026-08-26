@@ -71,7 +71,7 @@ func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 	mu.Lock()
 	workspaces = append(workspaces, "ws_4")
 	mu.Unlock()
-	convergetest.AdvanceUntil(t, h.Clock, time.Hour, func() bool {
+	convergetest.AdvanceUntil(t, h.Clock(), time.Hour, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return synced["ws_4"] >= 1
@@ -105,7 +105,7 @@ func TestTenMinuteTourPeriodic(t *testing.T) {
 		defer mu.Unlock()
 		return calls == 1
 	})
-	convergetest.AdvanceUntil(t, h.Clock, time.Hour, func() bool {
+	convergetest.AdvanceUntil(t, h.Clock(), time.Hour, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return calls >= 2

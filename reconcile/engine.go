@@ -137,7 +137,7 @@ func (e *engine) isActive() bool {
 	return e.active
 }
 
-func (e *engine) RunPassNow(ctx context.Context) error {
+func (e *engine) Sweep(ctx context.Context) error {
 	q, ok := e.admitOps()
 	if !ok {
 		return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)

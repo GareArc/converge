@@ -77,7 +77,7 @@ func TestMissedTicksRunOnceOnReturn(t *testing.T) {
 	}
 	h.Drain(t)
 	base := sweeps.Load()
-	h.Clock.Advance(3 * time.Hour)
+	h.Clock().Advance(3 * time.Hour)
 	h.Drain(t)
 	if got := sweeps.Load() - base; got != 1 {
 		t.Fatalf("sweeps after three missed hours = %d, want 1", got)
@@ -405,7 +405,7 @@ func TestRunPassNowInactiveErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.RunPassNow(context.Background()); err == nil {
+	if err := e.Sweep(context.Background()); err == nil {
 		t.Fatal("run-pass-now before Run must error")
 	}
 }
@@ -435,7 +435,7 @@ func TestRunPassNowWithoutScheduleTriggerErrors(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("never ready")
 	}
-	if err := e.RunPassNow(context.Background()); err == nil {
+	if err := e.Sweep(context.Background()); err == nil {
 		t.Fatal("run-pass-now without a Schedule trigger must error")
 	}
 }
@@ -466,7 +466,7 @@ func TestRunPassNowEnumeratesFullIDSource(t *testing.T) {
 		defer mu.Unlock()
 		return len(counts) == 3
 	})
-	if err := le.e.RunPassNow(context.Background()); err != nil {
+	if err := le.e.Sweep(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -508,7 +508,7 @@ func TestRunPassNowDoesNotDisturbScheduledLastFireOrCursor(t *testing.T) {
 		t.Fatal("scheduled last-fire not persisted")
 	}
 
-	if err := le.e.RunPassNow(context.Background()); err != nil {
+	if err := le.e.Sweep(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return scheduledRuns == 2 })
@@ -564,7 +564,7 @@ func TestRunPassNowCtxCancellationAbortsAndReturnsCtxErr(t *testing.T) {
 	}
 	opsCtx, opsCancel := context.WithCancel(context.Background())
 	resultCh := make(chan error, 1)
-	go func() { resultCh <- le.e.RunPassNow(opsCtx) }()
+	go func() { resultCh <- le.e.Sweep(opsCtx) }()
 	opsCancel()
 	select {
 	case err := <-resultCh:
@@ -634,7 +634,7 @@ func TestRunPassNowDoesNotPanicWhenQueueNilsMidPass(t *testing.T) {
 	}
 
 	runDone := make(chan error, 1)
-	go func() { runDone <- e.RunPassNow(context.Background()) }()
+	go func() { runDone <- e.Sweep(context.Background()) }()
 	select {
 	case <-entered:
 	case <-time.After(2 * time.Second):

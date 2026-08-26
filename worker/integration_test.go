@@ -105,7 +105,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	}
 	consumer.Runtime(t)
 
-	producer := wProducer(t, mq, consumer.Clock)
+	producer := wProducer(t, mq, consumer.Clock())
 
 	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: cleanInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		defer mu.Unlock()
 		return len(throttleAttempts) == 1
 	})
-	convergetest.AdvanceUntil(t, consumer.Clock, 30*time.Second, func() bool {
+	convergetest.AdvanceUntil(t, consumer.Clock(), 30*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(throttleAttempts) == 2
@@ -171,8 +171,8 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: hardFailInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	convergetest.AdvanceUntil(t, consumer.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 2 })
-	convergetest.AdvanceUntil(t, consumer.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 3 })
+	convergetest.AdvanceUntil(t, consumer.Clock(), 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 2 })
+	convergetest.AdvanceUntil(t, consumer.Clock(), 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 3 })
 	convergetest.Await(t, func() bool { return len(shelfKeys(t, consumer.KV, "send-invite")) == 1 })
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&hardFailRuns) == 3 })
 	if got := atomic.LoadInt32(&escalations); got != 1 {
@@ -210,12 +210,12 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock)
+	p := wProducer(t, w.MQ, w.Clock())
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 
-	convergetest.AdvanceUntil(t, w.Clock, time.Minute, func() bool {
+	convergetest.AdvanceUntil(t, w.Clock(), time.Minute, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
 			return ok && rc.Outcome == converge.Shelved

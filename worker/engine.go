@@ -92,8 +92,8 @@ func (e *engine) Notify(string) error {
 	return fmt.Errorf("worker: job %q: notify is a reconcile verb; workers react to deliveries instead", e.cfg.info.name)
 }
 
-func (e *engine) RunPassNow(context.Context) error {
-	return fmt.Errorf("worker: job %q: passes are a reconcile verb; workers have no schedule to run", e.cfg.info.name)
+func (e *engine) Sweep(context.Context) error {
+	return fmt.Errorf("worker: job %q: only reconcile jobs sweep", e.cfg.info.name)
 }
 
 func (e *engine) durable() bool { return e.cfg.runMode != converge.OnAllReplicas }

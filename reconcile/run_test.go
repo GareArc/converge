@@ -644,7 +644,7 @@ func TestFailingIDKeepsRetryingForever(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	convergetest.AdvanceUntil(t, h.Clock, 20*time.Minute, func() bool { return calls.Load() >= 5 })
+	convergetest.AdvanceUntil(t, h.Clock(), 20*time.Minute, func() bool { return calls.Load() >= 5 })
 }
 
 func TestTimeoutCancelsTheRun(t *testing.T) {
@@ -675,7 +675,7 @@ func TestDeadlineDestroysTheJob(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	var runs atomic.Int64
-	cutover := h.Clock.Now().Add(time.Hour)
+	cutover := h.Clock().Now().Add(time.Hour)
 	if err := Register(rt, Spec{
 		Name:      "migration",
 		Reconcile: func(context.Context, ID) error { runs.Add(1); return nil },
@@ -685,10 +685,10 @@ func TestDeadlineDestroysTheJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	h.Clock.Advance(2 * time.Hour)
+	h.Clock().Advance(2 * time.Hour)
 	h.Drain(t)
 	before := runs.Load()
-	h.Clock.Advance(10 * time.Minute)
+	h.Clock().Advance(10 * time.Minute)
 	h.Drain(t)
 	if got := runs.Load(); got != before {
 		t.Fatalf("ran %d more times after the deadline", got-before)
@@ -720,10 +720,10 @@ func TestStopKeyDestroysTheJob(t *testing.T) {
 	if err := h.KV.Set(context.Background(), stopKey, []byte("1"), 0); err != nil {
 		t.Fatal(err)
 	}
-	h.Clock.Advance(2 * time.Minute)
+	h.Clock().Advance(2 * time.Minute)
 	h.Drain(t)
 	before := runs.Load()
-	h.Clock.Advance(10 * time.Minute)
+	h.Clock().Advance(10 * time.Minute)
 	h.Drain(t)
 	if got := runs.Load(); got != before {
 		t.Fatalf("ran %d more times after the stop key was set", got-before)
@@ -754,7 +754,7 @@ func TestJobDestroyedReportsTheConditionThatFired(t *testing.T) {
 	if err := h.KV.Set(context.Background(), stopKey, []byte("1"), 0); err != nil {
 		t.Fatal(err)
 	}
-	h.Clock.Advance(2 * time.Minute)
+	h.Clock().Advance(2 * time.Minute)
 	h.Drain(t)
 	convergetest.Await(t, func() bool {
 		for _, s := range rt.Stats() {

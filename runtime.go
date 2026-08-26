@@ -18,7 +18,7 @@ type job interface {
 	Info() JobInfo
 	Quiet() bool
 	Notify(id string) error
-	RunPassNow(ctx context.Context) error
+	Sweep(ctx context.Context) error
 }
 
 type Runtime struct {
@@ -87,7 +87,7 @@ func init() {
 		}
 		return j.Notify(id)
 	}
-	hook.RunPassNow = func(rt any, ctx context.Context, jobName string) error {
+	hook.Sweep = func(rt any, ctx context.Context, jobName string) error {
 		r, ok := rt.(*Runtime)
 		if !ok || r == nil {
 			return fmt.Errorf("converge: run-pass-now: %T is not a usable *converge.Runtime", rt)
@@ -98,7 +98,7 @@ func init() {
 		if !ok {
 			return fmt.Errorf("converge: unknown job %q", jobName)
 		}
-		return j.RunPassNow(ctx)
+		return j.Sweep(ctx)
 	}
 	hook.Quiet = func(rt any) bool {
 		r, ok := rt.(*Runtime)

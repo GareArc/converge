@@ -48,7 +48,7 @@ func (s *stubJob) Notify(id string) error {
 	return nil
 }
 
-func (s *stubJob) RunPassNow(ctx context.Context) error {
+func (s *stubJob) Sweep(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ranPass++
@@ -247,7 +247,7 @@ func TestRunPassNowReachesStubJob(t *testing.T) {
 	if err := hook.RegisterJob(rt, s); err != nil {
 		t.Fatal(err)
 	}
-	if err := hook.RunPassNow(rt, context.Background(), "a"); err != nil {
+	if err := hook.Sweep(rt, context.Background(), "a"); err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
@@ -259,17 +259,17 @@ func TestRunPassNowReachesStubJob(t *testing.T) {
 
 func TestRunPassNowUnknownJobErrors(t *testing.T) {
 	rt := mustRuntime(t)
-	if err := hook.RunPassNow(rt, context.Background(), "no-such-job"); err == nil {
+	if err := hook.Sweep(rt, context.Background(), "no-such-job"); err == nil {
 		t.Fatal("run-pass-now on unknown job must error")
 	}
 }
 
 func TestRunPassNowRejectsForeignRuntime(t *testing.T) {
-	if err := hook.RunPassNow("not a runtime", context.Background(), "a"); err == nil {
+	if err := hook.Sweep("not a runtime", context.Background(), "a"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
 	var nilRt *converge.Runtime
-	if err := hook.RunPassNow(nilRt, context.Background(), "a"); err == nil {
+	if err := hook.Sweep(nilRt, context.Background(), "a"); err == nil {
 		t.Fatal("typed-nil runtime must be rejected")
 	}
 }

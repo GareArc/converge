@@ -27,7 +27,7 @@ var OpsDeps func(rt any) (OpsWiring, error)
 
 var Notify func(rt any, job, id string) error
 
-var RunPassNow func(rt any, ctx context.Context, job string) error
+var Sweep func(rt any, ctx context.Context, job string) error
 
 var Quiet func(rt any) bool
 
