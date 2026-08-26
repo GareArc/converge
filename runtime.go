@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/GareArc/converge/internal/ctl"
 	"github.com/GareArc/converge/internal/hook"
 )
 
@@ -14,7 +13,6 @@ type job interface {
 	Name() string
 	Run(ctx context.Context, d JobDeps) error
 	Ready() <-chan struct{}
-	Poke(id string) error
 	Stats() JobStats
 	Info() JobInfo
 	Quiet() bool
@@ -142,13 +140,6 @@ func init() {
 		}
 		return true
 	}
-	hook.ControlDispatch = func(rt any, ctx context.Context, req ctl.Request) ([]ctl.Response, error) {
-		r, ok := rt.(*Runtime)
-		if !ok || r == nil {
-			return nil, fmt.Errorf("converge: control: %T is not a usable *converge.Runtime", rt)
-		}
-		return r.controlDispatch(ctx, req)
-	}
 	hook.AttachOptions = func(o any, attach func(rt any)) any {
 		opts, ok := o.(Options)
 		if !ok {
@@ -244,13 +235,6 @@ func (rt *Runtime) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if rt.opts.KV != nil {
-		if err := rt.applyPausedFlags(runCtx, jobs); err != nil {
-			return err
-		}
-	}
-	rt.startControlListener(runCtx)
-
 	go func() {
 		for _, j := range jobs {
 			select {
@@ -283,13 +267,3 @@ func (rt *Runtime) Run(ctx context.Context) error {
 }
 
 func (rt *Runtime) Ready() <-chan struct{} { return rt.ready }
-
-func (rt *Runtime) Poke(jobName, id string) error {
-	rt.mu.Lock()
-	j, ok := rt.jobs[jobName]
-	rt.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("converge: unknown job %q", jobName)
-	}
-	return j.Poke(id)
-}

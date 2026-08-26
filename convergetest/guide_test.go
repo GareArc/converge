@@ -22,9 +22,9 @@ type guideRepo struct {
 	workspaceIDs []string
 	appIDs       []string
 
-	app13Blocking bool
-	app13Started  chan struct{}
-	app13Canceled chan struct{}
+	blockingEnabled bool
+	runStarted      chan struct{}
+	runCanceled     chan struct{}
 
 	startOnce    sync.Once
 	canceledOnce sync.Once
@@ -32,10 +32,10 @@ type guideRepo struct {
 
 func newGuideRepo() *guideRepo {
 	return &guideRepo{
-		workspaceIDs:  []string{"ws_42"},
-		appIDs:        []string{"app_13"},
-		app13Started:  make(chan struct{}),
-		app13Canceled: make(chan struct{}),
+		workspaceIDs: []string{"ws_42"},
+		appIDs:       []string{"app_13"},
+		runStarted:   make(chan struct{}),
+		runCanceled:  make(chan struct{}),
 	}
 }
 
@@ -56,25 +56,34 @@ func (r *guideRepo) AppIDs(ctx context.Context) ([]string, error) {
 }
 
 func (r *guideRepo) RunApp(ctx context.Context, appID string) error {
-	if appID != "app_13" {
+	if appID == "app_13" {
+		r.mu.Lock()
+		blocking := r.blockingEnabled
+		r.mu.Unlock()
+		if !blocking {
+			return errAppRunnerDownstream
+		}
+		return nil
+	}
+	if appID != "app_14" {
 		return nil
 	}
 	r.mu.Lock()
-	blocking := r.app13Blocking
+	blocking := r.blockingEnabled
 	r.mu.Unlock()
 	if !blocking {
-		return errAppRunnerDownstream
+		return nil
 	}
-	r.startOnce.Do(func() { close(r.app13Started) })
+	r.startOnce.Do(func() { close(r.runStarted) })
 	<-ctx.Done()
-	r.canceledOnce.Do(func() { close(r.app13Canceled) })
+	r.canceledOnce.Do(func() { close(r.runCanceled) })
 	return ctx.Err()
 }
 
 func (r *guideRepo) enableAppBlock() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.app13Blocking = true
+	r.blockingEnabled = true
 }
 
 func reconciledCount(h *convergetest.Harness, job, id string) int {
@@ -160,22 +169,20 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 	}
 
 	fakeRepo.enableAppBlock()
-	beforePoke := len(h.Events())
-	if err := rt.Poke("app-runner", "app_13"); err != nil {
-		t.Fatal(err)
-	}
+	beforeWake := len(h.Events())
+	h.Wake("app-runner", "app_14")
 	select {
-	case <-fakeRepo.app13Started:
+	case <-fakeRepo.runStarted:
 	case <-time.After(2 * time.Second):
-		t.Fatal("app_13 blocking run never started")
+		t.Fatal("app_14 blocking run never started")
 	}
 
 	h.Lease.Expire("app-runner")
 
 	select {
-	case <-fakeRepo.app13Canceled:
+	case <-fakeRepo.runCanceled:
 	case <-time.After(2 * time.Second):
-		t.Fatal("app_13 run was not canceled on lease loss")
+		t.Fatal("app_14 run was not canceled on lease loss")
 	}
 	convergetest.Await(t, func() bool {
 		for _, e := range h.Events() {
@@ -186,10 +193,10 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 		}
 		return false
 	})
-	for _, e := range h.Events()[beforePoke:] {
+	for _, e := range h.Events()[beforeWake:] {
 		rc, ok := e.(converge.RunCompleted)
-		if ok && rc.Job == "app-runner" && rc.ID == "app_13" {
-			t.Fatalf("app_13 cancellation must be neutral, not observed as a completed run: %+v", rc)
+		if ok && rc.Job == "app-runner" && rc.ID == "app_14" {
+			t.Fatalf("app_14 cancellation must be neutral, not observed as a completed run: %+v", rc)
 		}
 	}
 }

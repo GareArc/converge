@@ -326,7 +326,7 @@ func TestPeriodicSugar(t *testing.T) {
 	}
 }
 
-func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
+func TestStandbyHintSurvivesIntoLeadership(t *testing.T) {
 	blockName := "converge/reconcile/job/lease"
 	clock := convergetest.NewClock(wqStart)
 	lease := inmem.NewLeaseWithClock(clock)
@@ -367,7 +367,7 @@ func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("standby never ready")
 	}
-	if err := e.Poke("ws_7"); err != nil {
+	if err := e.Hint("ws_7"); err != nil {
 		t.Fatal(err)
 	}
 	holder.Release(context.Background())
@@ -380,7 +380,7 @@ func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("standby poke never ran after taking leadership")
+			t.Fatal("standby hint never ran after taking leadership")
 		}
 		clock.Advance(10 * time.Second)
 		time.Sleep(2 * time.Millisecond)
@@ -388,11 +388,11 @@ func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if got[0] != "ws_7" {
-		t.Fatalf("first run = %q, want the standby poke", got[0])
+		t.Fatalf("first run = %q, want the standby hint", got[0])
 	}
 }
 
-func TestPausedSpecDropsPokes(t *testing.T) {
+func TestPausedSpecDropsHints(t *testing.T) {
 	spec := Spec{
 		Name:       "job",
 		Paused:     true,
@@ -405,7 +405,7 @@ func TestPausedSpecDropsPokes(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("never ready")
 	}
-	if err := le.e.Poke("x"); err != nil {
+	if err := le.e.Hint("x"); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -723,8 +723,8 @@ func TestParkedMarksSurviveRestart(t *testing.T) {
 	}); n != 1 {
 		t.Fatalf("restored parked ID must drop hints with DiscardParked, got %d events", n)
 	}
-	if err := te2.e.Poke("a"); err != nil {
-		t.Fatal(err)
+	if res := te2.e.queue.wake("a", wakePoke); res == wakeRevived {
+		te2.e.parks.clear(context.Background(), "a")
 	}
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
 	convergetest.Await(t, func() bool {

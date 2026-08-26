@@ -109,8 +109,6 @@ func TestKVParkStoreScanVisitsMarkedIDs(t *testing.T) {
 	}
 }
 
-const pokeClearDeadline = 2 * time.Second
-
 type failingDeleteKV struct {
 	converge.KV
 	mu       sync.Mutex
@@ -175,9 +173,7 @@ func TestActivationClearRetriesThroughInfraError(t *testing.T) {
 	if err := kv.Set(ctx, key, []byte("0"), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Poke("a"); err != nil {
-		t.Fatal(err)
-	}
+	e.hint(ctx, "a")
 	kv.arm(key, 1)
 	done := make(chan struct{})
 	go func() {
@@ -188,39 +184,6 @@ func TestActivationClearRetriesThroughInfraError(t *testing.T) {
 	<-done
 	if _, ok, err := kv.Get(ctx, key); err != nil || ok {
 		t.Fatalf("the retried clear must remove the mark: ok=%v err=%v", ok, err)
-	}
-}
-
-func TestPokeClearDoesNotRetry(t *testing.T) {
-	ctx := context.Background()
-	clock := convergetest.NewClock(wqStart)
-	kv := &failingDeleteKV{KV: inmem.NewKVWithClock(clock)}
-	e := newParkClearEngine(t, kv, clock, 1)
-	key := parkKey(e, "a")
-	if err := kv.Set(ctx, key, []byte("0"), 0); err != nil {
-		t.Fatal(err)
-	}
-	e.queue.wake("a", wakeHint)
-	mustPop(t, e.queue, clock, "a")
-	if res := e.queue.finish("a", finishFailure, 0); !res.parked {
-		t.Fatalf("finish = %+v, want parked", res)
-	}
-	kv.arm(key, 1)
-	poked := make(chan error, 1)
-	go func() { poked <- e.Poke("a") }()
-	select {
-	case err := <-poked:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(pokeClearDeadline):
-		t.Fatal("poke must not retry the mark clear")
-	}
-	if n := kv.deletes(); n != 1 {
-		t.Fatalf("poke attempted the clear %d times, want 1", n)
-	}
-	if _, ok, err := kv.Get(ctx, key); err != nil || !ok {
-		t.Fatalf("a one-shot clear leaves the failed mark: ok=%v err=%v", ok, err)
 	}
 }
 

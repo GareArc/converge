@@ -28,26 +28,6 @@ func doRequest(h http.Handler, method, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
-func doOpsRequestAsync(t *testing.T, clock *convergetest.Clock, h http.Handler, method, path string) *httptest.ResponseRecorder {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(method, path, nil)
-	done := make(chan struct{})
-	go func() {
-		h.ServeHTTP(rec, req)
-		close(done)
-	}()
-	convergetest.AdvanceUntil(t, clock, 60*time.Millisecond, func() bool {
-		select {
-		case <-done:
-			return true
-		default:
-			return false
-		}
-	})
-	return rec
-}
-
 func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 	t.Helper()
 	if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
@@ -82,6 +62,37 @@ func registerReconcileJob(t *testing.T, rt *converge.Runtime, name string) {
 		t.Fatal(err)
 	}
 }
+
+type foreignJob struct {
+	name  string
+	ready chan struct{}
+}
+
+func newForeignJob(name string) *foreignJob {
+	return &foreignJob{name: name, ready: make(chan struct{})}
+}
+
+func (j *foreignJob) Name() string { return j.name }
+
+func (j *foreignJob) Run(ctx context.Context, d converge.JobDeps) error {
+	close(j.ready)
+	<-ctx.Done()
+	return nil
+}
+
+func (j *foreignJob) Ready() <-chan struct{} { return j.ready }
+
+func (j *foreignJob) Quiet() bool { return true }
+
+func (j *foreignJob) Hint(id string) error { return nil }
+
+func (j *foreignJob) RunPassNow(ctx context.Context) error { return nil }
+
+func (j *foreignJob) SetPaused(paused bool) {}
+
+func (j *foreignJob) Stats() converge.JobStats { return converge.JobStats{Job: j.name} }
+
+func (j *foreignJob) Info() converge.JobInfo { return converge.JobInfo{Job: j.name} }
 
 func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
@@ -297,7 +308,6 @@ func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
 		handler func(rt *converge.Runtime) http.Handler
 	}{
 		{"ReadOnlyHandler", func(rt *converge.Runtime) http.Handler { return debughttp.ReadOnlyHandler(rt) }},
-		{"OpsHandler", func(rt *converge.Runtime) http.Handler { return debughttp.OpsHandler(rt, debughttp.OpsOpts{}) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -331,32 +341,12 @@ func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
 	}
 }
 
-func TestOpsHandlerServesReadOnlyRoutesWithParity(t *testing.T) {
-	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-	rt := w.Build(t)
-	registerReconcileJob(t, rt, "job")
-	ro := debughttp.ReadOnlyHandler(rt)
-	ops := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
-
-	recRO := doRequest(ro, http.MethodGet, "/debug/jobs")
-	recOps := doRequest(ops, http.MethodGet, "/debug/jobs")
-	if recRO.Code != recOps.Code || recRO.Body.String() != recOps.Body.String() {
-		t.Fatalf("readonly vs ops GET /debug/jobs differ:\n%d %s\n%d %s", recRO.Code, recRO.Body, recOps.Code, recOps.Body)
-	}
-
-	recROJob := doRequest(ro, http.MethodGet, "/debug/jobs/job")
-	recOpsJob := doRequest(ops, http.MethodGet, "/debug/jobs/job")
-	if recROJob.Code != recOpsJob.Code || recROJob.Body.String() != recOpsJob.Body.String() {
-		t.Fatalf("readonly vs ops GET /debug/jobs/job differ:\n%d %s\n%d %s", recROJob.Code, recROJob.Body, recOpsJob.Code, recOpsJob.Body)
-	}
-}
-
 func TestReadOnlyListRendersUnknownSurfaceAndRunModeSafely(t *testing.T) {
 	rt, err := converge.New(converge.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := hook.RegisterJob(rt, newOpsStubJob("mystery")); err != nil {
+	if err := hook.RegisterJob(rt, newForeignJob("mystery")); err != nil {
 		t.Fatal(err)
 	}
 	h := debughttp.ReadOnlyHandler(rt)
@@ -381,13 +371,4 @@ func TestReadOnlyHandlerNilRuntimePanics(t *testing.T) {
 		}
 	}()
 	debughttp.ReadOnlyHandler(nil)
-}
-
-func TestOpsHandlerNilRuntimePanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("want a panic for a nil runtime")
-		}
-	}()
-	debughttp.OpsHandler(nil, debughttp.OpsOpts{})
 }

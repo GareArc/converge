@@ -20,10 +20,6 @@ func Reconcile(ns, job string, parts ...string) string {
 	return join(ns, []string{"converge", "reconcile", job}, parts)
 }
 
-func Ctl(ns string, parts ...string) string {
-	return join(ns, []string{"converge", "ctl"}, parts)
-}
-
 func WorkerLease(ns, job string) string { return Worker(ns, job, "lease") }
 
 func ReconcileLease(ns, job string) string { return Reconcile(ns, job, "lease") }

@@ -648,8 +648,6 @@ func (j *crashJob) Run(context.Context, converge.JobDeps) error {
 
 func (j *crashJob) Ready() <-chan struct{} { return j.ready }
 
-func (j *crashJob) Poke(string) error { return nil }
-
 func (j *crashJob) Stats() converge.JobStats { return converge.JobStats{Job: j.Name()} }
 
 func (j *crashJob) Info() converge.JobInfo { return converge.JobInfo{Job: j.Name()} }

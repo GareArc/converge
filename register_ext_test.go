@@ -17,7 +17,6 @@ type stubJob struct {
 	name    string
 	ready   chan struct{}
 	run     func(ctx context.Context, d converge.JobDeps) error
-	poked   []string
 	hinted  []string
 	ranPass int
 	paused  []bool
@@ -40,13 +39,6 @@ func (s *stubJob) Run(ctx context.Context, d converge.JobDeps) error {
 }
 
 func (s *stubJob) Ready() <-chan struct{} { return s.ready }
-
-func (s *stubJob) Poke(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.poked = append(s.poked, id)
-	return nil
-}
 
 func (s *stubJob) Quiet() bool { return true }
 
@@ -101,8 +93,6 @@ func (s *stubQueueJob) Run(ctx context.Context, d converge.JobDeps) error {
 }
 
 func (s *stubQueueJob) Ready() <-chan struct{} { return s.ready }
-
-func (s *stubQueueJob) Poke(id string) error { return nil }
 
 func (s *stubQueueJob) Quiet() bool { return true }
 

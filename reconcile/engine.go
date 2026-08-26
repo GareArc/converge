@@ -92,25 +92,6 @@ func (e *engine) wakeQueueRef() *wakeQueue {
 	return e.queue
 }
 
-func (e *engine) Poke(id string) error {
-	q := e.wakeQueueRef()
-	if q == nil {
-		return fmt.Errorf("reconcile: job %q is not running", e.cfg.name)
-	}
-	if id == "" && !e.cfg.single {
-		return fmt.Errorf("reconcile: job %q: poke needs an id", e.cfg.name)
-	}
-	if e.cfg.single {
-		id = ""
-	}
-	res := q.wake(ID(id), wakePoke)
-	if res == wakeRevived {
-		e.parks.clear(context.Background(), ID(id))
-	}
-	e.report(ID(id), res)
-	return nil
-}
-
 func (e *engine) Quiet() bool {
 	e.mu.Lock()
 	q := e.queue

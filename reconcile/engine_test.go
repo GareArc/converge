@@ -374,13 +374,6 @@ func TestEmptyIDHintAfterTeardownStillReportsDiscard(t *testing.T) {
 	}
 }
 
-func TestPokeBeforeBindFails(t *testing.T) {
-	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
-	if err := e.Poke("x"); err == nil {
-		t.Fatal("poke before Run must error")
-	}
-}
-
 func TestQuietUnboundEngineIsQuiet(t *testing.T) {
 	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
 	if !e.Quiet() {
@@ -446,7 +439,7 @@ func TestHintOnSingleJobCoercesIDToEmpty(t *testing.T) {
 	})
 }
 
-func TestHintRespectsBackoffUnlikePoke(t *testing.T) {
+func TestHintRespectsBackoff(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
@@ -464,10 +457,6 @@ func TestHintRespectsBackoffUnlikePoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
-	if err := te.e.Poke("a"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 }
 
 func TestHintRevivesParkedID(t *testing.T) {
@@ -543,35 +532,6 @@ func TestHintDoesNotPanicRacingShutdown(t *testing.T) {
 	}
 }
 
-func TestPokeEmptyIDOnMultiIDJobFails(t *testing.T) {
-	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
-	if err := te.e.Poke(""); err == nil {
-		t.Fatal("empty poke on a multi-ID job must error")
-	}
-	if err := te.e.Poke("a"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestPokeOnSingleJobCoercesIDToEmpty(t *testing.T) {
-	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
-	if err := te.e.Poke("whatever"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			rc, ok := e.(converge.RunCompleted)
-			return ok && rc.ID == ""
-		}) == 1
-	})
-	convergetest.AssertStable(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			rc, ok := e.(converge.RunCompleted)
-			return ok && rc.ID == "whatever"
-		}) == 0
-	})
-}
-
 func TestKeyNamespacing(t *testing.T) {
 	e := &engine{cfg: config{name: "app-runner"}}
 	e.deps = converge.JobDeps{Namespace: "acme"}
@@ -608,43 +568,6 @@ func TestDroppedHintOnForcedParkEmitsDiscard(t *testing.T) {
 	}); n != 1 {
 		t.Fatalf("droppedHint WakeDiscarded count = %d, want 1", n)
 	}
-}
-
-func TestRevivedPokeDuringParkingRunsAgain(t *testing.T) {
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var mu sync.Mutex
-	calls := 0
-	te := startEngine(t, config{deadLetterAfter: 1}, func(ctx context.Context, id ID) error {
-		mu.Lock()
-		calls++
-		n := calls
-		mu.Unlock()
-		if n == 1 {
-			close(started)
-			<-release
-			return errors.New("boom")
-		}
-		return nil
-	})
-	te.e.hint(context.Background(), "a")
-	<-started
-	if err := te.e.Poke("a"); err != nil {
-		t.Fatal(err)
-	}
-	close(release)
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.IDParked)
-			return ok
-		}) == 1
-	})
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.RunCompleted)
-			return ok
-		}) == 2
-	})
 }
 
 func TestSettleOnUnknownIDIsUnsettled(t *testing.T) {
@@ -873,9 +796,7 @@ func TestActivationClearsMarkForActiveID(t *testing.T) {
 	if err := kv.Set(ctx, parkKey(e, "a"), []byte("0"), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Poke("a"); err != nil {
-		t.Fatal(err)
-	}
+	e.hint(ctx, "a")
 	e.loadParked(ctx)
 	if _, ok, err := kv.Get(ctx, parkKey(e, "a")); err != nil || ok {
 		t.Fatalf("mark for an already-queued id must be cleared at activation: ok=%v err=%v", ok, err)
@@ -916,20 +837,6 @@ func TestSetPausedDropsHintWakes(t *testing.T) {
 	}); n != 0 {
 		t.Fatalf("paused engine must not run, got %d RunCompleted", n)
 	}
-}
-
-func TestSetPausedDropsPokes(t *testing.T) {
-	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
-	te.e.SetPaused(true)
-	if err := te.e.Poke("a"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.ID == "a" && wd.Reason == converge.DiscardPaused
-		}) == 1
-	})
 }
 
 func TestSetPausedResumeAllowsHintsAgain(t *testing.T) {

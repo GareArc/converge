@@ -286,62 +286,6 @@ func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestPokeRevivesParkedID(t *testing.T) {
-	h := convergetest.NewWith(t, convergetest.Options{Namespace: "it"})
-	rt := h.Build(t)
-	var mu sync.Mutex
-	healed := false
-	err := reconcile.Register(rt, reconcile.Spec{
-		Name:            "flaky",
-		DeadLetterAfter: 1,
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			mu.Lock()
-			defer mu.Unlock()
-			if !healed {
-				return errors.New("downstream broken")
-			}
-			return nil
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(
-				reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
-					return []reconcile.ID{"app_13"}, nil
-				}),
-				reconcile.Every(time.Hour),
-			),
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Runtime(t)
-	convergetest.Await(t, func() bool {
-		return eventCount(h.Events(), func(e converge.Event) bool {
-			dl, ok := e.(converge.IDParked)
-			return ok && dl.Job == "flaky" && dl.ID == "app_13"
-		}) == 1
-	})
-	mu.Lock()
-	healed = true
-	mu.Unlock()
-	if err := rt.Poke("flaky", "app_13"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool { return successes(h.Events, "flaky")() >= 1 })
-}
-
-func TestUnknownJobPokeFails(t *testing.T) {
-	h := convergetest.NewWith(t, convergetest.Options{Namespace: "it"})
-	rt := h.Build(t)
-	if err := reconcile.Periodic(rt, "only-job", reconcile.Every(time.Hour), func(context.Context) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	h.Runtime(t)
-	if err := rt.Poke("no-such-job", "x"); err == nil {
-		t.Fatal("poke on an unknown job must error")
-	}
-}
-
 func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)

@@ -12,8 +12,6 @@ func TestLayout(t *testing.T) {
 		{"worker no namespace", Worker("", "job", "x"), "converge/worker/job/x"},
 		{"worker bare", Worker("ns", "job"), "ns/converge/worker/job"},
 		{"reconcile", Reconcile("ns", "job", "x"), "ns/converge/reconcile/job/x"},
-		{"ctl queue", Ctl("ns"), "ns/converge/ctl"},
-		{"ctl response", Ctl("", "res", "op1", "r1"), "converge/ctl/res/op1/r1"},
 		{"worker lease", WorkerLease("ns", "job"), "ns/converge/worker/job/lease"},
 		{"reconcile lease", ReconcileLease("", "job"), "converge/reconcile/job/lease"},
 		{"dlq prefix", WorkerDLQPrefix("ns", "job"), "ns/converge/worker/job/dlq/"},

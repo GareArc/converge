@@ -67,10 +67,6 @@ func (e *engine) markReady() { e.readyOnce.Do(func() { close(e.ready) }) }
 
 func (e *engine) QueueBinding() (string, converge.MQ) { return e.cfg.info.queue, e.cfg.mq }
 
-func (e *engine) Poke(string) error {
-	return fmt.Errorf("worker: job %q: poke is a reconcile verb; requeue dead letters via ops instead", e.cfg.info.name)
-}
-
 func (e *engine) Quiet() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()

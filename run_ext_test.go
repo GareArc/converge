@@ -123,20 +123,3 @@ func TestRunNoJobsBlocksUntilCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
-func TestPokeRoutesToJob(t *testing.T) {
-	rt := mustRuntime(t)
-	j := newStubJob("a")
-	hook.RegisterJob(rt, j)
-	if err := rt.Poke("a", "ws_42"); err != nil {
-		t.Fatal(err)
-	}
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if len(j.poked) != 1 || j.poked[0] != "ws_42" {
-		t.Fatalf("poked = %v", j.poked)
-	}
-	if err := rt.Poke("missing", "x"); err == nil {
-		t.Fatal("unknown job must error")
-	}
-}
