@@ -12,7 +12,8 @@ import (
 
 const (
 	DefaultConcurrency = 4
-	DefaultVisibility  = 5 * time.Minute
+	defaultVisibility  = 5 * time.Minute
+	visibilityMargin   = time.Minute
 	DefaultMaxAttempts = 25
 	DefaultMinBackoff  = time.Second
 	DefaultMaxBackoff  = 15 * time.Minute
@@ -30,7 +31,7 @@ type HandleOpts struct {
 	Concurrency int
 	RunMode     converge.RunMode
 	Retry       RetryPolicy
-	Visibility  time.Duration
+	Timeout     time.Duration
 	RateLimit   converge.Rate
 	Middleware  []converge.Middleware
 }
@@ -67,8 +68,8 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 	if o.Concurrency < 0 {
 		return nil, fail("Concurrency must not be negative")
 	}
-	if o.Visibility < 0 {
-		return nil, fail("Visibility must not be negative")
+	if o.Timeout < 0 {
+		return nil, fail("Timeout must not be negative")
 	}
 	r := o.Retry
 	if r.MaxAttempts < 0 || r.MinBackoff < 0 || r.MaxBackoff < 0 || r.MaxAge < 0 {
@@ -86,15 +87,16 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 		concurrency: o.Concurrency,
 		runMode:     o.RunMode,
 		retry:       r,
-		visibility:  o.Visibility,
+		timeout:     o.Timeout,
 		rateLimit:   o.RateLimit,
 		middleware:  slices.Clone(o.Middleware),
 	}
 	if cfg.concurrency == 0 {
 		cfg.concurrency = DefaultConcurrency
 	}
-	if cfg.visibility == 0 {
-		cfg.visibility = DefaultVisibility
+	cfg.visibility = defaultVisibility
+	if o.Timeout > 0 {
+		cfg.visibility = o.Timeout + visibilityMargin
 	}
 	if cfg.retry.MaxAttempts == 0 {
 		cfg.retry.MaxAttempts = DefaultMaxAttempts

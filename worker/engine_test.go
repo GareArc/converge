@@ -1120,7 +1120,7 @@ func TestVisibilityHeartbeatExtends(t *testing.T) {
 		<-gate
 		atomic.AddInt32(&runs, 1)
 		return nil
-	}, HandleOpts{Visibility: 90 * time.Second})
+	}, HandleOpts{Timeout: 90 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1565,7 +1565,7 @@ func TestRateLimitWaitIsHeartbeatCovered(t *testing.T) {
 		runs[payload]++
 		mu.Unlock()
 		return nil
-	}, HandleOpts{Concurrency: 2, Visibility: 30 * time.Second, RateLimit: converge.Rate{Events: 1, Per: 2 * time.Minute}})
+	}, HandleOpts{Concurrency: 2, Timeout: 30 * time.Second, RateLimit: converge.Rate{Events: 1, Per: 2 * time.Minute}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1782,5 +1782,28 @@ func TestRunPassNowIsAReconcileVerb(t *testing.T) {
 	}
 	if err := e.RunPassNow(context.Background()); err == nil || !strings.Contains(err.Error(), "reconcile verb") {
 		t.Fatalf("RunPassNow error = %v, want mention of the reconcile surface", err)
+	}
+}
+
+func TestTimeoutCancelsTheRun(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	task := NewTask[string]("slow", TaskOpts{})
+	deadline := make(chan error, 1)
+	if err := Handle(rt, task, func(ctx context.Context, _ string) error {
+		<-ctx.Done()
+		deadline <- ctx.Err()
+		return ctx.Err()
+	}, HandleOpts{Timeout: 30 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	if err := task.Enqueue(context.Background(), p, "x", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.AdvanceUntil(t, h.Clock, 10*time.Second, func() bool { return len(deadline) > 0 })
+	if err := <-deadline; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("run ended with %v, want context.DeadlineExceeded", err)
 	}
 }

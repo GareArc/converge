@@ -290,13 +290,13 @@ func TestPeriodicSugar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Periodic(rt, "license-refresh", Every(time.Hour), func(ctx context.Context) error { return nil }); err != nil {
+	if err := Periodic(rt, "license-refresh", Every(time.Hour), func(ctx context.Context) error { return nil }, PeriodicOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Periodic(rt, "nil-fn", Every(time.Hour), nil); err == nil {
+	if err := Periodic(rt, "nil-fn", Every(time.Hour), nil, PeriodicOpts{}); err == nil {
 		t.Fatal("nil function must be rejected")
 	}
-	if err := Periodic(rt, "bad-cadence", Every(0), func(ctx context.Context) error { return nil }); err == nil {
+	if err := Periodic(rt, "bad-cadence", Every(0), func(ctx context.Context) error { return nil }, PeriodicOpts{}); err == nil {
 		t.Fatal("bad cadence must be rejected")
 	}
 }
@@ -626,6 +626,30 @@ func TestFailingIDKeepsRetryingForever(t *testing.T) {
 	}
 	h.Drain(t)
 	convergetest.AdvanceUntil(t, h.Clock, 20*time.Minute, func() bool { return calls.Load() >= 5 })
+}
+
+func TestTimeoutCancelsTheRun(t *testing.T) {
+	started := make(chan struct{})
+	var once sync.Once
+	deadline := make(chan error, 1)
+	spec := specWithSchedule()
+	spec.Timeout = 30 * time.Second
+	spec.Reconcile = func(ctx context.Context, id ID) error {
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+		deadline <- ctx.Err()
+		return ctx.Err()
+	}
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+	convergetest.AdvanceUntil(t, le.clock, 10*time.Second, func() bool { return len(deadline) > 0 })
+	if err := <-deadline; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("run ended with %v, want context.DeadlineExceeded", err)
+	}
 }
 
 func TestHeartbeatSurvivesTransientExtendFailureDuringDrain(t *testing.T) {

@@ -30,6 +30,7 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"slash in name", func(s *Spec) { s.Name = "a/b" }, "must not contain"},
 		{"nil reconcile func", func(s *Spec) { s.Reconcile = nil }, "Reconcile"},
 		{"negative concurrency", func(s *Spec) { s.Concurrency = -1 }, "Concurrency"},
+		{"negative timeout", func(s *Spec) { s.Timeout = -time.Second }, "Timeout"},
 		{"nil trigger", func(s *Spec) { s.Triggers = append(s.Triggers, nil) }, "nil"},
 		{"zero id source", func(s *Spec) { s.Triggers = []Trigger{Schedule(IDSource{}, Every(time.Hour))} }, "IDSource"},
 		{"bad cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Every(-time.Second))} }, "positive"},

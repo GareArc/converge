@@ -58,7 +58,7 @@ func assertExactKeys(t *testing.T, m map[string]any, want []string) {
 
 func registerReconcileJob(t *testing.T, rt *converge.Runtime, name string) {
 	t.Helper()
-	if err := reconcile.Periodic(rt, name, reconcile.Every(time.Hour), func(ctx context.Context) error { return nil }); err != nil {
+	if err := reconcile.Periodic(rt, name, reconcile.Every(time.Hour), func(ctx context.Context) error { return nil }, reconcile.PeriodicOpts{}); err != nil {
 		t.Fatal(err)
 	}
 }

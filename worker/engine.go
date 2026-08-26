@@ -13,6 +13,7 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
+	"github.com/GareArc/converge/internal/clockctx"
 	"github.com/GareArc/converge/internal/durfmt"
 	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/mw"
@@ -34,6 +35,7 @@ type config struct {
 	concurrency int
 	runMode     converge.RunMode
 	retry       RetryPolicy
+	timeout     time.Duration
 	visibility  time.Duration
 	rateLimit   converge.Rate
 	middleware  []converge.Middleware
@@ -354,8 +356,14 @@ func (e *engine) process(hctx context.Context, d converge.Delivery, m converge.M
 		e.neutral(sctx, d, m)
 		return
 	}
+	runCtx := hctx
+	if e.cfg.timeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = clockctx.WithTimeout(hctx, e.deps.Clock, e.cfg.timeout)
+		defer cancel()
+	}
 	start := e.deps.Clock.Now()
-	err := e.invokeChain(hctx, meta, m.Payload)
+	err := e.invokeChain(runCtx, meta, m.Payload)
 	took := e.deps.Clock.Now().Sub(start)
 	close(stopHB)
 	e.settle(hctx, d, m, meta, err, took)

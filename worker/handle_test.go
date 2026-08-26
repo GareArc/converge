@@ -63,7 +63,7 @@ func TestNewEngineValidationMatrix(t *testing.T) {
 	}{
 		{"valid", func(o *HandleOpts) {}, ""},
 		{"negative concurrency", func(o *HandleOpts) { o.Concurrency = -1 }, "Concurrency"},
-		{"negative visibility", func(o *HandleOpts) { o.Visibility = -time.Second }, "Visibility"},
+		{"negative timeout", func(o *HandleOpts) { o.Timeout = -time.Second }, "Timeout"},
 		{"negative retry max attempts", func(o *HandleOpts) { o.Retry.MaxAttempts = -1 }, "Retry"},
 		{"negative retry min backoff", func(o *HandleOpts) { o.Retry.MinBackoff = -time.Second }, "Retry"},
 		{"negative retry max backoff", func(o *HandleOpts) { o.Retry.MaxBackoff = -time.Second }, "Retry"},
@@ -104,8 +104,8 @@ func TestNewEngineAppliesDefaults(t *testing.T) {
 	if e.cfg.concurrency != DefaultConcurrency {
 		t.Fatalf("concurrency = %d, want %d", e.cfg.concurrency, DefaultConcurrency)
 	}
-	if e.cfg.visibility != DefaultVisibility {
-		t.Fatalf("visibility = %s, want %s", e.cfg.visibility, DefaultVisibility)
+	if e.cfg.visibility != defaultVisibility {
+		t.Fatalf("visibility = %s, want %s", e.cfg.visibility, defaultVisibility)
 	}
 	wantRetry := RetryPolicy{
 		MaxAttempts: DefaultMaxAttempts,

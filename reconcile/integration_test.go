@@ -94,7 +94,7 @@ func TestTenMinuteTourPeriodic(t *testing.T) {
 		defer mu.Unlock()
 		calls++
 		return nil
-	})
+	}, reconcile.PeriodicOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestScheduleRunsWithoutKV(t *testing.T) {
 	if err := reconcile.Periodic(rt, "no-kv", reconcile.Every(time.Hour), func(context.Context) error {
 		once.Do(func() { close(ran) })
 		return nil
-	}); err != nil {
+	}, reconcile.PeriodicOpts{}); err != nil {
 		t.Fatalf("Register with Options.KV nil: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -262,7 +262,7 @@ func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 			defer mu.Unlock()
 			calls++
 			return nil
-		}); err != nil {
+		}, reconcile.PeriodicOpts{}); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())

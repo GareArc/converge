@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
@@ -17,6 +18,7 @@ type Spec struct {
 	Triggers    []Trigger
 	Concurrency int
 	RunMode     converge.RunMode
+	Timeout     time.Duration
 	Versions    VersionSource
 	Middleware  []converge.Middleware
 }
@@ -35,12 +37,16 @@ func newEngine(s Spec) (*engine, error) {
 	if s.Concurrency < 0 {
 		return nil, fail("Concurrency must not be negative")
 	}
+	if s.Timeout < 0 {
+		return nil, fail("Timeout must not be negative")
+	}
 	cfg := config{
 		name:        s.Name,
 		fn:          s.Reconcile,
 		triggers:    slices.Clone(s.Triggers),
 		concurrency: s.Concurrency,
 		runMode:     s.RunMode,
+		timeout:     s.Timeout,
 		versions:    s.Versions,
 		middleware:  slices.Clone(s.Middleware),
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
+	"github.com/GareArc/converge/internal/clockctx"
 	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/mw"
 	"github.com/GareArc/converge/internal/sig"
@@ -28,6 +29,7 @@ type config struct {
 	triggers    []Trigger
 	concurrency int
 	runMode     converge.RunMode
+	timeout     time.Duration
 	versions    VersionSource
 	middleware  []converge.Middleware
 	single      bool
@@ -325,7 +327,13 @@ func (e *engine) runOne(hctx context.Context, id ID) {
 	start := e.deps.Clock.Now()
 	snap := e.preRunVersion(hctx, id)
 	run := converge.Run{Job: e.cfg.name, Surface: converge.SurfaceReconcile, ID: string(id)}
-	err := e.invokeChain(hctx, run)
+	runCtx := hctx
+	if e.cfg.timeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = clockctx.WithTimeout(hctx, e.deps.Clock, e.cfg.timeout)
+		defer cancel()
+	}
+	err := e.invokeChain(runCtx, run)
 	e.settle(hctx, id, err, e.deps.Clock.Now().Sub(start), snap)
 }
 
