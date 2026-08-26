@@ -11,6 +11,7 @@ import (
 func WithTimeout(parent context.Context, clock converge.Clock, d time.Duration) (context.Context, context.CancelFunc) {
 	c := &ctx{Context: parent, done: make(chan struct{}), deadline: clock.Now().Add(d)}
 	stop := make(chan struct{})
+	var stopOnce sync.Once
 	go func() {
 		select {
 		case <-clock.After(d):
@@ -22,7 +23,7 @@ func WithTimeout(parent context.Context, clock converge.Clock, d time.Duration) 
 	}()
 	return c, func() {
 		c.finish(context.Canceled)
-		close(stop)
+		stopOnce.Do(func() { close(stop) })
 	}
 }
 

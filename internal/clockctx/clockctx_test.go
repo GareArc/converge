@@ -66,6 +66,13 @@ func TestWithTimeoutPropagatesParentCancellation(t *testing.T) {
 	}
 }
 
+func TestWithTimeoutCancelIsIdempotent(t *testing.T) {
+	clock := convergetest.NewClock(start)
+	_, cancel := WithTimeout(context.Background(), clock, 30*time.Second)
+	cancel()
+	cancel()
+}
+
 func TestWithTimeoutDeadlineReflectsTheClock(t *testing.T) {
 	clock := convergetest.NewClock(start)
 	ctx, cancel := WithTimeout(context.Background(), clock, 30*time.Second)
