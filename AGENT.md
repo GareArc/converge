@@ -146,8 +146,9 @@ debughttp/      HTTP introspection (ReadOnlyHandler) and ops (OpsHandler) over
                 wiring.Jobs / hook.ControlDispatch / worker.DLQFrom
 adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
                              keys; ListTrigger over lists — separate module
-adapters/otel (convotel)     Observer over OpenTelemetry metrics — counters and
-                             histograms only, no gauges — separate module
+adapters/otel (convotel)     Observer over OpenTelemetry metrics; observable
+                             gauges read from `Runtime.Stats()` on collection
+                             — separate module
 examples/                    runnable programs (guide, cookbook, worker, otel)
                              — separate module
 bridges/kratos (convkratos)  Runtime as a kratos transport.Server — separate module
