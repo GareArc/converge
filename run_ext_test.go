@@ -83,6 +83,64 @@ func TestRunJobFailureStopsRuntime(t *testing.T) {
 	}
 }
 
+var errKVUnreachable = errors.New("kv unreachable")
+
+type unreachableKV struct {
+	converge.KV
+}
+
+func (unreachableKV) Get(context.Context, string) ([]byte, bool, error) {
+	return nil, false, errKVUnreachable
+}
+
+func TestRunFailsFastOnAnUnreachableKV(t *testing.T) {
+	rt, err := converge.New(converge.Options{KV: unreachableKV{inmem.NewKV()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook.RegisterJob(rt, newStubJob("a"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, errKVUnreachable) {
+			t.Fatalf("Run = %v, want the store's own error", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run must fail fast when the KV is unreachable, not report a healthy job over a dead store")
+	}
+	select {
+	case <-rt.Ready():
+		t.Fatal("Run must not report ready over an unreachable KV")
+	default:
+	}
+}
+
+func TestRunTreatsAMissingProbeKeyAsHealthy(t *testing.T) {
+	rt, err := converge.New(converge.Options{KV: inmem.NewKV()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hook.RegisterJob(rt, newStubJob("a"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx) }()
+	select {
+	case <-rt.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("an empty KV must not fail the probe; absence is not an error")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v, want nil on clean shutdown", err)
+	}
+}
+
 func TestRunTwiceFails(t *testing.T) {
 	rt := mustRuntime(t)
 	ctx, cancel := context.WithCancel(context.Background())

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 type job interface {
@@ -231,6 +232,10 @@ func (rt *Runtime) Run(ctx context.Context) error {
 		Middleware:   rt.opts.Middleware,
 	}
 
+	if err := rt.probeKV(ctx); err != nil {
+		return err
+	}
+
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -263,6 +268,17 @@ func (rt *Runtime) Run(ctx context.Context) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func (rt *Runtime) probeKV(ctx context.Context) error {
+	if rt.opts.KV == nil {
+		return nil
+	}
+	_, _, err := rt.opts.KV.Get(ctx, keys.Probe(rt.opts.Namespace))
+	if err == nil || ctx.Err() != nil {
+		return nil
+	}
+	return fmt.Errorf("converge: KV is unreachable: %w", err)
 }
 
 func (rt *Runtime) Ready() <-chan struct{} { return rt.ready }

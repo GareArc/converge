@@ -3,13 +3,13 @@ package convkratos_test
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/GareArc/converge"
 	convkratos "github.com/GareArc/converge/bridges/kratos"
 	"github.com/GareArc/converge/convergetest"
+	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/reconcile"
 	"github.com/go-kratos/kratos/v2/transport"
 )
@@ -77,11 +77,21 @@ func TestStopBeforeStartReturnsWithoutRunning(t *testing.T) {
 	}
 }
 
+var errKVUnavailable = errors.New("kv unavailable")
+
+type brokenKV struct {
+	converge.KV
+}
+
+func (brokenKV) Get(context.Context, string) ([]byte, bool, error) {
+	return nil, false, errKVUnavailable
+}
+
 func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {
-	rt, err := converge.New(converge.Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := convergetest.NewWith(t, convergetest.Options{
+		KV: func(c *convergetest.Clock) converge.KV { return brokenKV{inmem.NewKVWithClock(c)} },
+	})
+	rt := h.Build(t)
 	if err := reconcile.Register(rt, reconcile.Spec{
 		Name:      "unreachable",
 		Reconcile: func(context.Context, reconcile.ID) error { return nil },
@@ -91,8 +101,7 @@ func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {
 	}
 
 	srv := convkratos.Server(rt)
-	err = srv.Start(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "OnOneReplica needs Options.Lease") {
+	if err := srv.Start(context.Background()); !errors.Is(err, errKVUnavailable) {
 		t.Fatalf("Start = %v, want the runtime's own error unchanged", err)
 	}
 }

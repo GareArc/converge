@@ -12,6 +12,10 @@ func join(ns string, fixed []string, parts []string) string {
 	return strings.Join(elems, "/")
 }
 
+func Probe(ns string) string {
+	return join(ns, []string{"converge", "probe"}, nil)
+}
+
 func Worker(ns, job string, parts ...string) string {
 	return join(ns, []string{"converge", "worker", job}, parts)
 }
