@@ -33,3 +33,7 @@ func ReconcileLease(ns, job string) string { return Reconcile(ns, job, "lease") 
 func WorkerShelfPrefix(ns, job string) string { return Worker(ns, job, "shelf") + "/" }
 
 func WorkerShelf(ns, job, messageID string) string { return WorkerShelfPrefix(ns, job) + messageID }
+
+func Tombstone(ns, job string) string {
+	return join(ns, []string{"converge", "tombstone"}, []string{job})
+}

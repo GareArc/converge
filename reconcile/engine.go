@@ -13,6 +13,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
 	"github.com/GareArc/converge/internal/clockctx"
+	"github.com/GareArc/converge/internal/hook"
 	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/mw"
 	"github.com/GareArc/converge/internal/sig"
@@ -33,6 +34,7 @@ type config struct {
 	versions    VersionSource
 	middleware  []converge.Middleware
 	single      bool
+	until       converge.StopCondition
 }
 
 type engine struct {
@@ -48,7 +50,11 @@ type engine struct {
 	consecFails int
 	passes      int
 	active      bool
+	state       converge.State
 	opsInFlight sync.WaitGroup
+
+	stopCh      chan struct{}
+	destroyOnce sync.Once
 }
 
 func (e *engine) Name() string { return e.cfg.name }
@@ -71,6 +77,7 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 		floor:   backoff.Floor,
 	})
 	e.mu.Unlock()
+	e.stopCh = make(chan struct{})
 	return nil
 }
 
@@ -162,6 +169,7 @@ func (e *engine) Stats() converge.JobStats {
 		RunMode:          e.cfg.runMode,
 		LastSuccess:      e.lastSuccess,
 		ConsecutiveFails: e.consecFails,
+		State:            e.state,
 	}
 	if e.queue != nil {
 		c := e.queue.counts()
@@ -439,10 +447,54 @@ func (e *engine) key(parts ...string) string {
 	return keys.Reconcile(e.deps.Namespace, e.cfg.name, parts...)
 }
 
+func (e *engine) setState(s converge.State) {
+	e.mu.Lock()
+	e.state = s
+	e.mu.Unlock()
+}
+
+func (e *engine) destroyed(ctx context.Context) bool {
+	if e.cfg.until.IsZero() || e.deps.KV == nil {
+		return false
+	}
+	if at, ok := hook.StopConditionDeadline(e.cfg.until); ok && !e.deps.Clock.Now().Before(at) {
+		e.deps.KV.Set(ctx, keys.Tombstone(e.deps.Namespace, e.cfg.name), []byte("1"), 0)
+		return true
+	}
+	key := keys.Tombstone(e.deps.Namespace, e.cfg.name)
+	if k, ok := hook.StopConditionKey(e.cfg.until); ok {
+		key = k
+	}
+	_, found, err := e.deps.KV.Get(ctx, key)
+	return err == nil && found
+}
+
+func (e *engine) checkDestroy(ctx context.Context) bool {
+	if !e.destroyed(ctx) {
+		return false
+	}
+	e.destroyOnce.Do(func() {
+		e.setState(converge.Destroyed)
+		e.deps.Observer.Observe(converge.JobDestroyed{Job: e.cfg.name, Cause: e.cfg.until})
+		close(e.stopCh)
+	})
+	return true
+}
+
+func (e *engine) isDestroyed() bool {
+	select {
+	case <-e.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	if err := e.bind(deps); err != nil {
 		return err
 	}
+	e.setState(converge.Active)
 	defer func() {
 		e.opsInFlight.Wait()
 		e.mu.Lock()
@@ -461,6 +513,9 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	if e.cfg.runMode == converge.OnOneReplica && deps.Lease == nil {
 		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.name)
 	}
+	if !e.cfg.until.IsZero() && deps.KV == nil {
+		return fmt.Errorf("reconcile: job %q: Until needs Options.KV", e.cfg.name)
+	}
 	for _, t := range e.cfg.triggers {
 		if tr, ok := t.(*notificationTrigger); ok {
 			if err := tr.bind(e); err != nil {
@@ -478,7 +533,11 @@ func (e *engine) leaseInterval() time.Duration {
 func (e *engine) leaseLoop(ctx context.Context) error {
 	name := keys.ReconcileLease(e.deps.Namespace, e.cfg.name)
 	retry := e.leaseInterval()
+	e.markReady()
 	for {
+		if e.checkDestroy(ctx) {
+			return nil
+		}
 		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)
 		e.markReady()
 		if err == nil && ok {
@@ -486,6 +545,9 @@ func (e *engine) leaseLoop(ctx context.Context) error {
 			e.runActive(ctx, h)
 			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.name, Acquired: false})
 			if ctx.Err() != nil {
+				return nil
+			}
+			if e.isDestroyed() {
 				return nil
 			}
 			e.queue.reset()
@@ -513,6 +575,17 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 	defer stopIntake()
 	hctx, stopHandlers := context.WithCancel(context.WithoutCancel(ctx))
 	defer stopHandlers()
+
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-e.stopCh:
+			stopIntake()
+			stopHandlers()
+		case <-stopWatch:
+		}
+	}()
 
 	hbStop := make(chan struct{})
 	var hb sync.WaitGroup
@@ -580,6 +653,9 @@ func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stop <-c
 			stopIntake()
 			return
 		case <-e.deps.Clock.After(interval):
+			if e.checkDestroy(ctx) {
+				return
+			}
 			extendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), interval)
 			err := h.Extend(extendCtx, e.deps.LeaseTTL)
 			cancel()

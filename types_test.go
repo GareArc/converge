@@ -82,6 +82,7 @@ var _ = []Event{
 	MessageDiscarded{},
 	MessageDeadLettered{},
 	QueueDepth{},
+	JobDestroyed{},
 }
 
 func TestWakeDiscardReasonZeroIsHonest(t *testing.T) {

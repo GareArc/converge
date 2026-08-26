@@ -21,6 +21,7 @@ type Spec struct {
 	Timeout     time.Duration
 	Versions    VersionSource
 	Middleware  []converge.Middleware
+	Until       converge.StopCondition
 }
 
 func newEngine(s Spec) (*engine, error) {
@@ -49,6 +50,7 @@ func newEngine(s Spec) (*engine, error) {
 		timeout:     s.Timeout,
 		versions:    s.Versions,
 		middleware:  slices.Clone(s.Middleware),
+		until:       s.Until,
 	}
 	if cfg.concurrency == 0 {
 		cfg.concurrency = 1
@@ -97,7 +99,7 @@ func newEngine(s Spec) (*engine, error) {
 	if !periodic {
 		return nil, fail("no Schedule trigger; every reconcile job needs one")
 	}
-	return &engine{cfg: cfg, ready: make(chan struct{})}, nil
+	return &engine{cfg: cfg, ready: make(chan struct{}), state: converge.NotStarted}, nil
 }
 
 func Register(rt *converge.Runtime, s Spec) error {

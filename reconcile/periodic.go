@@ -12,6 +12,7 @@ type PeriodicOpts struct {
 	Timeout    time.Duration
 	RunMode    converge.RunMode
 	Middleware []converge.Middleware
+	Until      converge.StopCondition
 }
 
 func Periodic(rt *converge.Runtime, name string, c Cadence, fn func(ctx context.Context) error, o PeriodicOpts) error {
@@ -25,5 +26,6 @@ func Periodic(rt *converge.Runtime, name string, c Cadence, fn func(ctx context.
 		Timeout:    o.Timeout,
 		RunMode:    o.RunMode,
 		Middleware: o.Middleware,
+		Until:      o.Until,
 	})
 }

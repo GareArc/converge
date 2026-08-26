@@ -20,6 +20,8 @@ func TestLayout(t *testing.T) {
 		{"reconcile lease", ReconcileLease("", "job"), "converge/reconcile/job/lease"},
 		{"shelf prefix", WorkerShelfPrefix("ns", "job"), "ns/converge/worker/job/shelf/"},
 		{"shelf", WorkerShelf("ns", "job", "m1"), "ns/converge/worker/job/shelf/m1"},
+		{"tombstone", Tombstone("ns", "job"), "ns/converge/tombstone/job"},
+		{"tombstone no namespace", Tombstone("", "job"), "converge/tombstone/job"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

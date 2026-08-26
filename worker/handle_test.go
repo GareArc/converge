@@ -239,6 +239,12 @@ func TestBindFailures(t *testing.T) {
 			handle:  HandleOpts{RunMode: converge.Competing},
 			wantErr: "DelayedPublisher",
 		},
+		{
+			name:    "until without kv",
+			opts:    converge.Options{MQ: inmem.NewMQ()},
+			handle:  HandleOpts{RunMode: converge.OnAllReplicas, Until: converge.Deadline(time.Now().Add(time.Hour))},
+			wantErr: "Options.KV",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

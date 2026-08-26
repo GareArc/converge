@@ -121,6 +121,9 @@ func (e *engine) markBusy() func() {
 
 func (e *engine) runPass(ctx context.Context, q *wakeQueue, st *scheduleTrigger, cursorKey string) bool {
 	defer e.markBusy()()
+	if e.checkDestroy(ctx) {
+		return false
+	}
 	cursor := e.readString(ctx, cursorKey)
 	attempt := 0
 	for {

@@ -34,6 +34,7 @@ type HandleOpts struct {
 	Timeout     time.Duration
 	RateLimit   converge.Rate
 	Middleware  []converge.Middleware
+	Until       converge.StopCondition
 }
 
 type decodeError struct{ err error }
@@ -90,6 +91,7 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 		timeout:     o.Timeout,
 		rateLimit:   o.RateLimit,
 		middleware:  slices.Clone(o.Middleware),
+		until:       o.Until,
 	}
 	if cfg.concurrency == 0 {
 		cfg.concurrency = DefaultConcurrency
@@ -119,5 +121,5 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 	if cfg.runMode == converge.OnAllReplicas && o.Retry != (RetryPolicy{}) {
 		return nil, fail("OnAllReplicas cannot use Retry")
 	}
-	return &engine{cfg: cfg, ready: make(chan struct{})}, nil
+	return &engine{cfg: cfg, ready: make(chan struct{}), state: converge.NotStarted}, nil
 }

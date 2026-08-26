@@ -30,3 +30,7 @@ var Notify func(rt any, job, id string) error
 var RunPassNow func(rt any, ctx context.Context, job string) error
 
 var Quiet func(rt any) bool
+
+var StopConditionDeadline func(c any) (time.Time, bool)
+
+var StopConditionKey func(c any) (string, bool)

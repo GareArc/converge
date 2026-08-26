@@ -244,6 +244,9 @@ func (h *Harness) checkAlive(t testing.TB, allowStopped bool) bool {
 			t.Fatalf("convergetest: harness was stopped via Stop(t); this verb needs a running runtime, call Events to inspect recorded state instead")
 			return false
 		}
+		if err == nil {
+			return true
+		}
 		t.Fatalf("convergetest: runtime exited early: %v", err)
 		return false
 	default:

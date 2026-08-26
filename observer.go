@@ -117,6 +117,13 @@ type QueueDepth struct {
 
 func (QueueDepth) event() {}
 
+type JobDestroyed struct {
+	Job   string
+	Cause StopCondition
+}
+
+func (JobDestroyed) event() {}
+
 type noopObserver struct{}
 
 func (noopObserver) Observe(Event) {}

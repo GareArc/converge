@@ -11,6 +11,7 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 type liveEngine struct {
@@ -99,6 +100,24 @@ func TestRunRejectsOnOneReplicaWithoutALease(t *testing.T) {
 	deps := converge.JobDeps{KV: inmem.NewKV(), Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}}
 	if err := e.Run(context.Background(), deps); err == nil {
 		t.Fatal("OnOneReplica without a Lease must fail Run")
+	}
+}
+
+func TestRunRejectsUntilWithoutKV(t *testing.T) {
+	spec := Spec{
+		Name:      "cache",
+		RunMode:   converge.OnAllReplicas,
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Until:     converge.Deadline(wqStart.Add(time.Hour)),
+	}
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := converge.JobDeps{Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}}
+	if err := e.Run(context.Background(), deps); err == nil {
+		t.Fatal("Until without a KV must fail Run")
 	}
 }
 
@@ -649,6 +668,127 @@ func TestTimeoutCancelsTheRun(t *testing.T) {
 	convergetest.AdvanceUntil(t, le.clock, 10*time.Second, func() bool { return len(deadline) > 0 })
 	if err := <-deadline; !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("run ended with %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestDeadlineDestroysTheJob(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	var runs atomic.Int64
+	cutover := h.Clock.Now().Add(time.Hour)
+	if err := Register(rt, Spec{
+		Name:      "migration",
+		Reconcile: func(context.Context, ID) error { runs.Add(1); return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
+		Until:     converge.Deadline(cutover),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	h.Clock.Advance(2 * time.Hour)
+	h.Drain(t)
+	before := runs.Load()
+	h.Clock.Advance(10 * time.Minute)
+	h.Drain(t)
+	if got := runs.Load(); got != before {
+		t.Fatalf("ran %d more times after the deadline", got-before)
+	}
+	convergetest.Await(t, func() bool {
+		for _, s := range rt.Stats() {
+			if s.Job == "migration" && s.State == converge.Destroyed {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestStopKeyDestroysTheJob(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	var runs atomic.Int64
+	stopKey := keys.Tombstone("test", "migration")
+	if err := Register(rt, Spec{
+		Name:      "migration",
+		Reconcile: func(context.Context, ID) error { runs.Add(1); return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
+		Until:     converge.StopKey(stopKey),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	if err := h.KV.Set(context.Background(), stopKey, []byte("1"), 0); err != nil {
+		t.Fatal(err)
+	}
+	h.Clock.Advance(2 * time.Minute)
+	h.Drain(t)
+	before := runs.Load()
+	h.Clock.Advance(10 * time.Minute)
+	h.Drain(t)
+	if got := runs.Load(); got != before {
+		t.Fatalf("ran %d more times after the stop key was set", got-before)
+	}
+	convergetest.Await(t, func() bool {
+		for _, s := range rt.Stats() {
+			if s.Job == "migration" && s.State == converge.Destroyed {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestAlreadyPastDeadlineStillBecomesReadyThenStopsCleanly(t *testing.T) {
+	spec := specWithSchedule()
+	spec.Until = converge.Deadline(wqStart.Add(-time.Minute))
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-le.e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("engine never became ready even though it was already destroyed at Run start")
+	}
+	if err := waitRun(t, le); err != nil {
+		t.Fatalf("clean stop on an already-destroyed job must return nil, got %v", err)
+	}
+}
+
+func TestOnAllReplicasAlreadyPastDeadlineStillBecomesReadyThenStopsCleanly(t *testing.T) {
+	spec := Spec{
+		Name:      "cache",
+		RunMode:   converge.OnAllReplicas,
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Until:     converge.Deadline(wqStart.Add(-time.Minute)),
+	}
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := convergetest.NewClock(wqStart)
+	rec := &convergetest.Recorder{}
+	deps := converge.JobDeps{
+		KV:           inmem.NewKVWithClock(clock),
+		Observer:     rec,
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- e.Run(ctx, deps) }()
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready even though it was already destroyed at Run start")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("clean stop on an already-destroyed job must return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run never returned")
 	}
 }
 

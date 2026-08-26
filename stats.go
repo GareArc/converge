@@ -10,6 +10,7 @@ type JobStats struct {
 	Parked           int
 	LastSuccess      time.Time
 	ConsecutiveFails int
+	State            State
 }
 
 type JobInfo struct {

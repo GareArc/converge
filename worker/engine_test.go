@@ -1840,3 +1840,66 @@ func TestShelveStopsAfterOneAttempt(t *testing.T) {
 		t.Fatalf("shelved messages = %+v, want one with reason %q", recs, "card revoked")
 	}
 }
+
+func TestDeadlineDestroysTheJob(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt", LeaseTTL: 30 * time.Second})
+	rt := w.Build(t)
+	tk := NewTask[string]("migration", TaskOpts{})
+	var runs atomic.Int64
+	cutover := w.Clock.Now().Add(time.Hour)
+	err := Handle(rt, tk, func(context.Context, string) error {
+		runs.Add(1)
+		return nil
+	}, HandleOpts{RunMode: converge.OnOneReplica, Until: converge.Deadline(cutover)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	p := wProducer(t, w.MQ, w.Clock)
+	if err := tk.Enqueue(context.Background(), p, "before", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return runs.Load() == 1 })
+
+	w.Clock.Advance(2 * time.Hour)
+	convergetest.Await(t, func() bool { return jobStats(t, rt, "migration").State == converge.Destroyed })
+
+	before := runs.Load()
+	if err := tk.Enqueue(context.Background(), p, "after", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.AssertStable(t, func() bool { return runs.Load() == before })
+}
+
+func TestStopKeyDestroysTheJob(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt", LeaseTTL: 30 * time.Second})
+	rt := w.Build(t)
+	tk := NewTask[string]("migration", TaskOpts{})
+	var runs atomic.Int64
+	stopKey := keys.Tombstone("wt", "migration")
+	err := Handle(rt, tk, func(context.Context, string) error {
+		runs.Add(1)
+		return nil
+	}, HandleOpts{RunMode: converge.OnOneReplica, Until: converge.StopKey(stopKey)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	p := wProducer(t, w.MQ, w.Clock)
+	if err := tk.Enqueue(context.Background(), p, "before", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return runs.Load() == 1 })
+
+	if err := w.KV.Set(context.Background(), stopKey, []byte("1"), 0); err != nil {
+		t.Fatal(err)
+	}
+	w.Clock.Advance(20 * time.Second)
+	convergetest.Await(t, func() bool { return jobStats(t, rt, "migration").State == converge.Destroyed })
+
+	before := runs.Load()
+	if err := tk.Enqueue(context.Background(), p, "after", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.AssertStable(t, func() bool { return runs.Load() == before })
+}
