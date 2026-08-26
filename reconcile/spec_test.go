@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
-	"github.com/GareArc/converge/inmem"
 )
 
 func okSpec() Spec {
@@ -56,9 +55,6 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"zero id source", func(s *Spec) { s.Triggers = []Trigger{Schedule(IDSource{}, Every(time.Hour))} }, "IDSource"},
 		{"bad cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Every(-time.Second))} }, "positive"},
 		{"zero cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cadence{})} }, "Cadence"},
-		{"tracker namespace mismatch", func(s *Spec) { s.Versions = NewTracker(inmem.NewKV(), "other-job") }, "must equal Spec.Name"},
-		{"misconstructed tracker", func(s *Spec) { s.Versions = NewTracker(nil, "job") }, "needs a KV"},
-		{"typed-nil tracker", func(s *Spec) { var tr *Tracker; s.Versions = tr }, "nil *Tracker"},
 		{"bad cron", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cron("@daily", CronOpts{}))} }, "descriptors"},
 		{"message trigger without queue", func(s *Spec) {
 			s.AllowUnscheduled = true
@@ -98,18 +94,6 @@ func TestSpecValidationMatrix(t *testing.T) {
 type fakeVersions struct{}
 
 func (fakeVersions) Latest(context.Context, ID) (Version, error) { return 0, nil }
-
-func TestVersionsAccepted(t *testing.T) {
-	base := okSpec()
-	base.Versions = NewTracker(inmem.NewKV(), base.Name)
-	if _, err := newEngine(base); err != nil {
-		t.Fatalf("matching Tracker namespace rejected: %v", err)
-	}
-	base.Versions = fakeVersions{}
-	if _, err := newEngine(base); err != nil {
-		t.Fatalf("non-Tracker VersionSource rejected: %v", err)
-	}
-}
 
 func TestNewEngineAppliesDefaults(t *testing.T) {
 	e, err := newEngine(okSpec())
@@ -218,7 +202,7 @@ func TestEngineInfoRendersUnknownTriggerAsCustom(t *testing.T) {
 func TestEngineInfoRendersOptionalSettings(t *testing.T) {
 	s := okSpec()
 	s.RateLimit = converge.Rate{Events: 5, Per: time.Second}
-	s.Versions = NewTracker(inmem.NewKV(), "job")
+	s.Versions = fakeVersions{}
 	s.AllowUnscheduled = true
 	e, err := newEngine(s)
 	if err != nil {
@@ -228,8 +212,8 @@ func TestEngineInfoRendersOptionalSettings(t *testing.T) {
 	if got := info.Settings["rate-limit"]; got != "5/1s" {
 		t.Fatalf("rate-limit = %q, want 5/1s", got)
 	}
-	if got := info.Settings["versions"]; got != "job" {
-		t.Fatalf("versions = %q, want job", got)
+	if got := info.Settings["versions"]; got != "custom" {
+		t.Fatalf("versions = %q, want custom", got)
 	}
 	if got := info.Settings["allow-unscheduled"]; got != "true" {
 		t.Fatalf("allow-unscheduled = %q, want true", got)
@@ -258,7 +242,7 @@ func TestEngineInfoRendersPinnedDisplayFormats(t *testing.T) {
 		want   string
 	}{
 		{
-			name:   "non-Tracker VersionSource renders as custom",
+			name:   "VersionSource renders as custom",
 			mutate: func(s *Spec) { s.Versions = fakeVersions{} },
 			key:    "versions",
 			want:   "custom",
@@ -270,14 +254,6 @@ func TestEngineInfoRendersPinnedDisplayFormats(t *testing.T) {
 			},
 			key:  "schedule",
 			want: "cron */5 * * * * (loc: " + loc.String() + ")",
-		},
-		{
-			name: "non-default missed-tick policy renders a missed suffix",
-			mutate: func(s *Spec) {
-				s.Triggers = []Trigger{Schedule(SingleID(), Cron("*/5 * * * *", CronOpts{MissedTick: Skip}))}
-			},
-			key:  "schedule",
-			want: "cron */5 * * * * (missed: Skip)",
 		},
 	}
 	for _, c := range cases {

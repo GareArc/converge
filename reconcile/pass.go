@@ -85,24 +85,11 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 			continue
 		}
 		release := e.markBusy()
-		switch {
-		case len(pending) == 1 || st.cad.missedTick() == RunOnce:
-			if !e.runPass(ctx, q, st, cursorKey) {
-				release()
-				return
-			}
-		case st.cad.missedTick() == Catchup:
-			for range pending {
-				if !e.runPass(ctx, q, st, cursorKey) {
-					release()
-					return
-				}
-			}
+		if !e.runPass(ctx, q, st, cursorKey) {
+			release()
+			return
 		}
-		latest := pending[len(pending)-1]
-		if st.cad.missedTick() != Catchup {
-			latest = latestBoundary(st.cad, latest, now)
-		}
+		latest := latestBoundary(st.cad, pending[len(pending)-1], now)
 		writeLast(ctx, latest)
 		e.checkOverrun(ctx, st, writeLast, latest)
 		release()

@@ -236,9 +236,6 @@ func versionsSetting(v VersionSource) string {
 	if v == nil {
 		return ""
 	}
-	if t, ok := v.(*Tracker); ok {
-		return t.namespace
-	}
 	return "custom"
 }
 

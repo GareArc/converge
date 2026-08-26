@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,6 +61,29 @@ func seedLastFire(t *testing.T, te *testEngine, at time.Time) {
 	}
 }
 
+func TestMissedTicksRunOnceOnReturn(t *testing.T) {
+	h := convergetest.NewWith(t, convergetest.Options{})
+	rt := h.Build(t)
+	var sweeps atomic.Int64
+	if err := Register(rt, Spec{
+		Name: "hourly",
+		Reconciler: Func(func(context.Context, ID) error {
+			sweeps.Add(1)
+			return nil
+		}),
+		Triggers: []Trigger{Schedule(SingleID(), Every(time.Hour))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	base := sweeps.Load()
+	h.Clock.Advance(3 * time.Hour)
+	h.Drain(t)
+	if got := sweeps.Load() - base; got != 1 {
+		t.Fatalf("sweeps after three missed hours = %d, want 1", got)
+	}
+}
+
 func TestMissedTickRunOnceRunsOneMakeupPass(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
 	seedLastFire(t, te, wqStart.Add(-5*time.Hour))
@@ -67,36 +91,6 @@ func TestMissedTickRunOnceRunsOneMakeupPass(t *testing.T) {
 	convergetest.Await(t, func() bool { return runCount(te) == 1 })
 	convergetest.AssertStable(t, func() bool { return runCount(te) == 1 })
 	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 2 })
-}
-
-func TestMissedTickSkipSkipsAll(t *testing.T) {
-	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
-	seedLastFire(t, te, wqStart.Add(-5*time.Hour))
-	startSchedule(t, te, SingleID(), Cron("0 * * * *", CronOpts{MissedTick: Skip}))
-	convergetest.AssertStable(t, func() bool { return runCount(te) == 0 })
-	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 1 })
-}
-
-func TestMissedTickCatchupReplaysEachBoundary(t *testing.T) {
-	var mu sync.Mutex
-	pageCalls := 0
-	src := IDs(func(context.Context) ([]ID, error) {
-		mu.Lock()
-		pageCalls++
-		mu.Unlock()
-		return []ID{""}, nil
-	})
-	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
-	seedLastFire(t, te, wqStart.Add(-3*time.Hour))
-	startSchedule(t, te, src, Cron("0 * * * *", CronOpts{MissedTick: Catchup}))
-	convergetest.Await(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return pageCalls == 3
-	})
-	if got := runCount(te); got < 1 {
-		t.Fatalf("expected at least one run from the replayed boundaries, got %d", got)
-	}
 }
 
 func TestRunOnceBacklogBeyondCapIsOneMakeupPass(t *testing.T) {

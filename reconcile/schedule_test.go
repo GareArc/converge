@@ -96,15 +96,6 @@ func TestCronRejectsBadExpressions(t *testing.T) {
 	}
 }
 
-func TestMissedTickDefaultsToRunOnce(t *testing.T) {
-	if Every(time.Hour).missedTick() != RunOnce {
-		t.Fatal("default policy must be RunOnce")
-	}
-	if Cron("0 3 * * *", CronOpts{MissedTick: Skip}).missedTick() != Skip {
-		t.Fatal("explicit policy must win")
-	}
-}
-
 func TestBoundaries(t *testing.T) {
 	c := Every(time.Hour)
 	last := wqStart

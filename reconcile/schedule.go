@@ -11,50 +11,16 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-type missedTickKind int
-
-const (
-	missedUnset missedTickKind = iota
-	missedSkip
-	missedRunOnce
-	missedCatchup
-)
-
-type MissedTickPolicy struct{ kind missedTickKind }
-
-var (
-	Skip    = MissedTickPolicy{missedSkip}
-	RunOnce = MissedTickPolicy{missedRunOnce}
-	Catchup = MissedTickPolicy{missedCatchup}
-)
-
-func (p MissedTickPolicy) IsZero() bool { return p.kind == missedUnset }
-
-func (p MissedTickPolicy) String() string {
-	switch p.kind {
-	case missedSkip:
-		return "Skip"
-	case missedRunOnce:
-		return "RunOnce"
-	case missedCatchup:
-		return "Catchup"
-	default:
-		return "unset"
-	}
-}
-
 type CronOpts struct {
-	Location   *time.Location
-	MissedTick MissedTickPolicy
+	Location *time.Location
 }
 
 type Cadence struct {
-	every  time.Duration
-	sched  cron.Schedule
-	loc    *time.Location
-	missed MissedTickPolicy
-	err    error
-	expr   string
+	every time.Duration
+	sched cron.Schedule
+	loc   *time.Location
+	err   error
+	expr  string
 }
 
 func Every(d time.Duration) Cadence {
@@ -76,28 +42,16 @@ func Cron(expr string, o CronOpts) Cadence {
 	if loc == nil {
 		loc = time.UTC
 	}
-	return Cadence{sched: sched, loc: loc, missed: o.MissedTick, expr: expr}
-}
-
-func (c Cadence) missedTick() MissedTickPolicy {
-	if c.missed.IsZero() {
-		return RunOnce
-	}
-	return c.missed
+	return Cadence{sched: sched, loc: loc, expr: expr}
 }
 
 func (c Cadence) render() string {
-	var s string
 	if c.every > 0 {
-		s = "every " + durfmt.Format(c.every)
-	} else {
-		s = "cron " + c.expr
-		if c.loc != nil && c.loc != time.UTC {
-			s += " (loc: " + c.loc.String() + ")"
-		}
+		return "every " + durfmt.Format(c.every)
 	}
-	if mt := c.missedTick(); mt != RunOnce {
-		s += " (missed: " + mt.String() + ")"
+	s := "cron " + c.expr
+	if c.loc != nil && c.loc != time.UTC {
+		s += " (loc: " + c.loc.String() + ")"
 	}
 	return s
 }

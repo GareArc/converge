@@ -79,17 +79,6 @@ func newEngine(s Spec) (*engine, error) {
 			return nil, fail("OnAllReplicas cannot use RateLimit")
 		}
 	}
-	if t, ok := s.Versions.(*Tracker); ok {
-		if t == nil {
-			return nil, fail("Versions must not be a nil *Tracker")
-		}
-		if t.err != nil {
-			return nil, fmt.Errorf("reconcile: job %q: %w", s.Name, t.err)
-		}
-		if t.namespace != s.Name {
-			return nil, fail(fmt.Sprintf("Tracker namespace %q must equal Spec.Name", t.namespace))
-		}
-	}
 	periodic := false
 	for _, t := range cfg.triggers {
 		if t == nil {
