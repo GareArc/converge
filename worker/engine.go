@@ -591,15 +591,15 @@ func (e *engine) shelveOrDrop(ctx context.Context, d converge.Delivery, meta Met
 
 func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) {
 	rec := ShelvedMessage{
-		Task:           e.cfg.info.name,
-		Queue:          e.cfg.info.queue,
-		MessageID:      meta.MessageID,
-		Attempt:        meta.Attempt,
-		Reason:         reason,
-		EnqueuedAt:     meta.EnqueuedAt,
-		DeadLetteredAt: e.deps.Clock.Now(),
-		Headers:        meta.Headers,
-		Payload:        m.Payload,
+		Task:       e.cfg.info.name,
+		Queue:      e.cfg.info.queue,
+		MessageID:  meta.MessageID,
+		Attempt:    meta.Attempt,
+		Reason:     reason,
+		EnqueuedAt: meta.EnqueuedAt,
+		ShelvedAt:  e.deps.Clock.Now(),
+		Headers:    meta.Headers,
+		Payload:    m.Payload,
 	}
 	if cause != nil {
 		rec.Error = cause.Error()

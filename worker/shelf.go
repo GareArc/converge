@@ -14,16 +14,16 @@ import (
 )
 
 type ShelvedMessage struct {
-	Task           string            `json:"task"`
-	Queue          string            `json:"queue"`
-	MessageID      string            `json:"message_id"`
-	Attempt        int               `json:"attempt"`
-	Reason         string            `json:"reason"`
-	Error          string            `json:"error,omitempty"`
-	EnqueuedAt     time.Time         `json:"enqueued_at"`
-	DeadLetteredAt time.Time         `json:"dead_lettered_at"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	Payload        []byte            `json:"payload,omitempty"`
+	Task       string            `json:"task"`
+	Queue      string            `json:"queue"`
+	MessageID  string            `json:"message_id"`
+	Attempt    int               `json:"attempt"`
+	Reason     string            `json:"reason"`
+	Error      string            `json:"error,omitempty"`
+	EnqueuedAt time.Time         `json:"enqueued_at"`
+	ShelvedAt  time.Time         `json:"shelved_at"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Payload    []byte            `json:"payload,omitempty"`
 }
 
 var ErrNotShelved = errors.New("worker: not shelved")

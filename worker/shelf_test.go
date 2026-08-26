@@ -247,14 +247,14 @@ func TestShelfRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	rec := ShelvedMessage{
-		Task:           "job",
-		Queue:          wInbox("job"),
-		MessageID:      "anon-deadbeef",
-		Attempt:        1,
-		Reason:         reasonMaxAttempts,
-		Error:          "boom",
-		EnqueuedAt:     w.Clock.Now(),
-		DeadLetteredAt: w.Clock.Now(),
+		Task:       "job",
+		Queue:      wInbox("job"),
+		MessageID:  "anon-deadbeef",
+		Attempt:    1,
+		Reason:     reasonMaxAttempts,
+		Error:      "boom",
+		EnqueuedAt: w.Clock.Now(),
+		ShelvedAt:  w.Clock.Now(),
 		Headers: map[string]string{
 			converge.HeaderSchemaVersion: "1",
 			converge.HeaderEnqueuedAt:    w.Clock.Now().UTC().Format(time.RFC3339Nano),
@@ -343,14 +343,14 @@ func TestShelfListDedupesAcrossScanPages(t *testing.T) {
 	rt := w.Build(t)
 	ctx := context.Background()
 	rec := ShelvedMessage{
-		Task:           "job",
-		Queue:          wInbox("job"),
-		MessageID:      "id-0",
-		Attempt:        1,
-		Reason:         reasonMaxAttempts,
-		EnqueuedAt:     w.Clock.Now(),
-		DeadLetteredAt: w.Clock.Now(),
-		Payload:        []byte(`"hello"`),
+		Task:       "job",
+		Queue:      wInbox("job"),
+		MessageID:  "id-0",
+		Attempt:    1,
+		Reason:     reasonMaxAttempts,
+		EnqueuedAt: w.Clock.Now(),
+		ShelvedAt:  w.Clock.Now(),
+		Payload:    []byte(`"hello"`),
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {
@@ -392,14 +392,14 @@ func TestShelfPurgeAllRemovesEverything(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
 		rec := ShelvedMessage{
-			Task:           "job",
-			Queue:          wInbox("job"),
-			MessageID:      fmt.Sprintf("id-%d", i),
-			Attempt:        1,
-			Reason:         reasonMaxAttempts,
-			EnqueuedAt:     w.Clock.Now(),
-			DeadLetteredAt: w.Clock.Now(),
-			Payload:        []byte(`"hello"`),
+			Task:       "job",
+			Queue:      wInbox("job"),
+			MessageID:  fmt.Sprintf("id-%d", i),
+			Attempt:    1,
+			Reason:     reasonMaxAttempts,
+			EnqueuedAt: w.Clock.Now(),
+			ShelvedAt:  w.Clock.Now(),
+			Payload:    []byte(`"hello"`),
 		}
 		raw, err := json.Marshal(rec)
 		if err != nil {
@@ -476,14 +476,14 @@ func TestShelfRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 	})
 	rt := w.Build(t)
 	rec := ShelvedMessage{
-		Task:           "job",
-		Queue:          wInbox("job"),
-		MessageID:      "msg-1",
-		Attempt:        1,
-		Reason:         reasonMaxAttempts,
-		Error:          "boom",
-		EnqueuedAt:     w.Clock.Now(),
-		DeadLetteredAt: w.Clock.Now(),
+		Task:       "job",
+		Queue:      wInbox("job"),
+		MessageID:  "msg-1",
+		Attempt:    1,
+		Reason:     reasonMaxAttempts,
+		Error:      "boom",
+		EnqueuedAt: w.Clock.Now(),
+		ShelvedAt:  w.Clock.Now(),
 		Headers: map[string]string{
 			converge.HeaderMessageID:     "msg-1",
 			converge.HeaderSchemaVersion: "1",
@@ -532,14 +532,14 @@ func TestShelfListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
 	const total = 150
 	for i := 0; i < total; i++ {
 		rec := ShelvedMessage{
-			Task:           "job",
-			Queue:          wInbox("job"),
-			MessageID:      fmt.Sprintf("id-%03d", i),
-			Attempt:        1,
-			Reason:         reasonMaxAttempts,
-			EnqueuedAt:     w.Clock.Now(),
-			DeadLetteredAt: w.Clock.Now(),
-			Payload:        []byte(`"hello"`),
+			Task:       "job",
+			Queue:      wInbox("job"),
+			MessageID:  fmt.Sprintf("id-%03d", i),
+			Attempt:    1,
+			Reason:     reasonMaxAttempts,
+			EnqueuedAt: w.Clock.Now(),
+			ShelvedAt:  w.Clock.Now(),
+			Payload:    []byte(`"hello"`),
 		}
 		raw, err := json.Marshal(rec)
 		if err != nil {
@@ -623,14 +623,14 @@ func TestShelfPurgeAllPartialFailureLeavesRemainder(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
 		rec := ShelvedMessage{
-			Task:           "job",
-			Queue:          wInbox("job"),
-			MessageID:      fmt.Sprintf("id-%d", i),
-			Attempt:        1,
-			Reason:         reasonMaxAttempts,
-			EnqueuedAt:     clock.Now(),
-			DeadLetteredAt: clock.Now(),
-			Payload:        []byte(`"hello"`),
+			Task:       "job",
+			Queue:      wInbox("job"),
+			MessageID:  fmt.Sprintf("id-%d", i),
+			Attempt:    1,
+			Reason:     reasonMaxAttempts,
+			EnqueuedAt: clock.Now(),
+			ShelvedAt:  clock.Now(),
+			Payload:    []byte(`"hello"`),
 		}
 		raw, err := json.Marshal(rec)
 		if err != nil {
@@ -663,14 +663,14 @@ func TestShelfRequeueNoMQErrors(t *testing.T) {
 	}
 	ctx := context.Background()
 	rec := ShelvedMessage{
-		Task:           "job",
-		Queue:          wInbox("job"),
-		MessageID:      "msg-1",
-		Attempt:        1,
-		Reason:         reasonMaxAttempts,
-		EnqueuedAt:     clock.Now(),
-		DeadLetteredAt: clock.Now(),
-		Payload:        []byte(`"hello"`),
+		Task:       "job",
+		Queue:      wInbox("job"),
+		MessageID:  "msg-1",
+		Attempt:    1,
+		Reason:     reasonMaxAttempts,
+		EnqueuedAt: clock.Now(),
+		ShelvedAt:  clock.Now(),
+		Payload:    []byte(`"hello"`),
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {
