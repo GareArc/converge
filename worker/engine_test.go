@@ -1116,11 +1116,13 @@ func TestVisibilityHeartbeatExtends(t *testing.T) {
 	tk := NewTask[string]("job", TaskOpts{})
 	gate := make(chan struct{})
 	var runs int32
+	timeout := 90 * time.Second
+	interval := (timeout + visibilityMargin) / 3
 	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
 		<-gate
 		atomic.AddInt32(&runs, 1)
 		return nil
-	}, HandleOpts{Timeout: 90 * time.Second})
+	}, HandleOpts{Timeout: timeout})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1138,9 +1140,12 @@ func TestVisibilityHeartbeatExtends(t *testing.T) {
 		}
 		return false
 	})
+	convergetest.AssertStable(t, func() bool { return cmq.count.Load() == receipt })
+	w.Clock.Advance(interval - time.Second)
+	convergetest.AssertStable(t, func() bool { return cmq.count.Load() == receipt })
 	for i := int64(1); i <= 9; i++ {
 		want := receipt + i
-		convergetest.AdvanceUntil(t, w.Clock, 30*time.Second, func() bool { return cmq.count.Load() >= want })
+		convergetest.AdvanceUntil(t, w.Clock, interval, func() bool { return cmq.count.Load() >= want })
 	}
 	close(gate)
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })

@@ -121,6 +121,21 @@ func TestNewEngineAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestVisibilityIsDerivedFromTheTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{time.Second, 30 * time.Second, 90 * time.Second, 10 * time.Minute, time.Hour} {
+		e, err := newEngine(okTaskInfo(), okRun(), HandleOpts{Timeout: timeout})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := timeout + visibilityMargin; e.cfg.visibility != want {
+			t.Fatalf("Timeout %s: visibility = %s, want %s", timeout, e.cfg.visibility, want)
+		}
+		if e.cfg.visibility <= timeout {
+			t.Fatalf("Timeout %s: visibility %s must outlast the run it protects", timeout, e.cfg.visibility)
+		}
+	}
+}
+
 func TestEngineInfoRendersDefaults(t *testing.T) {
 	e, err := newEngine(okTaskInfo(), okRun(), HandleOpts{})
 	if err != nil {
@@ -135,12 +150,25 @@ func TestEngineInfoRendersDefaults(t *testing.T) {
 	}
 	want := map[string]string{
 		"concurrency":    strconv.Itoa(DefaultConcurrency),
-		"visibility":     "5m",
 		"retry":          "25 attempts, backoff 1s..15m, max-age 24h",
 		"schema-version": "1",
 	}
 	if !reflect.DeepEqual(info.Settings, want) {
 		t.Fatalf("Settings = %+v, want %+v", info.Settings, want)
+	}
+}
+
+func TestEngineInfoRendersTheTimeoutNotTheDerivedVisibility(t *testing.T) {
+	e, err := newEngine(okTaskInfo(), okRun(), HandleOpts{Timeout: 90 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := e.Info().Settings
+	if got := settings["timeout"]; got != "1m30s" {
+		t.Fatalf("timeout = %q, want %q", got, "1m30s")
+	}
+	if _, ok := settings["visibility"]; ok {
+		t.Fatalf("Settings = %+v, must not report a derived value under a name that left the surface", settings)
 	}
 }
 

@@ -118,9 +118,11 @@ func (e *engine) Stats() converge.JobStats {
 func (e *engine) Info() converge.JobInfo {
 	settings := map[string]string{
 		"concurrency":    strconv.Itoa(e.cfg.concurrency),
-		"visibility":     durfmt.Format(e.cfg.visibility),
 		"retry":          retrySetting(e.cfg.retry),
 		"schema-version": strconv.Itoa(e.cfg.info.version),
+	}
+	if e.cfg.timeout > 0 {
+		settings["timeout"] = durfmt.Format(e.cfg.timeout)
 	}
 	if !e.cfg.rateLimit.IsZero() {
 		settings["rate-limit"] = e.cfg.rateLimit.String()
