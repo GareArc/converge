@@ -392,30 +392,6 @@ func TestStandbyHintSurvivesIntoLeadership(t *testing.T) {
 	}
 }
 
-func TestPausedSpecDropsHints(t *testing.T) {
-	spec := Spec{
-		Name:       "job",
-		Paused:     true,
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(IDs(func(context.Context) ([]ID, error) { return nil, nil }), Every(time.Hour))},
-	}
-	le, _ := startRun(t, spec, nil)
-	select {
-	case <-le.e.Ready():
-	case <-time.After(2 * time.Second):
-		t.Fatal("never ready")
-	}
-	if err := le.e.Hint("x"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool {
-		return le.rec.Count(func(e converge.Event) bool {
-			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.ID == "x" && wd.Reason == converge.DiscardPaused
-		}) >= 1
-	})
-}
-
 type flakyLease struct {
 	mu          sync.Mutex
 	acquireErrs int

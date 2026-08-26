@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
-	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
 )
 
@@ -168,9 +167,6 @@ func TestEngineInfoRendersScheduleSettings(t *testing.T) {
 	if info.Queue != "" {
 		t.Fatalf("Queue = %q, want empty", info.Queue)
 	}
-	if info.Paused {
-		t.Fatal("Paused must default to false")
-	}
 	want := map[string]string{
 		"concurrency":       "2",
 		"schedule":          "every 1h",
@@ -231,15 +227,11 @@ func TestEngineInfoRendersOptionalSettings(t *testing.T) {
 	s.RateLimit = converge.Rate{Events: 5, Per: time.Second}
 	s.Versions = NewTracker(inmem.NewKV(), "job")
 	s.AllowUnscheduled = true
-	s.Paused = true
 	e, err := newEngine(s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	info := e.Info()
-	if !info.Paused {
-		t.Fatal("Paused must reflect Spec.Paused")
-	}
 	if got := info.Settings["rate-limit"]; got != "5/1s" {
 		t.Fatalf("rate-limit = %q, want 5/1s", got)
 	}
@@ -308,15 +300,4 @@ func TestEngineInfoRendersPinnedDisplayFormats(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestPausedSpecDropsWakes(t *testing.T) {
-	te := startEngine(t, config{paused: true}, func(ctx context.Context, id ID) error { return nil })
-	te.e.hint(context.Background(), "a")
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.Reason == converge.DiscardPaused
-		}) == 1
-	})
 }

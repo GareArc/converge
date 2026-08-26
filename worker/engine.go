@@ -16,7 +16,6 @@ import (
 	"github.com/GareArc/converge/internal/durfmt"
 	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/mw"
-	"github.com/GareArc/converge/internal/pausegate"
 	"github.com/GareArc/converge/internal/sig"
 	"github.com/GareArc/converge/internal/tokenbucket"
 )
@@ -55,8 +54,6 @@ type engine struct {
 	deadLetters int
 	lastSuccess time.Time
 	consecFails int
-	gate        pausegate.Gate
-	cycleCancel context.CancelFunc
 }
 
 func (e *engine) Name() string { return e.cfg.info.name }
@@ -79,27 +76,6 @@ func (e *engine) Hint(string) error {
 
 func (e *engine) RunPassNow(context.Context) error {
 	return fmt.Errorf("worker: job %q: passes are a reconcile verb; workers have no schedule to run", e.cfg.info.name)
-}
-
-func (e *engine) SetPaused(paused bool) {
-	e.mu.Lock()
-	changed, closeCh := e.gate.SetPaused(paused)
-	var cancel context.CancelFunc
-	if changed && paused {
-		cancel = e.cycleCancel
-		e.cycleCancel = nil
-	}
-	e.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	if closeCh != nil {
-		close(closeCh)
-	}
-}
-
-func (e *engine) awaitUnpaused(ctx context.Context) bool {
-	return pausegate.AwaitUnpaused(ctx, &e.mu, &e.gate)
 }
 
 func (e *engine) durable() bool { return e.cfg.runMode != converge.OnAllReplicas }
@@ -136,15 +112,11 @@ func (e *engine) Info() converge.JobInfo {
 	if !e.cfg.rateLimit.IsZero() {
 		settings["rate-limit"] = e.cfg.rateLimit.String()
 	}
-	e.mu.Lock()
-	paused := e.gate.Paused
-	e.mu.Unlock()
 	return converge.JobInfo{
 		Job:      e.cfg.info.name,
 		Surface:  converge.SurfaceWorker,
 		RunMode:  e.cfg.runMode,
 		Queue:    e.cfg.info.queue,
-		Paused:   paused,
 		Settings: settings,
 	}
 }
@@ -218,36 +190,13 @@ func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 		return err
 	}
 	e.markReady()
-	for {
-		if !e.awaitUnpaused(ctx) {
-			return nil
-		}
-		cycleCtx, cancel := context.WithCancel(ctx)
-		e.mu.Lock()
-		if e.gate.Paused {
-			e.mu.Unlock()
-			cancel()
-			continue
-		}
-		e.cycleCancel = cancel
-		e.mu.Unlock()
-
-		switch e.cfg.runMode {
-		case converge.OnOneReplica:
-			e.leaseLoop(cycleCtx)
-		default:
-			e.runActive(cycleCtx, nil)
-		}
-
-		e.mu.Lock()
-		e.cycleCancel = nil
-		e.mu.Unlock()
-		cancel()
-
-		if ctx.Err() != nil {
-			return nil
-		}
+	switch e.cfg.runMode {
+	case converge.OnOneReplica:
+		e.leaseLoop(ctx)
+	default:
+		e.runActive(ctx, nil)
 	}
+	return nil
 }
 
 func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {

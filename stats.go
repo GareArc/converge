@@ -17,6 +17,5 @@ type JobInfo struct {
 	Surface  Surface
 	RunMode  RunMode
 	Queue    string
-	Paused   bool
 	Settings map[string]string
 }

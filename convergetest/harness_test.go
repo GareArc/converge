@@ -325,30 +325,6 @@ func TestLargeClockAdvanceDoesNotDropLease(t *testing.T) {
 	h.AssertReconciled(t, "steady-runner", "id_1")
 }
 
-func TestDrainOnPausedJobReturns(t *testing.T) {
-	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = reconcile.Register(rt, reconcile.Spec{
-		Name:   "paused-job",
-		Paused: true,
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
-			return nil
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
-				return nil, nil
-			}), reconcile.Every(time.Hour)),
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Drain(t)
-}
-
 type fakeTB struct {
 	testing.TB
 	mu       sync.Mutex
@@ -657,8 +633,6 @@ func (j *crashJob) Quiet() bool { return true }
 func (j *crashJob) Hint(string) error { return nil }
 
 func (j *crashJob) RunPassNow(context.Context) error { return nil }
-
-func (j *crashJob) SetPaused(bool) {}
 
 func TestRuntimeExitedEarlyFatalsWithCrashWording(t *testing.T) {
 	fake := &fakeTB{}

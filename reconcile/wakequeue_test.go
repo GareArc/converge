@@ -1,9 +1,7 @@
 package reconcile
 
 import (
-	"context"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -26,9 +24,9 @@ func testPolicy(deadLetterAfter int) wakePolicy {
 	}
 }
 
-func newTestQueue(deadLetterAfter int, paused bool) (*wakeQueue, *convergetest.Clock) {
+func newTestQueue(deadLetterAfter int) (*wakeQueue, *convergetest.Clock) {
 	clock := convergetest.NewClock(wqStart)
-	return newWakeQueue(clock, testPolicy(deadLetterAfter), paused), clock
+	return newWakeQueue(clock, testPolicy(deadLetterAfter)), clock
 }
 
 func TestWakeStateMachineTable(t *testing.T) {
@@ -56,23 +54,20 @@ func TestWakeStateMachineTable(t *testing.T) {
 		{"parked", wakeHint, wakeDroppedParked},
 		{"parked", wakePoke, wakeRevived},
 		{"parked", wakeVersion, wakeRevived},
-		{"paused", wakeHint, wakeDroppedPaused},
-		{"paused", wakePoke, wakeDroppedPaused},
-		{"paused", wakeVersion, wakeDroppedPaused},
 	}
 	for _, r := range rows {
 		t.Run(r.state+"/"+className(r.class), func(t *testing.T) {
-			q, clock := newTestQueue(1, r.state == "paused")
+			q, clock := newTestQueue(1)
 			id := ID("x")
 			switch r.state {
-			case "idle", "paused":
+			case "idle":
 			case "queued":
 				q.wake(id, wakeHint)
 			case "running":
 				q.wake(id, wakeHint)
 				mustPop(t, q, clock, id)
 			case "backoff":
-				q2, c2 := newTestQueue(0, false)
+				q2, c2 := newTestQueue(0)
 				q, clock = q2, c2
 				q.wake(id, wakeHint)
 				mustPop(t, q, clock, id)
@@ -113,7 +108,7 @@ func mustPop(t *testing.T, q *wakeQueue, clock *convergetest.Clock, want ID) {
 }
 
 func TestBypassRunsNow(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
@@ -125,7 +120,7 @@ func TestBypassRunsNow(t *testing.T) {
 }
 
 func TestBackoffEntryBecomesDueAfterDelay(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
@@ -138,7 +133,7 @@ func TestBackoffEntryBecomesDueAfterDelay(t *testing.T) {
 }
 
 func TestRerunAfterSuccessRequeues(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.wake("x", wakeHint)
@@ -156,7 +151,7 @@ func TestRerunAfterSuccessRequeues(t *testing.T) {
 }
 
 func TestSecondWakeWhileRerunArmedCollapses(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.wake("x", wakePoke)
@@ -166,7 +161,7 @@ func TestSecondWakeWhileRerunArmedCollapses(t *testing.T) {
 }
 
 func TestDeadLetterAfterParks(t *testing.T) {
-	q, clock := newTestQueue(2, false)
+	q, clock := newTestQueue(2)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	if res := q.finish("x", finishFailure, 0); res.parked || res.attempt != 1 {
@@ -185,7 +180,7 @@ func TestDeadLetterAfterParks(t *testing.T) {
 }
 
 func TestReviveResetsFailureCount(t *testing.T) {
-	q, clock := newTestQueue(2, false)
+	q, clock := newTestQueue(2)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
@@ -202,7 +197,7 @@ func TestReviveResetsFailureCount(t *testing.T) {
 }
 
 func TestDelayFloorsAndFallsBackAfterLimit(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	for i := 0; i < backoff.NoBackoffCap; i++ {
 		mustPop(t, q, clock, "x")
@@ -228,7 +223,7 @@ func TestDelayFloorsAndFallsBackAfterLimit(t *testing.T) {
 }
 
 func TestSuccessResetsNoBackoffStreak(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	for i := 0; i < backoff.NoBackoffCap-1; i++ {
 		mustPop(t, q, clock, "x")
@@ -245,7 +240,7 @@ func TestSuccessResetsNoBackoffStreak(t *testing.T) {
 }
 
 func TestNeutralRequeuesWithoutCounting(t *testing.T) {
-	q, clock := newTestQueue(1, false)
+	q, clock := newTestQueue(1)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishNeutral, 0)
@@ -256,7 +251,7 @@ func TestNeutralRequeuesWithoutCounting(t *testing.T) {
 }
 
 func TestForceParkParksImmediately(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	res := q.finish("x", finishForcePark, 0)
@@ -269,7 +264,7 @@ func TestForceParkParksImmediately(t *testing.T) {
 }
 
 func TestDelayedHonorsRequestedDelay(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishDelay, time.Hour)
@@ -281,7 +276,7 @@ func TestDelayedHonorsRequestedDelay(t *testing.T) {
 }
 
 func TestOverflowDropsNewIDs(t *testing.T) {
-	q, _ := newTestQueue(0, false)
+	q, _ := newTestQueue(0)
 	for i := 0; i < wakeQueueBound; i++ {
 		q.ids[ID(strconv.Itoa(i))] = &idState{phase: phaseQueued}
 	}
@@ -294,7 +289,7 @@ func TestOverflowDropsNewIDs(t *testing.T) {
 }
 
 func TestRestoreParkReportsOverflow(t *testing.T) {
-	q, _ := newTestQueue(0, false)
+	q, _ := newTestQueue(0)
 	for i := 0; i < wakeQueueBound; i++ {
 		if got := q.restorePark(ID(strconv.Itoa(i))); got != restoredParked {
 			t.Fatalf("restorePark %d = %d, want restoredParked while under bound", i, got)
@@ -315,7 +310,7 @@ func TestRestoreParkReportsOverflow(t *testing.T) {
 }
 
 func TestCountsAndReset(t *testing.T) {
-	q, clock := newTestQueue(1, false)
+	q, clock := newTestQueue(1)
 	q.wake("a", wakeHint)
 	q.wake("b", wakeHint)
 	mustPop(t, q, clock, "a")
@@ -336,7 +331,7 @@ func TestCountsAndReset(t *testing.T) {
 }
 
 func TestQuietReportsQueueState(t *testing.T) {
-	q, clock := newTestQueue(2, false)
+	q, clock := newTestQueue(2)
 	if !q.quiet(clock.Now()) {
 		t.Fatal("empty queue must be quiet")
 	}
@@ -383,7 +378,7 @@ func idsLen(q *wakeQueue) int {
 }
 
 func TestUnknownFinishKindBehavesLikeFailure(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	res := q.finish("x", finishKind(99), 0)
@@ -397,14 +392,14 @@ func TestUnknownFinishKindBehavesLikeFailure(t *testing.T) {
 }
 
 func TestFinishOnUnknownIDIsUnsettled(t *testing.T) {
-	q, _ := newTestQueue(0, false)
+	q, _ := newTestQueue(0)
 	if res := q.finish("x", finishFailure, 0); res.settled {
 		t.Fatalf("finish on unregistered id = %+v, want unsettled", res)
 	}
 }
 
 func TestUnknownWakeClassFailsClosed(t *testing.T) {
-	qBackoff, clockBackoff := newTestQueue(0, false)
+	qBackoff, clockBackoff := newTestQueue(0)
 	qBackoff.wake("x", wakeHint)
 	mustPop(t, qBackoff, clockBackoff, "x")
 	qBackoff.finish("x", finishFailure, 0)
@@ -412,7 +407,7 @@ func TestUnknownWakeClassFailsClosed(t *testing.T) {
 		t.Fatalf("unknown class on backoff id = %v, want collapsed", got)
 	}
 
-	qParked, clockParked := newTestQueue(1, false)
+	qParked, clockParked := newTestQueue(1)
 	qParked.wake("x", wakeHint)
 	mustPop(t, qParked, clockParked, "x")
 	qParked.finish("x", finishFailure, 0)
@@ -422,7 +417,7 @@ func TestUnknownWakeClassFailsClosed(t *testing.T) {
 }
 
 func TestPendingPokeSurvivesFailure(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.wake("x", wakePoke)
@@ -434,7 +429,7 @@ func TestPendingPokeSurvivesFailure(t *testing.T) {
 }
 
 func TestPendingPokeSurvivesParking(t *testing.T) {
-	q, clock := newTestQueue(2, false)
+	q, clock := newTestQueue(2)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
@@ -452,7 +447,7 @@ func TestPendingPokeSurvivesParking(t *testing.T) {
 }
 
 func TestPendingHintDroppedOnParking(t *testing.T) {
-	q, clock := newTestQueue(1, false)
+	q, clock := newTestQueue(1)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.wake("x", wakeHint)
@@ -466,7 +461,7 @@ func TestPendingHintDroppedOnParking(t *testing.T) {
 }
 
 func TestPendingHintPullsDelayForward(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.wake("x", wakeHint)
@@ -475,7 +470,7 @@ func TestPendingHintPullsDelayForward(t *testing.T) {
 }
 
 func TestFallbackParksAfterRepeatedFallbacks(t *testing.T) {
-	q, clock := newTestQueue(2, false)
+	q, clock := newTestQueue(2)
 	q.wake("x", wakeHint)
 	var last finishResult
 	for i := 0; i < 22; i++ {
@@ -496,7 +491,7 @@ func TestFallbackParksAfterRepeatedFallbacks(t *testing.T) {
 }
 
 func TestHeapStaysBounded(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	for i := 0; i < 200; i++ {
@@ -512,7 +507,7 @@ func TestHeapStaysBounded(t *testing.T) {
 }
 
 func TestStaleDuplicateHeapEntryDiscardedAfterDispatch(t *testing.T) {
-	q, clock := newTestQueue(0, false)
+	q, clock := newTestQueue(0)
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
@@ -527,62 +522,5 @@ func TestStaleDuplicateHeapEntryDiscardedAfterDispatch(t *testing.T) {
 	mustPop(t, q, clock, "x")
 	if _, ok := q.next(clock.Now()); ok {
 		t.Fatal("duplicate stale heap entry must be discarded, not redispatched")
-	}
-}
-
-func TestSetPausedSameValueDoesNotSignalNotify(t *testing.T) {
-	q, _ := newTestQueue(0, true)
-	select {
-	case <-q.notify:
-	default:
-	}
-	q.setPaused(true)
-	select {
-	case <-q.notify:
-		t.Fatal("same-value setPaused(true) must not signal notify")
-	default:
-	}
-}
-
-func TestAwaitUnpausedBlocksUntilResumed(t *testing.T) {
-	q, _ := newTestQueue(0, true)
-	var mu sync.Mutex
-	returned := false
-	go func() {
-		q.awaitUnpaused(context.Background())
-		mu.Lock()
-		returned = true
-		mu.Unlock()
-	}()
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
-	q.setPaused(false)
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
-}
-
-func TestAwaitUnpausedReturnsFalseOnCtxDone(t *testing.T) {
-	q, _ := newTestQueue(0, true)
-	ctx, cancel := context.WithCancel(context.Background())
-	var mu sync.Mutex
-	var ok, returned bool
-	go func() {
-		result := q.awaitUnpaused(ctx)
-		mu.Lock()
-		ok, returned = result, true
-		mu.Unlock()
-	}()
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !returned })
-	cancel()
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return returned })
-	mu.Lock()
-	defer mu.Unlock()
-	if ok {
-		t.Fatal("awaitUnpaused must return false when ctx is done before resume")
-	}
-}
-
-func TestAwaitUnpausedReturnsImmediatelyWhenNotPaused(t *testing.T) {
-	q, _ := newTestQueue(0, false)
-	if !q.awaitUnpaused(context.Background()) {
-		t.Fatal("awaitUnpaused on an unpaused queue must return true immediately")
 	}
 }

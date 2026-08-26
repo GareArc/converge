@@ -31,7 +31,6 @@ type wakeDiscardKind int
 const (
 	wakeDiscardUnset wakeDiscardKind = iota
 	wakeDiscardParked
-	wakeDiscardPaused
 	wakeDiscardUndecodable
 	wakeDiscardEmptyID
 	wakeDiscardOverflow
@@ -41,7 +40,6 @@ type WakeDiscardReason struct{ kind wakeDiscardKind }
 
 var (
 	DiscardParked      = WakeDiscardReason{wakeDiscardParked}
-	DiscardPaused      = WakeDiscardReason{wakeDiscardPaused}
 	DiscardUndecodable = WakeDiscardReason{wakeDiscardUndecodable}
 	DiscardEmptyID     = WakeDiscardReason{wakeDiscardEmptyID}
 	DiscardOverflow    = WakeDiscardReason{wakeDiscardOverflow}
@@ -53,8 +51,6 @@ func (r WakeDiscardReason) String() string {
 	switch r.kind {
 	case wakeDiscardParked:
 		return "parked"
-	case wakeDiscardPaused:
-		return "paused"
 	case wakeDiscardUndecodable:
 		return "undecodable"
 	case wakeDiscardEmptyID:

@@ -88,8 +88,6 @@ func (j *foreignJob) Hint(id string) error { return nil }
 
 func (j *foreignJob) RunPassNow(ctx context.Context) error { return nil }
 
-func (j *foreignJob) SetPaused(paused bool) {}
-
 func (j *foreignJob) Stats() converge.JobStats { return converge.JobStats{Job: j.name} }
 
 func (j *foreignJob) Info() converge.JobInfo { return converge.JobInfo{Job: j.name} }
@@ -208,7 +206,7 @@ func TestReadOnlyJobRowJSONKeysPinned(t *testing.T) {
 	}
 	row := jobs[0].(map[string]any)
 	assertExactKeys(t, row, []string{
-		"job", "surface", "run_mode", "queue", "paused", "settings",
+		"job", "surface", "run_mode", "queue", "settings",
 		"queue_depth", "parked", "last_success", "consecutive_fails",
 	})
 }

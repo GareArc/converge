@@ -30,7 +30,6 @@ type Spec struct {
 	RateLimit        converge.Rate
 	Middleware       []converge.Middleware
 	AllowUnscheduled bool
-	Paused           bool
 }
 
 func newEngine(s Spec) (*engine, error) {
@@ -67,7 +66,6 @@ func newEngine(s Spec) (*engine, error) {
 		rateLimit:        s.RateLimit,
 		middleware:       slices.Clone(s.Middleware),
 		allowUnscheduled: s.AllowUnscheduled,
-		paused:           s.Paused,
 	}
 	if cfg.concurrency == 0 {
 		cfg.concurrency = 1
@@ -140,7 +138,7 @@ func newEngine(s Spec) (*engine, error) {
 	if !periodic && !cfg.allowUnscheduled {
 		return nil, fail("no periodic trigger; set AllowUnscheduled to opt out of the schedule guarantee")
 	}
-	return &engine{cfg: cfg, ready: make(chan struct{}), paused: s.Paused}, nil
+	return &engine{cfg: cfg, ready: make(chan struct{})}, nil
 }
 
 func Register(rt *converge.Runtime, s Spec) error {

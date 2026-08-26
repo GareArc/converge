@@ -15,7 +15,6 @@ type jobView struct {
 	Surface          string            `json:"surface"`
 	RunMode          string            `json:"run_mode"`
 	Queue            string            `json:"queue"`
-	Paused           bool              `json:"paused"`
 	Settings         map[string]string `json:"settings"`
 	QueueDepth       int               `json:"queue_depth"`
 	Parked           int               `json:"parked"`
@@ -106,7 +105,6 @@ func mergeJobView(info converge.JobInfo, stats converge.JobStats) jobView {
 		Surface:          info.Surface.String(),
 		RunMode:          info.RunMode.String(),
 		Queue:            info.Queue,
-		Paused:           info.Paused,
 		Settings:         info.Settings,
 		QueueDepth:       stats.QueueDepth,
 		Parked:           stats.Parked,

@@ -34,7 +34,6 @@ type config struct {
 	rateLimit        converge.Rate
 	middleware       []converge.Middleware
 	allowUnscheduled bool
-	paused           bool
 	single           bool
 }
 
@@ -49,7 +48,6 @@ type engine struct {
 
 	mu          sync.Mutex
 	queue       *wakeQueue
-	paused      bool
 	lastSuccess time.Time
 	consecFails int
 	passes      int
@@ -81,7 +79,7 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 		deadLetterAfter: e.cfg.deadLetterAfter,
 		backoff:         curve.Delay,
 		floor:           backoff.Floor,
-	}, e.paused)
+	})
 	e.mu.Unlock()
 	return nil
 }
@@ -119,15 +117,6 @@ func (e *engine) Hint(id string) error {
 	}
 	e.hintVia(context.Background(), q, ID(id))
 	return nil
-}
-
-func (e *engine) SetPaused(paused bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.paused = paused
-	if e.queue != nil {
-		e.queue.setPaused(paused)
-	}
 }
 
 func (e *engine) admitOps() (*wakeQueue, bool) {
@@ -214,18 +203,10 @@ func (e *engine) Info() converge.JobInfo {
 	if e.cfg.allowUnscheduled {
 		settings["allow-unscheduled"] = "true"
 	}
-	e.mu.Lock()
-	q := e.queue
-	paused := e.paused
-	e.mu.Unlock()
-	if q != nil {
-		paused = q.paused()
-	}
 	return converge.JobInfo{
 		Job:      e.cfg.name,
 		Surface:  converge.SurfaceReconcile,
 		RunMode:  e.cfg.runMode,
-		Paused:   paused,
 		Settings: settings,
 	}
 }
@@ -309,8 +290,6 @@ func (e *engine) report(id ID, res wakeResult) {
 	switch res {
 	case wakeDroppedParked:
 		reason = converge.DiscardParked
-	case wakeDroppedPaused:
-		reason = converge.DiscardPaused
 	case wakeDroppedOverflow:
 		reason = converge.DiscardOverflow
 	default:

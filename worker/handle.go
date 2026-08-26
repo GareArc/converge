@@ -8,7 +8,6 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
-	"github.com/GareArc/converge/internal/pausegate"
 )
 
 const (
@@ -35,7 +34,6 @@ type HandleOpts struct {
 	MQ          converge.MQ
 	RateLimit   converge.Rate
 	Middleware  []converge.Middleware
-	Paused      bool
 }
 
 type decodeError struct{ err error }
@@ -121,5 +119,5 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 	if cfg.runMode == converge.OnAllReplicas && o.Retry != (RetryPolicy{}) {
 		return nil, fail("OnAllReplicas cannot use Retry")
 	}
-	return &engine{cfg: cfg, ready: make(chan struct{}), gate: pausegate.New(o.Paused)}, nil
+	return &engine{cfg: cfg, ready: make(chan struct{})}, nil
 }

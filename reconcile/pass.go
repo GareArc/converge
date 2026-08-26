@@ -61,9 +61,6 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 		writeLast = func(_ context.Context, t time.Time) { local = t }
 	}
 	for ctx.Err() == nil {
-		if !q.awaitUnpaused(ctx) {
-			return
-		}
 		last, ok := readLast(ctx)
 		now := e.deps.Clock.Now()
 		if !ok {

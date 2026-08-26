@@ -133,9 +133,6 @@ func TestEngineInfoRendersDefaults(t *testing.T) {
 	if info.Queue != "job" {
 		t.Fatalf("Queue = %q, want job", info.Queue)
 	}
-	if info.Paused {
-		t.Fatal("Paused must default to false")
-	}
 	want := map[string]string{
 		"concurrency":    strconv.Itoa(DefaultConcurrency),
 		"visibility":     "5m",
@@ -157,8 +154,8 @@ func TestEngineInfoOmitsRateLimitWhenZero(t *testing.T) {
 	}
 }
 
-func TestEngineInfoRendersRateLimitAndPaused(t *testing.T) {
-	o := HandleOpts{RateLimit: converge.Rate{Events: 5, Per: time.Second}, Paused: true}
+func TestEngineInfoRendersRateLimit(t *testing.T) {
+	o := HandleOpts{RateLimit: converge.Rate{Events: 5, Per: time.Second}}
 	e, err := newEngine(okTaskInfo(), okRun(), o)
 	if err != nil {
 		t.Fatal(err)
@@ -166,9 +163,6 @@ func TestEngineInfoRendersRateLimitAndPaused(t *testing.T) {
 	info := e.Info()
 	if got := info.Settings["rate-limit"]; got != "5/1s" {
 		t.Fatalf("rate-limit = %q, want 5/1s", got)
-	}
-	if !info.Paused {
-		t.Fatal("Paused must reflect HandleOpts.Paused")
 	}
 }
 
