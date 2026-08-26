@@ -7,6 +7,8 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
+	"github.com/GareArc/converge/internal/keys"
+	"github.com/GareArc/converge/internal/notice"
 )
 
 type Trigger interface {
@@ -25,35 +27,56 @@ const (
 
 var triggerRestartCurve = backoff.Curve{Min: triggerRestartMin, Max: triggerRestartMax}
 
-type OnMessageOpts struct {
+type NotificationsOpts struct {
+	ID func(payload []byte) (ID, error)
 	MQ converge.MQ
 }
 
-type messageTrigger struct {
-	queue string
-	idf   IDFunc
-	opts  OnMessageOpts
+type notificationTrigger struct {
+	queue   string
+	foreign bool
+	opts    NotificationsOpts
 
 	mq        converge.MQ
 	broadcast bool
 }
 
-func OnMessage(queue string, id IDFunc, o OnMessageOpts) Trigger {
-	return &messageTrigger{queue: queue, idf: id, opts: o}
+func Notifications(o NotificationsOpts) Trigger {
+	return &notificationTrigger{opts: o}
 }
 
-func (t *messageTrigger) Run(ctx context.Context, wake func(ID)) error {
+func NotificationsFrom(queue string, o NotificationsOpts) Trigger {
+	return &notificationTrigger{queue: queue, foreign: true, opts: o}
+}
+
+func (t *notificationTrigger) Run(ctx context.Context, wake func(ID)) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-func (t *messageTrigger) bind(e *engine) error {
+func (t *notificationTrigger) decode(payload []byte) (ID, error) {
+	if t.foreign {
+		return t.opts.ID(payload)
+	}
+	id, err := notice.Decode(payload)
+	if err != nil {
+		return "", err
+	}
+	return ID(id), nil
+}
+
+func (t *notificationTrigger) bind(e *engine) error {
+	if !t.foreign {
+		e.mu.Lock()
+		t.queue = keys.Inbox(e.deps.Namespace, e.cfg.name)
+		e.mu.Unlock()
+	}
 	t.mq = t.opts.MQ
 	if t.mq == nil {
 		t.mq = e.deps.MQ
 	}
 	if t.mq == nil {
-		return fmt.Errorf("reconcile: job %q: OnMessage(%q) needs an MQ", e.cfg.name, t.queue)
+		return fmt.Errorf("reconcile: job %q: Notifications(%q) needs an MQ", e.cfg.name, t.queue)
 	}
 	if e.cfg.runMode == converge.OnAllReplicas {
 		if _, ok := t.mq.(converge.BroadcastConsumer); !ok {
@@ -73,22 +96,22 @@ func (e *engine) runTrigger(ctx context.Context, idx int, t Trigger) {
 	case *scheduleTrigger:
 		e.runSchedule(ctx, idx, tr)
 		return
-	case *messageTrigger:
-		e.runMessages(ctx, tr)
+	case *notificationTrigger:
+		e.runNotifications(ctx, tr)
 		return
 	}
-	e.supervise(ctx, func() { t.Run(ctx, func(id ID) { e.hint(ctx, id) }) })
+	e.supervise(ctx, func() { t.Run(ctx, func(id ID) { e.notify(ctx, id) }) })
 }
 
-func (e *engine) runMessages(ctx context.Context, t *messageTrigger) {
+func (e *engine) runNotifications(ctx context.Context, t *notificationTrigger) {
 	deliver := func(d converge.Delivery) {
-		e.deliverHint(ctx, t, d)
+		e.deliverNotification(ctx, t, d)
 	}
 	e.supervise(ctx, func() {
 		if t.broadcast {
 			t.mq.(converge.BroadcastConsumer).ConsumeBroadcast(ctx, t.queue, deliver)
 		} else {
-			t.mq.(converge.GroupConsumer).ConsumeGroup(ctx, t.queue, e.key("hints"), deliver)
+			t.mq.(converge.GroupConsumer).ConsumeGroup(ctx, t.queue, e.key("notifications"), deliver)
 		}
 	})
 }
@@ -113,12 +136,12 @@ func (e *engine) supervise(ctx context.Context, run func()) {
 	}
 }
 
-func (e *engine) deliverHint(ctx context.Context, t *messageTrigger, d converge.Delivery) {
-	id, err := t.idf(d.Message().Payload)
+func (e *engine) deliverNotification(ctx context.Context, t *notificationTrigger, d converge.Delivery) {
+	id, err := t.decode(d.Message().Payload)
 	if err != nil {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardUndecodable})
 	} else {
-		e.hint(ctx, id)
+		e.notifyVia(ctx, e.wakeQueueRef(), id, wakeNotify)
 	}
 	d.Ack(ctx)
 }

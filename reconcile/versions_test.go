@@ -41,7 +41,7 @@ func TestVersionAheadOfSnapshotDefersInsteadOfFailing(t *testing.T) {
 		}
 		return nil
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	advanceUntil(t, te, 100*time.Millisecond, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 0 {

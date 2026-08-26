@@ -35,14 +35,14 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"bad cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Every(-time.Second))} }, "positive"},
 		{"zero cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cadence{})} }, "Cadence"},
 		{"bad cron", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cron("@daily", CronOpts{}))} }, "descriptors"},
-		{"message trigger without queue", func(s *Spec) {
-			s.Triggers = append(s.Triggers, OnMessage("", RawID(), OnMessageOpts{}))
+		{"notifications-from trigger without queue", func(s *Spec) {
+			s.Triggers = append(s.Triggers, NotificationsFrom("", NotificationsOpts{ID: RawID()}))
 		}, "queue"},
-		{"message trigger without id func", func(s *Spec) {
-			s.Triggers = append(s.Triggers, OnMessage("q", nil, OnMessageOpts{}))
-		}, "IDFunc"},
+		{"notifications-from trigger without id function", func(s *Spec) {
+			s.Triggers = append(s.Triggers, NotificationsFrom("q", NotificationsOpts{}))
+		}, "ID function"},
 		{"no periodic trigger", func(s *Spec) {
-			s.Triggers = []Trigger{OnMessage("q", RawID(), OnMessageOpts{})}
+			s.Triggers = []Trigger{Notifications(NotificationsOpts{})}
 		}, "Schedule trigger"},
 		{"no triggers at all", func(s *Spec) { s.Triggers = nil }, "Schedule trigger"},
 	}
@@ -113,7 +113,7 @@ func TestSpecRequiresASchedule(t *testing.T) {
 	err := Register(rt, Spec{
 		Name:      "notifications-only",
 		Reconcile: func(context.Context, ID) error { return nil },
-		Triggers:  []Trigger{OnMessage("q", RawID(), OnMessageOpts{})},
+		Triggers:  []Trigger{Notifications(NotificationsOpts{})},
 	})
 	if err == nil {
 		t.Fatal("a job with no Schedule trigger was accepted")
@@ -196,13 +196,14 @@ func TestEngineInfoRendersTriggerComposition(t *testing.T) {
 	s := okSpec()
 	s.Triggers = []Trigger{
 		Schedule(SingleID(), Every(time.Hour)),
-		OnMessage("deploy-hints", RawID(), OnMessageOpts{}),
+		Notifications(NotificationsOpts{}),
+		NotificationsFrom("deploy-hints", NotificationsOpts{ID: RawID()}),
 	}
 	e, err := newEngine(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "schedule + on-message deploy-hints"
+	want := "schedule + notifications + notifications-from deploy-hints"
 	if got := e.Info().Settings["triggers"]; got != want {
 		t.Fatalf("triggers = %q, want %q", got, want)
 	}

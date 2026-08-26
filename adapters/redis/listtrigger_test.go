@@ -26,7 +26,7 @@ func assertWake(t *testing.T, woke chan reconcile.ID, want reconcile.ID) {
 
 func TestListTriggerWakesExtractedIDs(t *testing.T) {
 	client, _, _ := openMini(t)
-	tr := convredis.ListTrigger(client, "enterprise:member:sync", reconcile.IDFromJSONField("workspace_id"))
+	tr := convredis.ListTrigger(client, "enterprise:member:sync", reconcile.IDFromJSON("workspace_id"))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	woke := make(chan reconcile.ID, 16)
@@ -60,7 +60,7 @@ func TestListTriggerDrivesReconcileJob(t *testing.T) {
 		Reconcile: func(ctx context.Context, id reconcile.ID) error { return nil },
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
-			convredis.ListTrigger(client, "enterprise:member:sync", reconcile.IDFromJSONField("workspace_id")),
+			convredis.ListTrigger(client, "enterprise:member:sync", reconcile.IDFromJSON("workspace_id")),
 		},
 	})
 	if err != nil {

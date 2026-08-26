@@ -315,7 +315,7 @@ func (h *Harness) Wake(job, id string) {
 		return
 	}
 	rt := h.runtime(h.t)
-	if err := hook.Hint(rt, job, id); err != nil {
+	if err := hook.Notify(rt, job, id); err != nil {
 		h.t.Fatalf("convergetest: Wake(%q, %q): %v", job, id, err)
 	}
 }

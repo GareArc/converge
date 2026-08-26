@@ -140,7 +140,7 @@ func TestWakeOnWorkerJobFatals(t *testing.T) {
 	if len(msgs) == 0 {
 		t.Fatal("expected Wake on a worker job to Fatalf")
 	}
-	if !strings.Contains(msgs[0], "hint is a reconcile verb") {
+	if !strings.Contains(msgs[0], "notify is a reconcile verb") {
 		t.Fatalf("Fatalf message = %q, want mention of the worker engine's wrong-surface error", msgs[0])
 	}
 }
@@ -591,7 +591,7 @@ func (j *crashJob) Info() converge.JobInfo { return converge.JobInfo{Job: j.Name
 
 func (j *crashJob) Quiet() bool { return true }
 
-func (j *crashJob) Hint(string) error { return nil }
+func (j *crashJob) Notify(string) error { return nil }
 
 func (j *crashJob) RunPassNow(context.Context) error { return nil }
 

@@ -14,12 +14,12 @@ import (
 )
 
 type stubJob struct {
-	name    string
-	ready   chan struct{}
-	run     func(ctx context.Context, d converge.JobDeps) error
-	hinted  []string
-	ranPass int
-	mu      sync.Mutex
+	name     string
+	ready    chan struct{}
+	run      func(ctx context.Context, d converge.JobDeps) error
+	notified []string
+	ranPass  int
+	mu       sync.Mutex
 }
 
 func newStubJob(name string) *stubJob {
@@ -41,10 +41,10 @@ func (s *stubJob) Ready() <-chan struct{} { return s.ready }
 
 func (s *stubJob) Quiet() bool { return true }
 
-func (s *stubJob) Hint(id string) error {
+func (s *stubJob) Notify(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.hinted = append(s.hinted, id)
+	s.notified = append(s.notified, id)
 	return nil
 }
 
@@ -102,31 +102,6 @@ func TestRegisterRejectsForeignTypes(t *testing.T) {
 		t.Fatal("non-job must be rejected")
 	}
 	if err := hook.RegisterJob("not a runtime", newStubJob("a")); err == nil {
-		t.Fatal("non-runtime must be rejected")
-	}
-}
-
-func TestProducerDepsRoundTripsWiring(t *testing.T) {
-	mq := inmem.NewMQ()
-	clock := convergetest.NewClock(time.Unix(0, 0))
-	rt, err := converge.New(converge.Options{MQ: mq, Clock: clock})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wiring, err := hook.ProducerDeps(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wiring.MQ != mq {
-		t.Fatalf("MQ not round-tripped: got %v", wiring.MQ)
-	}
-	if wiring.Clock != clock {
-		t.Fatalf("Clock not round-tripped: got %v", wiring.Clock)
-	}
-}
-
-func TestProducerDepsRejectsForeignRuntime(t *testing.T) {
-	if _, err := hook.ProducerDeps("not a runtime"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
 }
@@ -233,35 +208,35 @@ func TestReplicaIDsAreDistinctPerRuntime(t *testing.T) {
 	}
 }
 
-func TestHintReachesStubJob(t *testing.T) {
+func TestNotifyReachesStubJob(t *testing.T) {
 	rt := mustRuntime(t)
 	s := newStubJob("a")
 	if err := hook.RegisterJob(rt, s); err != nil {
 		t.Fatal(err)
 	}
-	if err := hook.Hint(rt, "a", "x"); err != nil {
+	if err := hook.Notify(rt, "a", "x"); err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.hinted) != 1 || s.hinted[0] != "x" {
-		t.Fatalf("hinted = %v, want [x]", s.hinted)
+	if len(s.notified) != 1 || s.notified[0] != "x" {
+		t.Fatalf("notified = %v, want [x]", s.notified)
 	}
 }
 
-func TestHintUnknownJobErrors(t *testing.T) {
+func TestNotifyUnknownJobErrors(t *testing.T) {
 	rt := mustRuntime(t)
-	if err := hook.Hint(rt, "no-such-job", "x"); err == nil {
-		t.Fatal("hint on unknown job must error")
+	if err := hook.Notify(rt, "no-such-job", "x"); err == nil {
+		t.Fatal("notify on unknown job must error")
 	}
 }
 
-func TestHintRejectsForeignRuntime(t *testing.T) {
-	if err := hook.Hint("not a runtime", "a", "x"); err == nil {
+func TestNotifyRejectsForeignRuntime(t *testing.T) {
+	if err := hook.Notify("not a runtime", "a", "x"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
 	var nilRt *converge.Runtime
-	if err := hook.Hint(nilRt, "a", "x"); err == nil {
+	if err := hook.Notify(nilRt, "a", "x"); err == nil {
 		t.Fatal("typed-nil runtime must be rejected")
 	}
 }

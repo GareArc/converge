@@ -139,7 +139,7 @@ func (e *engine) runPass(ctx context.Context, q *wakeQueue, st *scheduleTrigger,
 		}
 		attempt = 0
 		for _, id := range ids {
-			e.hintVia(ctx, q, id)
+			e.notifyVia(ctx, q, id, wakeSweep)
 		}
 		if next == "" {
 			e.deleteKey(ctx, cursorKey)

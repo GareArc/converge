@@ -1765,13 +1765,13 @@ func TestQuietFlipsFalseWhileHandlerInFlight(t *testing.T) {
 	convergetest.Await(t, e.Quiet)
 }
 
-func TestHintIsAReconcileVerb(t *testing.T) {
+func TestNotifyIsAReconcileVerb(t *testing.T) {
 	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(context.Context, []byte) error { return nil }, HandleOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.Hint("x"); err == nil || !strings.Contains(err.Error(), "reconcile verb") {
-		t.Fatalf("Hint error = %v, want mention of the reconcile surface", err)
+	if err := e.Notify("x"); err == nil || !strings.Contains(err.Error(), "reconcile verb") {
+		t.Fatalf("Notify error = %v, want mention of the reconcile surface", err)
 	}
 }
 

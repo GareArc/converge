@@ -35,21 +35,16 @@ func TestWakeStateMachineTable(t *testing.T) {
 		want  wakeResult
 	}
 	rows := []row{
-		{"idle", wakeHint, wakeEnqueued},
-		{"idle", wakePoke, wakeEnqueued},
-		{"idle", wakeVersion, wakeEnqueued},
-		{"queued", wakeHint, wakeCollapsed},
-		{"queued", wakePoke, wakeCollapsed},
-		{"queued", wakeVersion, wakeCollapsed},
-		{"running", wakeHint, wakeRerunArmed},
-		{"running", wakePoke, wakeRerunArmed},
-		{"running", wakeVersion, wakeRerunArmed},
-		{"backoff", wakeHint, wakeCollapsed},
-		{"backoff", wakePoke, wakeBypassed},
-		{"backoff", wakeVersion, wakeBypassed},
-		{"delayed", wakeHint, wakePulledForward},
-		{"delayed", wakePoke, wakePulledForward},
-		{"delayed", wakeVersion, wakePulledForward},
+		{"idle", wakeSweep, wakeEnqueued},
+		{"idle", wakeNotify, wakeEnqueued},
+		{"queued", wakeSweep, wakeCollapsed},
+		{"queued", wakeNotify, wakeCollapsed},
+		{"running", wakeSweep, wakeRerunArmed},
+		{"running", wakeNotify, wakeRerunArmed},
+		{"backoff", wakeSweep, wakeCollapsed},
+		{"backoff", wakeNotify, wakeBypassed},
+		{"delayed", wakeSweep, wakePulledForward},
+		{"delayed", wakeNotify, wakePulledForward},
 	}
 	for _, r := range rows {
 		t.Run(r.state+"/"+className(r.class), func(t *testing.T) {
@@ -58,16 +53,16 @@ func TestWakeStateMachineTable(t *testing.T) {
 			switch r.state {
 			case "idle":
 			case "queued":
-				q.wake(id, wakeHint)
+				q.wake(id, wakeSweep)
 			case "running":
-				q.wake(id, wakeHint)
+				q.wake(id, wakeSweep)
 				mustPop(t, q, clock, id)
 			case "backoff":
-				q.wake(id, wakeHint)
+				q.wake(id, wakeSweep)
 				mustPop(t, q, clock, id)
 				q.finish(id, finishFailure, 0)
 			case "delayed":
-				q.wake(id, wakeHint)
+				q.wake(id, wakeSweep)
 				mustPop(t, q, clock, id)
 				q.finish(id, finishDelay, time.Hour)
 			}
@@ -80,12 +75,12 @@ func TestWakeStateMachineTable(t *testing.T) {
 
 func className(c wakeClass) string {
 	switch c {
-	case wakeHint:
-		return "hint"
-	case wakePoke:
-		return "poke"
+	case wakeSweep:
+		return "sweep"
+	case wakeNotify:
+		return "notify"
 	default:
-		return "version"
+		return "unknown"
 	}
 }
 
@@ -99,19 +94,19 @@ func mustPop(t *testing.T, q *wakeQueue, clock *convergetest.Clock, want ID) {
 
 func TestBypassRunsNow(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
 	if _, ok := q.next(clock.Now()); ok {
 		t.Fatal("backoff entry must not be due yet")
 	}
-	q.wake("x", wakePoke)
+	q.wake("x", wakeNotify)
 	mustPop(t, q, clock, "x")
 }
 
 func TestBackoffEntryBecomesDueAfterDelay(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
 	due, ok := q.nextDue()
@@ -124,9 +119,9 @@ func TestBackoffEntryBecomesDueAfterDelay(t *testing.T) {
 
 func TestRerunAfterSuccessRequeues(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	res := q.finish("x", finishSuccess, 0)
 	if !res.rerun {
 		t.Fatal("armed rerun must be reported")
@@ -142,17 +137,17 @@ func TestRerunAfterSuccessRequeues(t *testing.T) {
 
 func TestSecondWakeWhileRerunArmedCollapses(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
-	q.wake("x", wakePoke)
-	if got := q.wake("x", wakeVersion); got != wakeCollapsed {
+	q.wake("x", wakeNotify)
+	if got := q.wake("x", wakeNotify); got != wakeCollapsed {
 		t.Fatalf("second wake while rerun armed = %v, want collapsed", got)
 	}
 }
 
 func TestDelayFloorsAndFallsBackAfterLimit(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	for i := 0; i < backoff.NoBackoffCap; i++ {
 		mustPop(t, q, clock, "x")
 		res := q.finish("x", finishDelay, 0)
@@ -178,14 +173,14 @@ func TestDelayFloorsAndFallsBackAfterLimit(t *testing.T) {
 
 func TestSuccessResetsNoBackoffStreak(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	for i := 0; i < backoff.NoBackoffCap-1; i++ {
 		mustPop(t, q, clock, "x")
 		q.finish("x", finishDelay, 0)
 		clock.Advance(250 * time.Millisecond)
 	}
 	mustPop(t, q, clock, "x")
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	q.finish("x", finishSuccess, 0)
 	mustPop(t, q, clock, "x")
 	if res := q.finish("x", finishDelay, 0); res.fallback {
@@ -195,7 +190,7 @@ func TestSuccessResetsNoBackoffStreak(t *testing.T) {
 
 func TestNeutralRequeuesWithoutCounting(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishNeutral, 0)
 	mustPop(t, q, clock, "x")
@@ -206,7 +201,7 @@ func TestNeutralRequeuesWithoutCounting(t *testing.T) {
 
 func TestDelayedHonorsRequestedDelay(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishDelay, time.Hour)
 	if _, ok := q.next(clock.Now()); ok {
@@ -221,20 +216,20 @@ func TestOverflowDropsNewIDs(t *testing.T) {
 	for i := 0; i < wakeQueueBound; i++ {
 		q.ids[ID(strconv.Itoa(i))] = &idState{phase: phaseQueued}
 	}
-	if got := q.wake("one-more", wakeHint); got != wakeDroppedOverflow {
+	if got := q.wake("one-more", wakeSweep); got != wakeDroppedOverflow {
 		t.Fatalf("wake beyond bound = %v", got)
 	}
-	if got := q.wake(ID("0"), wakeHint); got != wakeCollapsed {
+	if got := q.wake(ID("0"), wakeSweep); got != wakeCollapsed {
 		t.Fatal("known IDs must still be accepted at the bound")
 	}
 }
 
 func TestCountsAndReset(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("a", wakeHint)
-	q.wake("b", wakeHint)
+	q.wake("a", wakeSweep)
+	q.wake("b", wakeSweep)
 	mustPop(t, q, clock, "a")
-	q.wake("a", wakeHint)
+	q.wake("a", wakeSweep)
 	c := q.counts()
 	if c.depth != 2 {
 		t.Fatalf("depth = %d, want queued b + armed rerun a", c.depth)
@@ -255,7 +250,7 @@ func TestQuietReportsQueueState(t *testing.T) {
 	if !q.quiet(clock.Now()) {
 		t.Fatal("empty queue must be quiet")
 	}
-	q.wake("a", wakeHint)
+	q.wake("a", wakeSweep)
 	if q.quiet(clock.Now()) {
 		t.Fatal("a due queued id must not be quiet")
 	}
@@ -292,7 +287,7 @@ func idsLen(q *wakeQueue) int {
 
 func TestUnknownFinishKindBehavesLikeFailure(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
 	res := q.finish("x", finishKind(99), 0)
 	if !res.settled || res.attempt != 1 {
@@ -313,7 +308,7 @@ func TestFinishOnUnknownIDIsUnsettled(t *testing.T) {
 
 func TestUnknownWakeClassFailsClosed(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
 	if got := q.wake("x", wakeClass(99)); got != wakeCollapsed {
@@ -321,30 +316,30 @@ func TestUnknownWakeClassFailsClosed(t *testing.T) {
 	}
 }
 
-func TestPendingPokeSurvivesFailure(t *testing.T) {
+func TestPendingNotifySurvivesFailure(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
-	q.wake("x", wakePoke)
+	q.wake("x", wakeNotify)
 	res := q.finish("x", finishFailure, 0)
 	if !res.rerun || res.attempt != 1 {
-		t.Fatalf("failure with pending poke = %+v, want rerun with attempt 1", res)
+		t.Fatalf("failure with pending notify = %+v, want rerun with attempt 1", res)
 	}
 	mustPop(t, q, clock, "x")
 }
 
-func TestPendingHintPullsDelayForward(t *testing.T) {
+func TestPendingSweepPullsDelayForward(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	q.finish("x", finishDelay, time.Hour)
 	mustPop(t, q, clock, "x")
 }
 
 func TestRepeatedFallbacksEachTripIndependently(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	var last finishResult
 	trips := 0
 	for i := 0; i < 22; i++ {
@@ -367,11 +362,11 @@ func TestRepeatedFallbacksEachTripIndependently(t *testing.T) {
 
 func TestHeapStaysBounded(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
 	for i := 0; i < 200; i++ {
 		q.finish("x", finishFailure, 0)
-		if got := q.wake("x", wakePoke); got != wakeBypassed {
+		if got := q.wake("x", wakeNotify); got != wakeBypassed {
 			t.Fatalf("iteration %d: wake = %v, want bypassed", i, got)
 		}
 		if hl, il := heapLen(q), idsLen(q); hl > 4*il+16 {
@@ -383,7 +378,7 @@ func TestHeapStaysBounded(t *testing.T) {
 
 func TestStaleDuplicateHeapEntryDiscardedAfterDispatch(t *testing.T) {
 	q, clock := newTestQueue()
-	q.wake("x", wakeHint)
+	q.wake("x", wakeSweep)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
 	due, ok := q.nextDue()
@@ -391,8 +386,8 @@ func TestStaleDuplicateHeapEntryDiscardedAfterDispatch(t *testing.T) {
 		t.Fatal("expected a pending backoff due time")
 	}
 	clock.Advance(due.Sub(clock.Now()))
-	if got := q.wake("x", wakePoke); got != wakeBypassed {
-		t.Fatalf("poke at due instant = %v, want bypassed", got)
+	if got := q.wake("x", wakeNotify); got != wakeBypassed {
+		t.Fatalf("notify at due instant = %v, want bypassed", got)
 	}
 	mustPop(t, q, clock, "x")
 	if _, ok := q.next(clock.Now()); ok {

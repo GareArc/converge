@@ -301,7 +301,7 @@ func TestPeriodicSugar(t *testing.T) {
 	}
 }
 
-func TestStandbyHintSurvivesIntoLeadership(t *testing.T) {
+func TestStandbyNotifySurvivesIntoLeadership(t *testing.T) {
 	blockName := "converge/reconcile/job/lease"
 	clock := convergetest.NewClock(wqStart)
 	lease := inmem.NewLeaseWithClock(clock)
@@ -342,7 +342,7 @@ func TestStandbyHintSurvivesIntoLeadership(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("standby never ready")
 	}
-	if err := e.Hint("ws_7"); err != nil {
+	if err := e.Notify("ws_7"); err != nil {
 		t.Fatal(err)
 	}
 	holder.Release(context.Background())
@@ -355,7 +355,7 @@ func TestStandbyHintSurvivesIntoLeadership(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("standby hint never ran after taking leadership")
+			t.Fatal("standby notify never ran after taking leadership")
 		}
 		clock.Advance(10 * time.Second)
 		time.Sleep(2 * time.Millisecond)
@@ -363,7 +363,7 @@ func TestStandbyHintSurvivesIntoLeadership(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if got[0] != "ws_7" {
-		t.Fatalf("first run = %q, want the standby hint", got[0])
+		t.Fatalf("first run = %q, want the standby notify", got[0])
 	}
 }
 

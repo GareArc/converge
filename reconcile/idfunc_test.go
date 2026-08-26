@@ -17,8 +17,8 @@ func TestRawID(t *testing.T) {
 	}
 }
 
-func TestIDFromJSONField(t *testing.T) {
-	f := reconcile.IDFromJSONField("workspace_id")
+func TestIDFromJSON(t *testing.T) {
+	f := reconcile.IDFromJSON("workspace_id")
 	cases := []struct {
 		payload string
 		want    reconcile.ID

@@ -66,8 +66,8 @@ func (e *engine) Quiet() bool {
 	return e.depth == 0
 }
 
-func (e *engine) Hint(string) error {
-	return fmt.Errorf("worker: job %q: hint is a reconcile verb; workers react to deliveries instead", e.cfg.info.name)
+func (e *engine) Notify(string) error {
+	return fmt.Errorf("worker: job %q: notify is a reconcile verb; workers react to deliveries instead", e.cfg.info.name)
 }
 
 func (e *engine) RunPassNow(context.Context) error {

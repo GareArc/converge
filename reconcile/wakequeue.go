@@ -12,18 +12,12 @@ import (
 type wakeClass int
 
 const (
-	wakeHint wakeClass = iota
-	wakePoke
-	wakeVersion
+	wakeSweep wakeClass = iota
+	wakeNotify
 )
 
 func (c wakeClass) bypassesBackoff() bool {
-	switch c {
-	case wakePoke, wakeVersion:
-		return true
-	default:
-		return false
-	}
+	return c == wakeNotify
 }
 
 type idPhase int

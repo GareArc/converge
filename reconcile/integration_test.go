@@ -115,7 +115,59 @@ func TestTenMinuteTourPeriodic(t *testing.T) {
 	}
 }
 
-func TestMalformedHintsCountedAndDropped(t *testing.T) {
+func TestNotifyFromAnotherBinaryReconcilesTheID(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	seen := make(chan string, 4)
+	if err := reconcile.Register(rt, reconcile.Spec{
+		Name: "merchants",
+		Reconcile: func(_ context.Context, id reconcile.ID) error {
+			seen <- string(id)
+			return nil
+		},
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
+			reconcile.Notifications(reconcile.NotificationsOpts{}),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Notify(context.Background(), "merchants", "m-42"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-seen:
+		if id != "m-42" {
+			t.Fatalf("reconciled %q, want %q", id, "m-42")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification never reached the reconciler")
+	}
+}
+
+func TestNotificationsFromRequiresAnIDFunction(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	err := reconcile.Register(rt, reconcile.Spec{
+		Name:      "workspaces",
+		Reconcile: func(context.Context, reconcile.ID) error { return nil },
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
+			reconcile.NotificationsFrom("legacy:queue", reconcile.NotificationsOpts{}),
+		},
+	})
+	if err == nil {
+		t.Fatal("NotificationsFrom accepted with no ID function")
+	}
+}
+
+func TestMalformedNotificationsCountedAndDropped(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	var mu sync.Mutex
@@ -130,7 +182,7 @@ func TestMalformedHintsCountedAndDropped(t *testing.T) {
 		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
-			reconcile.OnMessage("member-events", reconcile.IDFromJSONField("workspace_id"), reconcile.OnMessageOpts{}),
+			reconcile.NotificationsFrom("member-events", reconcile.NotificationsOpts{ID: reconcile.IDFromJSON("workspace_id")}),
 		},
 	})
 	if err != nil {

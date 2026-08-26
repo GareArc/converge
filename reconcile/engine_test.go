@@ -72,7 +72,7 @@ func TestSuccessRunsOnceAndStampsStats(t *testing.T) {
 		*(n.(*int))++
 		return nil
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
@@ -100,7 +100,7 @@ func TestFailureBacksOffThenRecovers(t *testing.T) {
 		}
 		return nil
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 1 {
 		t.Fatalf("ConsecutiveFails = %d", s.ConsecutiveFails)
@@ -121,7 +121,7 @@ func TestCheckAgainSchedulesRevisitWithoutFailure(t *testing.T) {
 		}
 		return nil
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 0 || s.LastSuccess.IsZero() {
 		t.Fatalf("CheckAgain must not count as failure: %+v", s)
@@ -141,7 +141,7 @@ func TestErrOutdatedRequeuesImmediately(t *testing.T) {
 		}
 		return nil
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 	advanceUntil(t, te, 100*time.Millisecond, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 0 {
@@ -153,7 +153,7 @@ func TestPanicIsAFailure(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
 		panic("kaboom")
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
@@ -174,7 +174,7 @@ func TestForeignSignalIsAPlainFailure(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
 		return fakeWorkerSignal{}
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
@@ -193,7 +193,7 @@ func TestNeutralOnCanceledContext(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	<-started
 	te.hstop()
 	convergetest.Await(t, func() bool {
@@ -229,8 +229,8 @@ func TestSingleFlightPerID(t *testing.T) {
 		return nil
 	})
 	for i := 0; i < 50; i++ {
-		te.e.hint(context.Background(), "a")
-		te.e.hint(context.Background(), "b")
+		te.e.notify(context.Background(), "a")
+		te.e.notify(context.Background(), "b")
 	}
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
@@ -274,7 +274,7 @@ func TestMiddlewareWrapsEveryRunOutermostFirst(t *testing.T) {
 	defer cancel()
 	var wg sync.WaitGroup
 	go e.dispatch(ctx, ctx, &wg)
-	e.hint(context.Background(), "x")
+	e.notify(context.Background(), "x")
 	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -287,9 +287,9 @@ func TestMiddlewareWrapsEveryRunOutermostFirst(t *testing.T) {
 	}
 }
 
-func TestEmptyIDHintRejectedUnlessSingle(t *testing.T) {
+func TestEmptyIDNotifyRejectedUnlessSingle(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
-	te.e.hint(context.Background(), "")
+	te.e.notify(context.Background(), "")
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
 			wd, ok := e.(converge.WakeDiscarded)
@@ -297,7 +297,7 @@ func TestEmptyIDHintRejectedUnlessSingle(t *testing.T) {
 		}) == 1
 	})
 	single := startEngine(t, config{name: "single", single: true}, func(ctx context.Context, id ID) error { return nil })
-	single.e.hint(context.Background(), "")
+	single.e.notify(context.Background(), "")
 	convergetest.Await(t, func() bool {
 		return single.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.RunCompleted)
@@ -306,12 +306,12 @@ func TestEmptyIDHintRejectedUnlessSingle(t *testing.T) {
 	})
 }
 
-func TestHintWhenNotRunningIsDropped(t *testing.T) {
+func TestNotifyWhenNotRunningIsDropped(t *testing.T) {
 	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
-	e.hint(context.Background(), "a")
+	e.notify(context.Background(), "a")
 }
 
-func TestEmptyIDHintAfterTeardownStillReportsDiscard(t *testing.T) {
+func TestEmptyIDNotifyAfterTeardownStillReportsDiscard(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	rec := &convergetest.Recorder{}
 	e := &engine{cfg: config{name: "job", concurrency: 1, fn: func(context.Context, ID) error { return nil }}, ready: make(chan struct{})}
@@ -321,12 +321,12 @@ func TestEmptyIDHintAfterTeardownStillReportsDiscard(t *testing.T) {
 	e.mu.Lock()
 	e.queue = nil
 	e.mu.Unlock()
-	e.hint(context.Background(), "")
+	e.notify(context.Background(), "")
 	if n := rec.Count(func(ev converge.Event) bool {
 		wd, ok := ev.(converge.WakeDiscarded)
 		return ok && wd.Reason == converge.DiscardEmptyID
 	}); n != 1 {
-		t.Fatalf("empty-id hint after teardown = %d DiscardEmptyID events, want 1", n)
+		t.Fatalf("empty-id notify after teardown = %d DiscardEmptyID events, want 1", n)
 	}
 }
 
@@ -348,7 +348,7 @@ func TestQuietFalseWhileHandlerBlocks(t *testing.T) {
 	if !te.e.Quiet() {
 		t.Fatal("engine must start quiet")
 	}
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	<-started
 	if te.e.Quiet() {
 		t.Fatal("must not be quiet while a handler runs")
@@ -361,30 +361,30 @@ func TestQuietTrueWithOnlyFutureBackoffItems(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
 		return errors.New("boom")
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	convergetest.Await(t, func() bool { return te.e.Stats().ConsecutiveFails == 1 })
 	if !te.e.Quiet() {
 		t.Fatal("a future-due backoff item must be quiet")
 	}
 }
 
-func TestHintBeforeBindFails(t *testing.T) {
+func TestNotifyBeforeBindFails(t *testing.T) {
 	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
-	if err := e.Hint("x"); err == nil {
-		t.Fatal("hint before Run must error")
+	if err := e.Notify("x"); err == nil {
+		t.Fatal("notify before Run must error")
 	}
 }
 
-func TestHintEmptyIDOnMultiIDJobFails(t *testing.T) {
+func TestNotifyEmptyIDOnMultiIDJobFails(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
-	if err := te.e.Hint(""); err == nil {
-		t.Fatal("empty hint on a multi-ID job must error")
+	if err := te.e.Notify(""); err == nil {
+		t.Fatal("empty notify on a multi-ID job must error")
 	}
 }
 
-func TestHintOnSingleJobCoercesIDToEmpty(t *testing.T) {
+func TestNotifyOnSingleJobCoercesIDToEmpty(t *testing.T) {
 	te := startEngine(t, config{single: true}, func(ctx context.Context, id ID) error { return nil })
-	if err := te.e.Hint("whatever"); err != nil {
+	if err := te.e.Notify("whatever"); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -395,7 +395,7 @@ func TestHintOnSingleJobCoercesIDToEmpty(t *testing.T) {
 	})
 }
 
-func TestHintRespectsBackoff(t *testing.T) {
+func TestNotifyRespectsBackoff(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
@@ -407,15 +407,15 @@ func TestHintRespectsBackoff(t *testing.T) {
 		}
 		return nil
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
-	if err := te.e.Hint("a"); err != nil {
+	if err := te.e.Notify("a"); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 }
 
-func TestHintDoesNotPanicRacingShutdown(t *testing.T) {
+func TestNotifyDoesNotPanicRacingShutdown(t *testing.T) {
 	spec := Spec{
 		Name:      "job",
 		Reconcile: func(context.Context, ID) error { return nil },
@@ -439,7 +439,7 @@ func TestHintDoesNotPanicRacingShutdown(t *testing.T) {
 				return
 			default:
 			}
-			le.e.Hint("a")
+			le.e.Notify("a")
 		}
 	}()
 	cancel()
@@ -450,7 +450,7 @@ func TestHintDoesNotPanicRacingShutdown(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("hint loop never stopped")
+		t.Fatal("notify loop never stopped")
 	}
 }
 
@@ -483,7 +483,7 @@ func TestBackoffFallbackReportsTrueTripCount(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
 		return CheckAgain{}
 	})
-	te.e.hint(context.Background(), "a")
+	te.e.notify(context.Background(), "a")
 	advanceUntil(t, te, 300*time.Millisecond, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
 			_, ok := e.(converge.BackoffFallback)

@@ -75,12 +75,14 @@ func newEngine(s Spec) (*engine, error) {
 			if tr.source.single {
 				cfg.single = true
 			}
-		case *messageTrigger:
-			if tr.queue == "" {
-				return nil, fail("OnMessage needs a queue name")
-			}
-			if tr.idf == nil {
-				return nil, fail("OnMessage needs an IDFunc")
+		case *notificationTrigger:
+			if tr.foreign {
+				if tr.queue == "" {
+					return nil, fail("NotificationsFrom needs a queue name")
+				}
+				if tr.opts.ID == nil {
+					return nil, fail("NotificationsFrom needs an ID function")
+				}
 			}
 		}
 	}

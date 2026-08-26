@@ -11,14 +11,14 @@ import (
 
 const listPopBlock = time.Second
 
-func ListTrigger(rdb *redis.Client, key string, id reconcile.IDFunc) reconcile.Trigger {
+func ListTrigger(rdb *redis.Client, key string, id func(payload []byte) (reconcile.ID, error)) reconcile.Trigger {
 	return &listTrigger{rdb: rdb, key: key, idf: id}
 }
 
 type listTrigger struct {
 	rdb *redis.Client
 	key string
-	idf reconcile.IDFunc
+	idf func(payload []byte) (reconcile.ID, error)
 }
 
 func (t *listTrigger) Run(ctx context.Context, wake func(reconcile.ID)) error {

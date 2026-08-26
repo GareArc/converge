@@ -95,18 +95,18 @@ func (e *engine) Quiet() bool {
 	return q.quiet(e.deps.Clock.Now())
 }
 
-func (e *engine) Hint(id string) error {
+func (e *engine) Notify(id string) error {
 	q := e.wakeQueueRef()
 	if q == nil {
 		return fmt.Errorf("reconcile: job %q is not running", e.cfg.name)
 	}
 	if id == "" && !e.cfg.single {
-		return fmt.Errorf("reconcile: job %q: hint needs an id", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: notify needs an id", e.cfg.name)
 	}
 	if e.cfg.single {
 		id = ""
 	}
-	e.hintVia(context.Background(), q, ID(id))
+	e.notifyVia(context.Background(), q, ID(id), wakeSweep)
 	return nil
 }
 
@@ -178,7 +178,7 @@ func (e *engine) Info() converge.JobInfo {
 	if sched := scheduleSetting(e.cfg.triggers); sched != "" {
 		settings["schedule"] = sched
 	}
-	if trig := triggersSetting(e.cfg.triggers); trig != "" {
+	if trig := e.triggersSetting(); trig != "" {
 		settings["triggers"] = trig
 	}
 	if v := versionsSetting(e.cfg.versions); v != "" {
@@ -192,21 +192,27 @@ func (e *engine) Info() converge.JobInfo {
 	}
 }
 
-func triggerLabel(t Trigger) string {
+func (e *engine) triggerLabel(t Trigger) string {
 	switch tr := t.(type) {
 	case *scheduleTrigger:
 		return "schedule"
-	case *messageTrigger:
-		return "on-message " + tr.queue
+	case *notificationTrigger:
+		e.mu.Lock()
+		queue := tr.queue
+		e.mu.Unlock()
+		if tr.foreign {
+			return "notifications-from " + queue
+		}
+		return "notifications"
 	default:
 		return "custom"
 	}
 }
 
-func triggersSetting(triggers []Trigger) string {
-	labels := make([]string, 0, len(triggers))
-	for _, t := range triggers {
-		labels = append(labels, triggerLabel(t))
+func (e *engine) triggersSetting() string {
+	labels := make([]string, 0, len(e.cfg.triggers))
+	for _, t := range e.cfg.triggers {
+		labels = append(labels, e.triggerLabel(t))
 	}
 	return strings.Join(labels, " + ")
 }
@@ -228,11 +234,11 @@ func versionsSetting(v VersionSource) string {
 	return "custom"
 }
 
-func (e *engine) hint(ctx context.Context, id ID) {
-	e.hintVia(ctx, e.wakeQueueRef(), id)
+func (e *engine) notify(ctx context.Context, id ID) {
+	e.notifyVia(ctx, e.wakeQueueRef(), id, wakeSweep)
 }
 
-func (e *engine) hintVia(ctx context.Context, q *wakeQueue, id ID) {
+func (e *engine) notifyVia(ctx context.Context, q *wakeQueue, id ID, class wakeClass) {
 	if id == "" && !e.cfg.single {
 		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
 		return
@@ -240,7 +246,7 @@ func (e *engine) hintVia(ctx context.Context, q *wakeQueue, id ID) {
 	if q == nil {
 		return
 	}
-	e.report(id, q.wake(id, wakeHint))
+	e.report(id, q.wake(id, class))
 }
 
 func (e *engine) report(id ID, res wakeResult) {
@@ -451,7 +457,7 @@ func (e *engine) bind(deps converge.JobDeps) error {
 		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.name)
 	}
 	for _, t := range e.cfg.triggers {
-		if tr, ok := t.(*messageTrigger); ok {
+		if tr, ok := t.(*notificationTrigger); ok {
 			if err := tr.bind(e); err != nil {
 				return err
 			}

@@ -7,19 +7,6 @@ import (
 	"github.com/GareArc/converge/internal/hook"
 )
 
-type Producer struct {
-	MQ    converge.MQ
-	Clock converge.Clock
-}
-
-func ProducerFor(rt *converge.Runtime) (Producer, error) {
-	w, err := hook.ProducerDeps(rt)
-	if err != nil {
-		return Producer{}, err
-	}
-	return Producer{MQ: asMQ(w.MQ), Clock: asClock(w.Clock)}, nil
-}
-
 type Ops struct {
 	KV        converge.KV
 	MQ        converge.MQ

@@ -17,7 +17,7 @@ type job interface {
 	Stats() JobStats
 	Info() JobInfo
 	Quiet() bool
-	Hint(id string) error
+	Notify(id string) error
 	RunPassNow(ctx context.Context) error
 }
 
@@ -43,16 +43,6 @@ func init() {
 			return fmt.Errorf("converge: register: %T does not satisfy the engine job contract", j)
 		}
 		return r.register(jj)
-	}
-	hook.ProducerDeps = func(rt any) (hook.ProducerWiring, error) {
-		r, ok := rt.(*Runtime)
-		if !ok || r == nil {
-			return hook.ProducerWiring{}, fmt.Errorf("converge: producer: %T is not a usable *converge.Runtime", rt)
-		}
-		return hook.ProducerWiring{
-			MQ:    r.opts.MQ,
-			Clock: r.opts.Clock,
-		}, nil
 	}
 	hook.Inspect = func(rt any) (any, error) {
 		r, ok := rt.(*Runtime)
@@ -84,10 +74,10 @@ func init() {
 			Replica:   r.replica,
 		}, nil
 	}
-	hook.Hint = func(rt any, jobName, id string) error {
+	hook.Notify = func(rt any, jobName, id string) error {
 		r, ok := rt.(*Runtime)
 		if !ok || r == nil {
-			return fmt.Errorf("converge: hint: %T is not a usable *converge.Runtime", rt)
+			return fmt.Errorf("converge: notify: %T is not a usable *converge.Runtime", rt)
 		}
 		r.mu.Lock()
 		j, ok := r.jobs[jobName]
@@ -95,7 +85,7 @@ func init() {
 		if !ok {
 			return fmt.Errorf("converge: unknown job %q", jobName)
 		}
-		return j.Hint(id)
+		return j.Notify(id)
 	}
 	hook.RunPassNow = func(rt any, ctx context.Context, jobName string) error {
 		r, ok := rt.(*Runtime)

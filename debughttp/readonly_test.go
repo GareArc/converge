@@ -84,7 +84,7 @@ func (j *foreignJob) Ready() <-chan struct{} { return j.ready }
 
 func (j *foreignJob) Quiet() bool { return true }
 
-func (j *foreignJob) Hint(id string) error { return nil }
+func (j *foreignJob) Notify(id string) error { return nil }
 
 func (j *foreignJob) RunPassNow(ctx context.Context) error { return nil }
 

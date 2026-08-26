@@ -6,9 +6,7 @@ import (
 	"fmt"
 )
 
-type IDFunc func(payload []byte) (ID, error)
-
-func RawID() IDFunc {
+func RawID() func(payload []byte) (ID, error) {
 	return func(payload []byte) (ID, error) {
 		if len(payload) == 0 {
 			return "", errors.New("reconcile: empty payload")
@@ -17,7 +15,7 @@ func RawID() IDFunc {
 	}
 }
 
-func IDFromJSONField(field string) IDFunc {
+func IDFromJSON(field string) func(payload []byte) (ID, error) {
 	return func(payload []byte) (ID, error) {
 		vals, err := jsonStringFields(payload, field)
 		if err != nil {
@@ -33,20 +31,20 @@ func jsonStringFields(payload []byte, fields ...string) ([]string, error) {
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(payload, &obj); err != nil {
-		return nil, fmt.Errorf("reconcile: decode hint: %w", err)
+		return nil, fmt.Errorf("reconcile: decode notification: %w", err)
 	}
 	out := make([]string, len(fields))
 	for i, f := range fields {
 		v, ok := obj[f]
 		if !ok {
-			return nil, fmt.Errorf("reconcile: hint has no field %q", f)
+			return nil, fmt.Errorf("reconcile: notification has no field %q", f)
 		}
 		s, ok := v.(string)
 		if !ok {
-			return nil, fmt.Errorf("reconcile: hint field %q is not a string", f)
+			return nil, fmt.Errorf("reconcile: notification field %q is not a string", f)
 		}
 		if s == "" {
-			return nil, fmt.Errorf("reconcile: hint field %q is empty", f)
+			return nil, fmt.Errorf("reconcile: notification field %q is empty", f)
 		}
 		out[i] = s
 	}
