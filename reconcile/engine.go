@@ -451,12 +451,7 @@ func (e *engine) bind(deps converge.JobDeps) error {
 		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.name)
 	}
 	for _, t := range e.cfg.triggers {
-		switch tr := t.(type) {
-		case *scheduleTrigger:
-			if deps.KV == nil {
-				return fmt.Errorf("reconcile: job %q: Schedule needs Options.KV", e.cfg.name)
-			}
-		case *messageTrigger:
+		if tr, ok := t.(*messageTrigger); ok {
 			if err := tr.bind(e); err != nil {
 				return err
 			}

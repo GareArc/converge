@@ -157,6 +157,43 @@ func TestMalformedHintsCountedAndDropped(t *testing.T) {
 	})
 }
 
+func TestScheduleRunsWithoutKV(t *testing.T) {
+	clock := convergetest.NewClock(start)
+	rt, err := converge.New(converge.Options{Lease: inmem.NewLeaseWithClock(clock), Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan struct{})
+	var once sync.Once
+	if err := reconcile.Periodic(rt, "no-kv", reconcile.Every(time.Hour), func(context.Context) error {
+		once.Do(func() { close(ran) })
+		return nil
+	}); err != nil {
+		t.Fatalf("Register with Options.KV nil: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx) }()
+
+	select {
+	case <-ran:
+	case err := <-done:
+		t.Fatalf("Run returned %v with Options.KV nil; the last fire must fall back to in-process memory", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a Schedule trigger never fired with Options.KV nil")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run = %v, want nil on clean shutdown", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+}
+
 func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 	clock := convergetest.NewClock(start)
 	kv := inmem.NewKVWithClock(clock)

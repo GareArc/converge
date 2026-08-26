@@ -55,7 +55,7 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 	cursorKey := e.key("sched", strconv.Itoa(idx), "cursor")
 	readLast := func(ctx context.Context) (time.Time, bool) { return e.readTime(ctx, lastKey) }
 	writeLast := func(ctx context.Context, t time.Time) { e.writeTime(ctx, lastKey, t) }
-	if e.cfg.runMode == converge.OnAllReplicas {
+	if e.cfg.runMode == converge.OnAllReplicas || e.deps.KV == nil {
 		var local time.Time
 		readLast = func(context.Context) (time.Time, bool) { return local, !local.IsZero() }
 		writeLast = func(_ context.Context, t time.Time) { local = t }
@@ -183,6 +183,9 @@ func (e *engine) writeTime(ctx context.Context, key string, t time.Time) {
 }
 
 func (e *engine) readString(ctx context.Context, key string) string {
+	if e.deps.KV == nil {
+		return ""
+	}
 	for {
 		val, ok, err := e.deps.KV.Get(ctx, key)
 		if err == nil {
@@ -198,6 +201,9 @@ func (e *engine) readString(ctx context.Context, key string) string {
 }
 
 func (e *engine) writeString(ctx context.Context, key, val string) {
+	if e.deps.KV == nil {
+		return
+	}
 	for {
 		if err := e.deps.KV.Set(ctx, key, []byte(val), 0); err == nil {
 			return
@@ -209,6 +215,9 @@ func (e *engine) writeString(ctx context.Context, key, val string) {
 }
 
 func (e *engine) deleteKey(ctx context.Context, key string) {
+	if e.deps.KV == nil {
+		return
+	}
 	for {
 		if err := e.deps.KV.Delete(ctx, key); err == nil {
 			return

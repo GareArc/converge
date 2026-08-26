@@ -91,7 +91,7 @@ func specWithSchedule() Spec {
 	}
 }
 
-func TestRunRejectsBadDeps(t *testing.T) {
+func TestRunRejectsOnOneReplicaWithoutALease(t *testing.T) {
 	e, err := newEngine(specWithSchedule())
 	if err != nil {
 		t.Fatal(err)
@@ -99,14 +99,6 @@ func TestRunRejectsBadDeps(t *testing.T) {
 	deps := converge.JobDeps{KV: inmem.NewKV(), Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}}
 	if err := e.Run(context.Background(), deps); err == nil {
 		t.Fatal("OnOneReplica without a Lease must fail Run")
-	}
-	e2, err := newEngine(specWithSchedule())
-	if err != nil {
-		t.Fatal(err)
-	}
-	deps2 := converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}}
-	if err := e2.Run(context.Background(), deps2); err == nil {
-		t.Fatal("Schedule without KV must fail Run")
 	}
 }
 
