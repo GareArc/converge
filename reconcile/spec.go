@@ -68,16 +68,11 @@ func newEngine(s Spec) (*engine, error) {
 	if cfg.runMode.IsZero() {
 		cfg.runMode = converge.OnOneReplica
 	}
-	switch cfg.runMode {
-	case converge.SplitAcrossReplicas:
-		return nil, fail("SplitAcrossReplicas is not supported on the reconcile surface in v1")
-	case converge.OnAllReplicas:
-		if s.Versions != nil {
-			return nil, fail("OnAllReplicas cannot use Versions")
-		}
-		if !s.RateLimit.IsZero() {
-			return nil, fail("OnAllReplicas cannot use RateLimit")
-		}
+	if cfg.runMode == converge.Competing {
+		return nil, fail("Competing is a worker mode")
+	}
+	if cfg.runMode == converge.OnAllReplicas && !s.RateLimit.IsZero() {
+		return nil, fail("OnAllReplicas cannot use RateLimit")
 	}
 	periodic := false
 	for _, t := range cfg.triggers {
@@ -98,9 +93,6 @@ func newEngine(s Spec) (*engine, error) {
 			if tr.cad.every == 0 && tr.cad.sched == nil {
 				return nil, fail("Schedule needs a Cadence; use Every or Cron")
 			}
-			if tr.source.paged && cfg.runMode == converge.OnAllReplicas {
-				return nil, fail("OnAllReplicas cannot use IDsByPage")
-			}
 			if tr.source.single {
 				cfg.single = true
 			}
@@ -110,9 +102,6 @@ func newEngine(s Spec) (*engine, error) {
 			}
 			if tr.idf == nil {
 				return nil, fail("OnMessage needs an IDFunc")
-			}
-			if cfg.runMode == converge.OnAllReplicas && tr.opts.Delivery == converge.Group {
-				return nil, fail("OnAllReplicas requires Broadcast delivery")
 			}
 		}
 	}

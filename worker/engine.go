@@ -136,9 +136,9 @@ func (e *engine) bind(deps converge.JobDeps) error {
 		return fmt.Errorf("worker: job %q: needs an MQ (HandleOpts.MQ or Options.MQ)", e.cfg.info.name)
 	}
 	switch e.cfg.runMode {
-	case converge.SplitAcrossReplicas:
+	case converge.Competing:
 		if _, ok := e.mq.(converge.GroupConsumer); !ok {
-			return fmt.Errorf("worker: job %q: SplitAcrossReplicas needs the GroupConsumer capability", e.cfg.info.name)
+			return fmt.Errorf("worker: job %q: Competing needs the GroupConsumer capability", e.cfg.info.name)
 		}
 	case converge.OnAllReplicas:
 		if _, ok := e.mq.(converge.BroadcastConsumer); !ok {

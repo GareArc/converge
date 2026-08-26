@@ -116,8 +116,8 @@ func TestNewEngineAppliesDefaults(t *testing.T) {
 	if e.cfg.retry != wantRetry {
 		t.Fatalf("retry = %+v, want %+v", e.cfg.retry, wantRetry)
 	}
-	if e.cfg.runMode != converge.SplitAcrossReplicas {
-		t.Fatalf("runMode = %v, want %v", e.cfg.runMode, converge.SplitAcrossReplicas)
+	if e.cfg.runMode != converge.Competing {
+		t.Fatalf("runMode = %v, want %v", e.cfg.runMode, converge.Competing)
 	}
 }
 
@@ -127,7 +127,7 @@ func TestEngineInfoRendersDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	info := e.Info()
-	if info.Job != "job" || info.Surface != converge.SurfaceWorker || info.RunMode != converge.SplitAcrossReplicas {
+	if info.Job != "job" || info.Surface != converge.SurfaceWorker || info.RunMode != converge.Competing {
 		t.Fatalf("identity = %+v", info)
 	}
 	if info.Queue != "job" {
@@ -223,9 +223,9 @@ func TestBindFailures(t *testing.T) {
 			wantErr: "needs an MQ",
 		},
 		{
-			name:    "split without group consumer",
+			name:    "competing without group consumer",
 			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: publishConsumeMQ{inmem.NewMQ()}, RunMode: converge.SplitAcrossReplicas},
+			handle:  HandleOpts{MQ: publishConsumeMQ{inmem.NewMQ()}, RunMode: converge.Competing},
 			wantErr: "GroupConsumer",
 		},
 		{
@@ -241,15 +241,15 @@ func TestBindFailures(t *testing.T) {
 			wantErr: "Options.Lease",
 		},
 		{
-			name:    "group mode without kv",
+			name:    "competing without kv",
 			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: inmem.NewMQ(), RunMode: converge.SplitAcrossReplicas},
+			handle:  HandleOpts{MQ: inmem.NewMQ(), RunMode: converge.Competing},
 			wantErr: "Options.KV",
 		},
 		{
-			name:    "group mode mq without delayed publisher",
+			name:    "competing mq without delayed publisher",
 			opts:    converge.Options{KV: inmem.NewKV()},
-			handle:  HandleOpts{MQ: groupOnlyMQ{inmem.NewMQ()}, RunMode: converge.SplitAcrossReplicas},
+			handle:  HandleOpts{MQ: groupOnlyMQ{inmem.NewMQ()}, RunMode: converge.Competing},
 			wantErr: "DelayedPublisher",
 		},
 	}

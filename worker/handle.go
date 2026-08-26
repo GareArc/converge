@@ -114,7 +114,7 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 		return nil, fail("Retry.MinBackoff must not exceed Retry.MaxBackoff")
 	}
 	if cfg.runMode.IsZero() {
-		cfg.runMode = converge.SplitAcrossReplicas
+		cfg.runMode = converge.Competing
 	}
 	if cfg.runMode == converge.OnAllReplicas && o.Retry != (RetryPolicy{}) {
 		return nil, fail("OnAllReplicas cannot use Retry")

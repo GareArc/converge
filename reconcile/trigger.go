@@ -26,8 +26,7 @@ const (
 var triggerRestartCurve = backoff.Curve{Min: triggerRestartMin, Max: triggerRestartMax}
 
 type OnMessageOpts struct {
-	MQ       converge.MQ
-	Delivery converge.DeliveryMode
+	MQ converge.MQ
 }
 
 type messageTrigger struct {
@@ -35,8 +34,8 @@ type messageTrigger struct {
 	idf   IDFunc
 	opts  OnMessageOpts
 
-	mq       converge.MQ
-	delivery converge.DeliveryMode
+	mq        converge.MQ
+	broadcast bool
 }
 
 func OnMessage(queue string, id IDFunc, o OnMessageOpts) Trigger {
@@ -56,23 +55,15 @@ func (t *messageTrigger) bind(e *engine) error {
 	if t.mq == nil {
 		return fmt.Errorf("reconcile: job %q: OnMessage(%q) needs an MQ", e.cfg.name, t.queue)
 	}
-	t.delivery = t.opts.Delivery
-	if t.delivery.IsZero() {
-		if e.cfg.runMode == converge.OnAllReplicas {
-			t.delivery = converge.Broadcast
-		} else {
-			t.delivery = converge.Group
-		}
-	}
-	switch t.delivery {
-	case converge.Group:
-		if _, ok := t.mq.(converge.GroupConsumer); !ok {
-			return fmt.Errorf("reconcile: job %q: OnMessage(%q) with Group delivery needs the GroupConsumer capability", e.cfg.name, t.queue)
-		}
-	case converge.Broadcast:
+	if e.cfg.runMode == converge.OnAllReplicas {
 		if _, ok := t.mq.(converge.BroadcastConsumer); !ok {
-			return fmt.Errorf("reconcile: job %q: OnMessage(%q) with Broadcast delivery needs the BroadcastConsumer capability", e.cfg.name, t.queue)
+			return fmt.Errorf("reconcile: job %q: notifications from %q need the BroadcastConsumer capability", e.cfg.name, t.queue)
 		}
+		t.broadcast = true
+		return nil
+	}
+	if _, ok := t.mq.(converge.GroupConsumer); !ok {
+		return fmt.Errorf("reconcile: job %q: notifications from %q need the GroupConsumer capability", e.cfg.name, t.queue)
 	}
 	return nil
 }
@@ -94,7 +85,7 @@ func (e *engine) runMessages(ctx context.Context, t *messageTrigger) {
 		e.deliverHint(ctx, t, d)
 	}
 	e.supervise(ctx, func() {
-		if t.delivery == converge.Broadcast {
+		if t.broadcast {
 			t.mq.(converge.BroadcastConsumer).ConsumeBroadcast(ctx, t.queue, deliver)
 		} else {
 			t.mq.(converge.GroupConsumer).ConsumeGroup(ctx, t.queue, e.key("hints"), deliver)

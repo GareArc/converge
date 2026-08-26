@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
+	"github.com/GareArc/converge/convergetest"
 )
 
 func okSpec() Spec {
@@ -31,26 +32,10 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"negative concurrency", func(s *Spec) { s.Concurrency = -1 }, "Concurrency"},
 		{"negative rate", func(s *Spec) { s.RateLimit = converge.Rate{Events: -1, Per: time.Second} }, "RateLimit"},
 		{"half rate", func(s *Spec) { s.RateLimit = converge.Rate{Events: 5} }, "RateLimit"},
-		{"split across replicas", func(s *Spec) { s.RunMode = converge.SplitAcrossReplicas }, "SplitAcrossReplicas"},
-		{"all replicas with versions", func(s *Spec) {
-			s.RunMode = converge.OnAllReplicas
-			s.Versions = fakeVersions{}
-		}, "Versions"},
 		{"all replicas with rate limit", func(s *Spec) {
 			s.RunMode = converge.OnAllReplicas
 			s.RateLimit = converge.Rate{Events: 1, Per: time.Second}
 		}, "RateLimit"},
-		{"all replicas with paged source", func(s *Spec) {
-			s.RunMode = converge.OnAllReplicas
-			s.Triggers = []Trigger{Schedule(IDsByPage(func(context.Context, string) ([]ID, string, error) {
-				return nil, "", nil
-			}), Every(time.Hour))}
-		}, "IDsByPage"},
-		{"all replicas with explicit group delivery", func(s *Spec) {
-			s.RunMode = converge.OnAllReplicas
-			s.AllowUnscheduled = true
-			s.Triggers = []Trigger{OnMessage("q", RawID(), OnMessageOpts{Delivery: converge.Group})}
-		}, "Broadcast"},
 		{"nil trigger", func(s *Spec) { s.Triggers = append(s.Triggers, nil) }, "nil"},
 		{"zero id source", func(s *Spec) { s.Triggers = []Trigger{Schedule(IDSource{}, Every(time.Hour))} }, "IDSource"},
 		{"bad cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Every(-time.Second))} }, "positive"},
@@ -94,6 +79,45 @@ func TestSpecValidationMatrix(t *testing.T) {
 type fakeVersions struct{}
 
 func (fakeVersions) Latest(context.Context, ID) (Version, error) { return 0, nil }
+
+func TestCompetingIsRejectedOnReconcile(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	err := Register(rt, Spec{
+		Name:       "nope",
+		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Triggers:   []Trigger{Schedule(SingleID(), Every(time.Minute))},
+		RunMode:    converge.Competing,
+	})
+	if err == nil {
+		t.Fatal("Competing accepted on the reconcile surface")
+	}
+	if !strings.Contains(err.Error(), "Competing is a worker mode") {
+		t.Fatalf("error %q does not name the rule", err)
+	}
+}
+
+func TestOnAllReplicasAcceptsVersionsAndPagedIDs(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	if err := Register(rt, Spec{
+		Name:       "broadcast-paged",
+		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Triggers: []Trigger{Schedule(
+			IDsByPage(func(context.Context, string) ([]ID, string, error) { return nil, "", nil }),
+			Every(time.Minute))},
+		RunMode:  converge.OnAllReplicas,
+		Versions: fixedVersions{},
+	}); err != nil {
+		t.Fatalf("OnAllReplicas with paged IDs and Versions: %v", err)
+	}
+}
+
+type fixedVersions struct{}
+
+func (fixedVersions) Latest(context.Context, ID) (Version, error) {
+	return 1, nil
+}
 
 func TestNewEngineAppliesDefaults(t *testing.T) {
 	e, err := newEngine(okSpec())

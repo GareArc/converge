@@ -139,8 +139,8 @@ func TestOnMessageBindDefaultsAndCapabilities(t *testing.T) {
 	if err := trig.bind(e); err != nil {
 		t.Fatal(err)
 	}
-	if trig.delivery != converge.Group || trig.mq != converge.MQ(mq) {
-		t.Fatalf("bind = %v %T", trig.delivery, trig.mq)
+	if trig.broadcast || trig.mq != converge.MQ(mq) {
+		t.Fatalf("bind = %v %T", trig.broadcast, trig.mq)
 	}
 	all := &engine{cfg: config{name: "job", runMode: converge.OnAllReplicas}}
 	all.deps = e.deps
@@ -148,8 +148,8 @@ func TestOnMessageBindDefaultsAndCapabilities(t *testing.T) {
 	if err := bTrig.bind(all); err != nil {
 		t.Fatal(err)
 	}
-	if bTrig.delivery != converge.Broadcast {
-		t.Fatalf("OnAllReplicas default delivery = %v", bTrig.delivery)
+	if !bTrig.broadcast {
+		t.Fatalf("OnAllReplicas default broadcast = %v", bTrig.broadcast)
 	}
 	noMQ := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
 	noMQ.deps = converge.JobDeps{Clock: clock, Observer: &convergetest.Recorder{}}
@@ -160,10 +160,12 @@ func TestOnMessageBindDefaultsAndCapabilities(t *testing.T) {
 	e2 := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
 	e2.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &convergetest.Recorder{}}
 	if err := (OnMessage("q", RawID(), OnMessageOpts{}).(*messageTrigger)).bind(e2); err == nil {
-		t.Fatal("Group delivery without GroupConsumer must error")
+		t.Fatal("OnOneReplica without GroupConsumer must error")
 	}
-	if err := (OnMessage("q", RawID(), OnMessageOpts{Delivery: converge.Broadcast}).(*messageTrigger)).bind(e2); err == nil {
-		t.Fatal("Broadcast delivery without BroadcastConsumer must error")
+	e3 := &engine{cfg: config{name: "job", runMode: converge.OnAllReplicas}}
+	e3.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &convergetest.Recorder{}}
+	if err := (OnMessage("q", RawID(), OnMessageOpts{}).(*messageTrigger)).bind(e3); err == nil {
+		t.Fatal("OnAllReplicas without BroadcastConsumer must error")
 	}
 }
 
