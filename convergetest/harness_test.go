@@ -203,7 +203,7 @@ func TestFailNextPublishSurfacesOnEnqueue(t *testing.T) {
 
 func leaseDropped(events []converge.Event, job string) bool {
 	for _, e := range events {
-		if lt, ok := e.(converge.LeaseTransition); ok && lt.Job == job && !lt.Acquired {
+		if lt, ok := e.(converge.LeaseChanged); ok && lt.Job == job && !lt.Held {
 			return true
 		}
 	}

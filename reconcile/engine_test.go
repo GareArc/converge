@@ -11,7 +11,6 @@ import (
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
-	"github.com/GareArc/converge/internal/backoff"
 )
 
 func advanceUntil(t *testing.T, te *testEngine, step time.Duration, cond func() bool) {
@@ -292,8 +291,8 @@ func TestEmptyIDNotifyRejectedUnlessSingle(t *testing.T) {
 	te.e.notify(context.Background(), "")
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
-			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.Reason == converge.DiscardEmptyID
+			nd, ok := e.(converge.NotificationDropped)
+			return ok && errors.Is(nd.Err, converge.ErrNotificationEmptyID)
 		}) == 1
 	})
 	single := startEngine(t, config{name: "single", single: true}, func(ctx context.Context, id ID) error { return nil })
@@ -323,10 +322,10 @@ func TestEmptyIDNotifyAfterTeardownStillReportsDiscard(t *testing.T) {
 	e.mu.Unlock()
 	e.notify(context.Background(), "")
 	if n := rec.Count(func(ev converge.Event) bool {
-		wd, ok := ev.(converge.WakeDiscarded)
-		return ok && wd.Reason == converge.DiscardEmptyID
+		nd, ok := ev.(converge.NotificationDropped)
+		return ok && errors.Is(nd.Err, converge.ErrNotificationEmptyID)
 	}); n != 1 {
-		t.Fatalf("empty-id notify after teardown = %d DiscardEmptyID events, want 1", n)
+		t.Fatalf("empty-id notify after teardown = %d NotificationDropped events, want 1", n)
 	}
 }
 
@@ -477,26 +476,4 @@ func TestSettleOnUnknownIDIsUnsettled(t *testing.T) {
 	if n := te.rec.Count(func(converge.Event) bool { return true }); n != 0 {
 		t.Fatalf("unsettled finish must emit no events, got %d", n)
 	}
-}
-
-func TestBackoffFallbackReportsTrueTripCount(t *testing.T) {
-	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
-		return CheckAgain{}
-	})
-	te.e.notify(context.Background(), "a")
-	advanceUntil(t, te, 300*time.Millisecond, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.BackoffFallback)
-			return ok
-		}) >= 1
-	})
-	for _, e := range te.rec.Events() {
-		if bf, ok := e.(converge.BackoffFallback); ok {
-			if bf.Consecutive != backoff.NoBackoffCap+1 {
-				t.Fatalf("BackoffFallback.Consecutive = %d, want %d", bf.Consecutive, backoff.NoBackoffCap+1)
-			}
-			return
-		}
-	}
-	t.Fatal("no BackoffFallback event found")
 }

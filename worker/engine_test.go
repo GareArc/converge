@@ -131,7 +131,7 @@ func TestHandleRunsAndAcks(t *testing.T) {
 	}
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Surface == converge.SurfaceWorker && rc.Err == nil && rc.Attempt == 1
+		return ok && rc.Outcome == converge.Succeeded && rc.Attempt == 1
 	}); n != 1 {
 		t.Fatalf("successful RunCompleted count = %d, want 1", n)
 	}
@@ -177,12 +177,7 @@ func TestErrorRetriesWithBackoffThenShelves(t *testing.T) {
 	}
 	convergetest.AdvanceUntil(t, w.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 2 })
 	convergetest.AdvanceUntil(t, w.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 3 })
-	convergetest.Await(t, func() bool {
-		return eventCount(w.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.MessageDeadLettered)
-			return ok
-		}) == 1
-	})
+	convergetest.Await(t, func() bool { return len(shelfKeys(t, w.KV, "job")) == 1 })
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 3 })
 	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
@@ -206,10 +201,10 @@ func TestErrorRetriesWithBackoffThenShelves(t *testing.T) {
 		t.Fatalf("shelf record payload = %q, want %q", payload, "hello")
 	}
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
-		_, ok := e.(converge.MessageDeadLettered)
-		return ok
-	}); n != 1 {
-		t.Fatalf("MessageDeadLettered count = %d, want 1", n)
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Outcome == converge.Retrying
+	}); n != 3 {
+		t.Fatalf("RunCompleted{Outcome: Retrying} count = %d, want 3", n)
 	}
 	stats := jobStats(t, rt, "job")
 	if stats.ConsecutiveFails != 3 {
@@ -280,8 +275,8 @@ func TestDecodeFailureShelvesImmediately(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
-			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == reasonUndecodable
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Shelved
 		}) == 1
 	})
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&ran) == 0 })
@@ -339,16 +334,16 @@ func TestReceiptGuardsShelving(t *testing.T) {
 			}
 			convergetest.Await(t, func() bool {
 				return eventCount(w.Events(), func(e converge.Event) bool {
-					dl, ok := e.(converge.MessageDeadLettered)
-					return ok && dl.Reason == c.wantReason
+					rc, ok := e.(converge.RunCompleted)
+					return ok && rc.Outcome == converge.Shelved
 				}) == 1
 			})
 			convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&ran) == 0 })
 			if n := eventCount(w.Events(), func(e converge.Event) bool {
-				_, ok := e.(converge.RunCompleted)
-				return ok
+				rc, ok := e.(converge.RunCompleted)
+				return ok && rc.Outcome != converge.Shelved
 			}); n != 0 {
-				t.Fatalf("RunCompleted must not fire, got %d", n)
+				t.Fatalf("only RunCompleted{Outcome: Shelved} may fire for a guard rejection, got %d other outcomes", n)
 			}
 			keys := shelfKeys(t, w.KV, "job")
 			if len(keys) != 1 {
@@ -387,10 +382,10 @@ func TestForeignKindInTheInboxStillRuns(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&ran) == 1 })
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
-		_, ok := e.(converge.MessageDeadLettered)
-		return ok
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Outcome == converge.Shelved
 	}); n != 0 {
-		t.Fatalf("MessageDeadLettered count = %d, want 0; the inbox is the job, so Kind is not routing", n)
+		t.Fatalf("RunCompleted{Outcome: Shelved} count = %d, want 0; the inbox is the job, so Kind is not routing", n)
 	}
 }
 
@@ -453,10 +448,7 @@ func TestShelvingKVFailureNacksAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, w.Clock, 200*time.Millisecond, func() bool {
-		return eventCount(w.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.MessageDeadLettered)
-			return ok
-		}) == 1
+		return len(shelfKeys(t, fkv, "job")) == 1
 	})
 	if got := atomic.LoadInt32(&ran); got != 1 {
 		t.Fatalf("handler ran %d times, want exactly 1", got)
@@ -465,54 +457,6 @@ func TestShelvingKVFailureNacksAndRecovers(t *testing.T) {
 	if len(keys) != 1 {
 		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	if n := eventCount(w.Events(), func(e converge.Event) bool {
-		_, ok := e.(converge.MessageDeadLettered)
-		return ok
-	}); n != 1 {
-		t.Fatalf("MessageDeadLettered count = %d, want 1", n)
-	}
-}
-
-func TestQueueDepthEvents(t *testing.T) {
-	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt := w.Build(t)
-	tk := NewTask[string]("job", TaskOpts{})
-	gate := make(chan struct{})
-	entered := make(chan struct{})
-	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
-		close(entered)
-		<-gate
-		return nil
-	}, HandleOpts{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock)
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool {
-		select {
-		case <-entered:
-			return true
-		default:
-			return false
-		}
-	})
-	convergetest.Await(t, func() bool {
-		return eventCount(w.Events(), func(e converge.Event) bool {
-			qd, ok := e.(converge.QueueDepth)
-			return ok && qd.Depth == 1
-		}) >= 1
-	})
-	close(gate)
-	convergetest.Await(t, func() bool {
-		return eventCount(w.Events(), func(e converge.Event) bool {
-			qd, ok := e.(converge.QueueDepth)
-			return ok && qd.Depth == 0
-		}) >= 1
-	})
 }
 
 func TestConcurrencyBounds(t *testing.T) {
@@ -583,16 +527,10 @@ func TestDiscardAcksWithEvent(t *testing.T) {
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
-		md, ok := e.(converge.MessageDiscarded)
-		return ok && md.Reason == "gone"
-	}); n != 1 {
-		t.Fatalf("MessageDiscarded count = %d, want 1", n)
-	}
-	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Err == nil
+		return ok && rc.Outcome == converge.Discarded && rc.Err == nil
 	}); n != 1 {
-		t.Fatalf("RunCompleted{Err: nil} count = %d, want 1", n)
+		t.Fatalf("RunCompleted{Outcome: Discarded} count = %d, want 1", n)
 	}
 	stats := jobStats(t, rt, "job")
 	if stats.ConsecutiveFails != 0 {
@@ -658,7 +596,7 @@ func TestSnoozeRedeliversWithoutConsumingAttempt(t *testing.T) {
 	}
 }
 
-func TestSnoozeFloorAndBackoffFallback(t *testing.T) {
+func TestSnoozeDelayEscalatesAfterNoBackoffCap(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -676,12 +614,6 @@ func TestSnoozeFloorAndBackoffFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, w.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 11 })
-	convergetest.Await(t, func() bool {
-		return eventCount(w.Events(), func(e converge.Event) bool {
-			bf, ok := e.(converge.BackoffFallback)
-			return ok && bf.Consecutive == 11
-		}) == 1
-	})
 	w.Clock.Advance(time.Minute)
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 11 })
 	convergetest.AdvanceUntil(t, w.Clock, 10*time.Minute, func() bool { return atomic.LoadInt32(&runs) >= 12 })
@@ -708,8 +640,8 @@ func TestSnoozeClampedToMaxAge(t *testing.T) {
 
 	shelved := func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
-			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == reasonMaxAge
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Shelved
 		}) == 1
 	}
 	const step = 40 * time.Second
@@ -770,8 +702,8 @@ func TestSnoozeWithSpentBudgetShelvesImmediately(t *testing.T) {
 
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.MessageDeadLettered)
-			return ok
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Shelved
 		}) == 1
 	})
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
@@ -786,9 +718,9 @@ func TestSnoozeWithSpentBudgetShelvesImmediately(t *testing.T) {
 	}
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Err == nil
+		return ok && rc.Outcome == converge.Shelved
 	}); n != 1 {
-		t.Fatalf("RunCompleted{Err:nil} count = %d, want 1", n)
+		t.Fatalf("RunCompleted{Outcome: Shelved} count = %d, want 1", n)
 	}
 }
 
@@ -836,8 +768,8 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.MessageDeadLettered)
-			return ok
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Retrying
 		}) == 1
 	})
 	if err := w.MQ.Publish(context.Background(), wInbox("job"), anonMsg()); err != nil {
@@ -845,8 +777,8 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.MessageDeadLettered)
-			return ok
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Retrying
 		}) == 2
 	})
 
@@ -856,12 +788,12 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	}
 	var ids []string
 	for _, e := range w.Events() {
-		if dl, ok := e.(converge.MessageDeadLettered); ok {
-			ids = append(ids, dl.MessageID)
+		if rc, ok := e.(converge.RunCompleted); ok && rc.Outcome == converge.Retrying {
+			ids = append(ids, rc.ID)
 		}
 	}
 	if len(ids) != 2 || ids[0] != ids[1] {
-		t.Fatalf("MessageDeadLettered MessageIDs = %v, want two identical values", ids)
+		t.Fatalf("RunCompleted{Outcome: Retrying} IDs = %v, want two identical values", ids)
 	}
 	if !strings.HasPrefix(ids[0], "anon-") {
 		t.Fatalf("MessageID = %q, want prefix %q", ids[0], "anon-")
@@ -890,22 +822,16 @@ func TestWrongSurfaceSignalShelves(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
-			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == reasonWrongSurface
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Shelved
 		}) == 1
 	})
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
-		ws, ok := e.(converge.WrongSurfaceSignal)
-		return ok && ws.Surface == converge.SurfaceReconcile
-	}); n != 1 {
-		t.Fatalf("WrongSurfaceSignal count = %d, want 1", n)
-	}
-	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Err != nil
+		return ok && rc.Outcome == converge.Shelved && rc.Err != nil && strings.Contains(rc.Err.Error(), "check again")
 	}); n != 1 {
-		t.Fatalf("RunCompleted{Err != nil} count = %d, want 1", n)
+		t.Fatalf("RunCompleted{Outcome: Shelved} carrying the wrong-surface signal as Err count = %d, want 1", n)
 	}
 	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
@@ -1236,10 +1162,10 @@ func TestPointerOutcomeDispatch(t *testing.T) {
 		return discardRuns == 1 && len(snoozeAttempts) == 1
 	})
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
-		md, ok := e.(converge.MessageDiscarded)
-		return ok && md.Reason == "gone"
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Outcome == converge.Discarded
 	}); n != 1 {
-		t.Fatalf("MessageDiscarded count = %d, want 1", n)
+		t.Fatalf("RunCompleted{Outcome: Discarded} count = %d, want 1", n)
 	}
 	convergetest.AdvanceUntil(t, w.Clock, time.Minute, func() bool {
 		mu.Lock()
@@ -1278,8 +1204,8 @@ func newLeaseHarnessPair(t *testing.T) (wa, wb *convergetest.Harness, mq *inmem.
 }
 
 func leaseAcquired(e converge.Event) bool {
-	lt, ok := e.(converge.LeaseTransition)
-	return ok && lt.Acquired
+	lt, ok := e.(converge.LeaseChanged)
+	return ok && lt.Held
 }
 
 func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
@@ -1330,7 +1256,7 @@ func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
 		t.Fatalf("expected exactly one replica to handle all 3 runs, got aRuns=%d bRuns=%d", gotA, gotB)
 	}
 	if n := eventCount(wa.Events(), leaseAcquired) + eventCount(wb.Events(), leaseAcquired); n != 1 {
-		t.Fatalf("LeaseTransition{Acquired:true} count across both replicas = %d, want 1", n)
+		t.Fatalf("LeaseChanged{Held:true} count across both replicas = %d, want 1", n)
 	}
 }
 
@@ -1508,13 +1434,13 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&failA) == 1 && atomic.LoadInt32(&failB) == 1 })
 	failRunCompleted := func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Job == "broadcast-fail" && rc.Err != nil
+		return ok && rc.Job == "broadcast-fail" && rc.Outcome == converge.Retrying
 	}
 	if n := eventCount(wa.Events(), failRunCompleted); n != 1 {
-		t.Fatalf("worldA RunCompleted{Err!=nil} count = %d, want 1", n)
+		t.Fatalf("worldA RunCompleted{Outcome: Retrying} count = %d, want 1", n)
 	}
 	if n := eventCount(wb.Events(), failRunCompleted); n != 1 {
-		t.Fatalf("worldB RunCompleted{Err!=nil} count = %d, want 1", n)
+		t.Fatalf("worldB RunCompleted{Outcome: Retrying} count = %d, want 1", n)
 	}
 
 	if err := snoozeTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
@@ -1524,13 +1450,13 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&snoozeA) == 1 && atomic.LoadInt32(&snoozeB) == 1 })
 	snoozeRunCompleted := func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Job == "broadcast-snooze" && rc.Err != nil
+		return ok && rc.Job == "broadcast-snooze" && rc.Outcome == converge.Deferred
 	}
 	if n := eventCount(wa.Events(), snoozeRunCompleted); n != 1 {
-		t.Fatalf("worldA snoozed RunCompleted{Err!=nil} count = %d, want 1", n)
+		t.Fatalf("worldA snoozed RunCompleted{Outcome: Deferred} count = %d, want 1", n)
 	}
 	if n := eventCount(wb.Events(), snoozeRunCompleted); n != 1 {
-		t.Fatalf("worldB snoozed RunCompleted{Err!=nil} count = %d, want 1", n)
+		t.Fatalf("worldB snoozed RunCompleted{Outcome: Deferred} count = %d, want 1", n)
 	}
 }
 
@@ -1727,8 +1653,8 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 	})
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
-			lt, ok := e.(converge.LeaseTransition)
-			return ok && !lt.Acquired
+			lt, ok := e.(converge.LeaseChanged)
+			return ok && !lt.Held
 		}) >= 1
 	})
 }
@@ -2052,5 +1978,43 @@ func TestDestructionCancelsInFlightRunsWithoutDraining(t *testing.T) {
 	}
 	if state := jobStats(t, rt, "migration").State; state != converge.Destroyed {
 		t.Fatalf("State = %v, want %v", state, converge.Destroyed)
+	}
+}
+
+func TestOutcomesAreReported(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	task := NewTask[string]("mixed", TaskOpts{})
+	if err := Handle(rt, task, func(_ context.Context, s string) error {
+		switch s {
+		case "ok":
+			return nil
+		case "gone":
+			return Discard{Reason: "unsubscribed"}
+		default:
+			return Shelve{Reason: "bad"}
+		}
+	}, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	for _, s := range []string{"ok", "gone", "bad"} {
+		if err := task.Enqueue(context.Background(), p, s, EnqueueOpts{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.Drain(t)
+	want := map[converge.Outcome]int{converge.Succeeded: 1, converge.Discarded: 1, converge.Shelved: 1}
+	got := map[converge.Outcome]int{}
+	for _, e := range h.Events() {
+		if rc, ok := e.(converge.RunCompleted); ok {
+			got[rc.Outcome]++
+		}
+	}
+	for outcome, n := range want {
+		if got[outcome] != n {
+			t.Fatalf("%s = %d, want %d (all: %v)", outcome, got[outcome], n, got)
+		}
 	}
 }

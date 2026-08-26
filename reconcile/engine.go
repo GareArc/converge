@@ -247,7 +247,7 @@ func (e *engine) notify(ctx context.Context, id ID) {
 
 func (e *engine) notifyVia(ctx context.Context, q *wakeQueue, id ID, class wakeClass) {
 	if id == "" && !e.cfg.single {
-		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
+		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, Err: converge.ErrNotificationEmptyID})
 		return
 	}
 	if q == nil {
@@ -260,7 +260,7 @@ func (e *engine) report(id ID, res wakeResult) {
 	if res != wakeDroppedOverflow {
 		return
 	}
-	e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
+	e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, ID: string(id), Err: converge.ErrInboxOverflow})
 }
 
 func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.WaitGroup) {
@@ -378,15 +378,13 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 		kind = finishDelay
 	case err == nil:
 		kind = finishSuccess
-	case isSig:
+	case isSig && isDeferralSignal(s):
+		kind = finishDelay
 		if d, ok := checkAgainDelay(s); ok {
-			kind = finishDelay
 			delay = d
-		} else if errors.Is(s, ErrOutdated) {
-			kind = finishDelay
-		} else {
-			kind = finishFailure
 		}
+	case isSig:
+		kind = finishFailure
 	case hctx.Err() != nil:
 		kind = finishNeutral
 	default:
@@ -400,17 +398,21 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 		return
 	}
 	e.record(kind)
+	outcome, oerr := converge.Retrying, err
+	switch {
+	case err == nil:
+		outcome, oerr = converge.Succeeded, nil
+	case isSig && isDeferralSignal(s):
+		outcome, oerr = converge.Deferred, nil
+	}
 	e.deps.Observer.Observe(converge.RunCompleted{
 		Job:      e.cfg.name,
-		Surface:  converge.SurfaceReconcile,
 		ID:       string(id),
 		Attempt:  res.attempt,
 		Duration: took,
-		Err:      runErr(kind, err),
+		Outcome:  outcome,
+		Err:      oerr,
 	})
-	if res.fallback {
-		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.name, ID: string(id), Consecutive: backoff.NoBackoffCap + 1})
-	}
 }
 
 func checkAgainDelay(s sig.Signal) (time.Duration, bool) {
@@ -423,11 +425,11 @@ func checkAgainDelay(s sig.Signal) (time.Duration, bool) {
 	return 0, false
 }
 
-func runErr(kind finishKind, err error) error {
-	if kind == finishSuccess || kind == finishDelay {
-		return nil
+func isDeferralSignal(s sig.Signal) bool {
+	if _, ok := checkAgainDelay(s); ok {
+		return true
 	}
-	return err
+	return errors.Is(s, ErrOutdated)
 }
 
 func (e *engine) record(kind finishKind) {
@@ -548,9 +550,9 @@ func (e *engine) leaseLoop(ctx context.Context) error {
 		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)
 		e.markReady()
 		if err == nil && ok {
-			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.name, Acquired: true})
+			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.name, Held: true})
 			e.runActive(ctx, h)
-			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.name, Acquired: false})
+			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.name, Held: false})
 			if ctx.Err() != nil {
 				return nil
 			}

@@ -142,7 +142,7 @@ func (e *engine) supervise(ctx context.Context, run func()) {
 func (e *engine) deliverNotification(ctx context.Context, t *notificationTrigger, d converge.Delivery) {
 	id, err := t.decode(d.Message().Payload)
 	if err != nil {
-		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardUndecodable})
+		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, Err: converge.ErrNotificationUndecodable})
 	} else {
 		e.notifyVia(ctx, e.wakeQueueRef(), id, wakeNotify)
 	}

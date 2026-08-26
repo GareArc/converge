@@ -70,38 +70,13 @@ func (o *observer) Observe(e converge.Event) {
 	case converge.RunCompleted:
 		o.runDuration.Record(ctx, v.Duration.Seconds(), metric.WithAttributes(
 			attribute.String(attrJob, v.Job),
-			attribute.String(attrSurface, v.Surface.String()),
 			attribute.String(attrStatus, runStatus(v.Err)),
 		))
-	case converge.MessageDeadLettered:
-		o.deadLetters.Add(ctx, 1, metric.WithAttributes(
-			attribute.String(attrJob, v.Job),
-			attribute.String(attrQueue, v.Queue),
-			attribute.String(attrReason, v.Reason),
-		))
-	case converge.WakeDiscarded:
-		o.discarded.Add(ctx, 1, metric.WithAttributes(
-			attribute.String(attrJob, v.Job),
-			attribute.String(attrSurface, converge.SurfaceReconcile.String()),
-			attribute.String(attrReason, v.Reason.String()),
-		))
-	case converge.MessageDiscarded:
-		o.discarded.Add(ctx, 1, metric.WithAttributes(
-			attribute.String(attrJob, v.Job),
-			attribute.String(attrSurface, converge.SurfaceWorker.String()),
-			attribute.String(attrQueue, v.Queue),
-		))
-	case converge.LeaseTransition:
+	case converge.LeaseChanged:
 		o.leaseMoves.Add(ctx, 1, metric.WithAttributes(
 			attribute.String(attrJob, v.Job),
-			attribute.Bool(attrAcquired, v.Acquired),
+			attribute.Bool(attrAcquired, v.Held),
 		))
-	case converge.WrongSurfaceSignal:
-		o.anomaly(ctx, v.Job, kindWrongSurface)
-	case converge.BackoffFallback:
-		o.anomaly(ctx, v.Job, kindBackoffFallback)
-	case converge.PassOverrun:
-		o.anomaly(ctx, v.Job, kindPassOverrun)
 	}
 }
 

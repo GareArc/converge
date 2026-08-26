@@ -1,6 +1,9 @@
 package converge
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type Observer interface {
 	Observe(e Event)
@@ -8,114 +11,83 @@ type Observer interface {
 
 type Event interface{ event() }
 
-type RunCompleted struct {
-	Job      string
-	Surface  Surface
-	ID       string
-	Attempt  int
-	Duration time.Duration
-	Err      error
-}
-
-func (RunCompleted) event() {}
-
-type LeaseTransition struct {
-	Job      string
-	Acquired bool
-}
-
-func (LeaseTransition) event() {}
-
-type wakeDiscardKind int
+type outcomeKind int
 
 const (
-	wakeDiscardUnset wakeDiscardKind = iota
-	wakeDiscardUndecodable
-	wakeDiscardEmptyID
-	wakeDiscardOverflow
+	outcomeUnknown outcomeKind = iota
+	outcomeSucceeded
+	outcomeRetrying
+	outcomeDeferred
+	outcomeDiscarded
+	outcomeShelved
 )
 
-type WakeDiscardReason struct{ kind wakeDiscardKind }
+type Outcome struct{ kind outcomeKind }
 
 var (
-	DiscardUndecodable = WakeDiscardReason{wakeDiscardUndecodable}
-	DiscardEmptyID     = WakeDiscardReason{wakeDiscardEmptyID}
-	DiscardOverflow    = WakeDiscardReason{wakeDiscardOverflow}
+	Succeeded = Outcome{outcomeSucceeded}
+	Retrying  = Outcome{outcomeRetrying}
+	Deferred  = Outcome{outcomeDeferred}
+	Discarded = Outcome{outcomeDiscarded}
+	Shelved   = Outcome{outcomeShelved}
 )
 
-func (r WakeDiscardReason) IsZero() bool { return r.kind == wakeDiscardUnset }
-
-func (r WakeDiscardReason) String() string {
-	switch r.kind {
-	case wakeDiscardUndecodable:
-		return "undecodable"
-	case wakeDiscardEmptyID:
-		return "empty-id"
-	case wakeDiscardOverflow:
-		return "overflow"
+func (o Outcome) String() string {
+	switch o.kind {
+	case outcomeSucceeded:
+		return "succeeded"
+	case outcomeRetrying:
+		return "retrying"
+	case outcomeDeferred:
+		return "deferred"
+	case outcomeDiscarded:
+		return "discarded"
+	case outcomeShelved:
+		return "shelved"
 	default:
 		return "unknown"
 	}
 }
 
-type WakeDiscarded struct {
-	Job    string
-	ID     string
-	Reason WakeDiscardReason
+var (
+	ErrNotificationUndecodable = errors.New("converge: notification: undecodable")
+	ErrNotificationEmptyID     = errors.New("converge: notification: empty id")
+	ErrInboxOverflow           = errors.New("converge: notification: inbox overflow")
+)
+
+type RunCompleted struct {
+	Job      string
+	ID       string
+	Attempt  int
+	Duration time.Duration
+	Outcome  Outcome
+	Err      error
 }
 
-func (WakeDiscarded) event() {}
+func (RunCompleted) event() {}
 
-type PassOverrun struct {
+type LeaseChanged struct {
+	Job  string
+	Held bool
+}
+
+func (LeaseChanged) event() {}
+
+type ScheduleOverrun struct {
+	Job  string
+	Due  time.Time
+	Late time.Duration
+}
+
+func (ScheduleOverrun) event() {}
+
+type NotificationDropped struct {
 	Job string
-	Due time.Time
+	ID  string
+	Err error
 }
 
-func (PassOverrun) event() {}
-
-type WrongSurfaceSignal struct {
-	Job     string
-	ID      string
-	Surface Surface
-}
-
-func (WrongSurfaceSignal) event() {}
-
-type BackoffFallback struct {
-	Job         string
-	ID          string
-	Consecutive int
-}
-
-func (BackoffFallback) event() {}
-
-type MessageDiscarded struct {
-	Job       string
-	Queue     string
-	MessageID string
-	Reason    string
-}
-
-func (MessageDiscarded) event() {}
-
-type MessageDeadLettered struct {
-	Job       string
-	Queue     string
-	MessageID string
-	Attempt   int
-	Reason    string
-	Err       error
-}
-
-func (MessageDeadLettered) event() {}
-
-type QueueDepth struct {
-	Job   string
-	Queue string
-	Depth int
-}
-
-func (QueueDepth) event() {}
+func (NotificationDropped) event() {}
 
 type JobDestroyed struct {
 	Job   string

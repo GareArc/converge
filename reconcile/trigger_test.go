@@ -300,8 +300,8 @@ func TestNotificationsUndecodablePayloadCountedAndDropped(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
-			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.Reason == converge.DiscardUndecodable
+			nd, ok := e.(converge.NotificationDropped)
+			return ok && errors.Is(nd.Err, converge.ErrNotificationUndecodable)
 		}) == 1
 	})
 	if n := te.rec.Count(func(e converge.Event) bool {
@@ -350,8 +350,8 @@ func TestNotificationsFromUndecodablePayloadCountedAndDropped(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
-			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.Reason == converge.DiscardUndecodable
+			nd, ok := e.(converge.NotificationDropped)
+			return ok && errors.Is(nd.Err, converge.ErrNotificationUndecodable)
 		}) == 1
 	})
 	if n := te.rec.Count(func(e converge.Event) bool {

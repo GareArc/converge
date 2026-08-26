@@ -63,8 +63,8 @@ type chaosElectionObserver struct {
 }
 
 func (o *chaosElectionObserver) Observe(e converge.Event) {
-	lt, ok := e.(converge.LeaseTransition)
-	if !ok || !lt.Acquired || lt.Job != o.job {
+	lt, ok := e.(converge.LeaseChanged)
+	if !ok || !lt.Held || lt.Job != o.job {
 		return
 	}
 	o.p.Notify(context.Background(), o.job, "")

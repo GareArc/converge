@@ -415,9 +415,7 @@ func (e *engine) receive(ictx, hctx context.Context, d converge.Delivery, slots 
 func (e *engine) setDepth(delta int) {
 	e.mu.Lock()
 	e.depth += delta
-	depth := e.depth
 	e.mu.Unlock()
-	e.deps.Observer.Observe(converge.QueueDepth{Job: e.cfg.info.name, Queue: e.cfg.info.queue, Depth: depth})
 }
 
 func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, string) {
@@ -454,6 +452,7 @@ func (e *engine) process(hctx context.Context, d converge.Delivery, m converge.M
 	meta, guard := e.classify(d, m)
 	sctx := context.WithoutCancel(hctx)
 	if guard != "" {
+		e.observeRun(meta, 0, converge.Shelved, nil)
 		e.shelve(sctx, d, meta, m, guard, nil)
 		return
 	}
@@ -495,12 +494,12 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 	if err == nil {
 		d.Ack(sctx)
 		e.recordSuccess()
-		e.observeRun(meta, took, nil)
+		e.observeRun(meta, took, converge.Succeeded, nil)
 		return
 	}
 	var dec decodeError
 	if errors.As(err, &dec) {
-		e.observeRun(meta, took, err)
+		e.observeRun(meta, took, converge.Shelved, err)
 		e.shelveOrDrop(sctx, d, meta, m, reasonUndecodable, err)
 		return
 	}
@@ -514,7 +513,7 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		return
 	}
 	e.recordFailure()
-	e.observeRun(meta, took, err)
+	e.observeRun(meta, took, converge.Retrying, err)
 	if !e.durable() {
 		return
 	}
@@ -543,21 +542,20 @@ func (e *engine) recordFailure() {
 	e.mu.Unlock()
 }
 
-func (e *engine) observeRun(meta Meta, took time.Duration, err error) {
+func (e *engine) observeRun(meta Meta, took time.Duration, outcome converge.Outcome, err error) {
 	e.deps.Observer.Observe(converge.RunCompleted{
 		Job:      e.cfg.info.name,
-		Surface:  converge.SurfaceWorker,
 		ID:       meta.MessageID,
 		Attempt:  meta.Attempt,
 		Duration: took,
+		Outcome:  outcome,
 		Err:      err,
 	})
 }
 
 func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, s sig.Signal, err error, took time.Duration) bool {
 	if s.ControlSurface() != converge.SurfaceWorker {
-		e.deps.Observer.Observe(converge.WrongSurfaceSignal{Job: e.cfg.info.name, ID: meta.MessageID, Surface: s.ControlSurface()})
-		e.observeRun(meta, took, err)
+		e.observeRun(meta, took, converge.Shelved, err)
 		e.shelveOrDrop(sctx, d, meta, m, reasonWrongSurface, err)
 		return true
 	}
@@ -569,17 +567,17 @@ func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m conve
 		e.discard(sctx, d, meta, *v, took)
 		return true
 	case Snooze:
-		e.snooze(sctx, d, m, meta, v.In, took, err)
+		e.snooze(sctx, d, m, meta, v.In, took)
 		return true
 	case *Snooze:
-		e.snooze(sctx, d, m, meta, v.In, took, err)
+		e.snooze(sctx, d, m, meta, v.In, took)
 		return true
 	case Shelve:
-		e.observeRun(meta, took, err)
+		e.observeRun(meta, took, converge.Shelved, err)
 		e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil)
 		return true
 	case *Shelve:
-		e.observeRun(meta, took, err)
+		e.observeRun(meta, took, converge.Shelved, err)
 		e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil)
 		return true
 	}
@@ -589,24 +587,18 @@ func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m conve
 func (e *engine) discard(sctx context.Context, d converge.Delivery, meta Meta, v Discard, took time.Duration) {
 	d.Ack(sctx)
 	e.recordSuccess()
-	e.observeRun(meta, took, nil)
-	e.deps.Observer.Observe(converge.MessageDiscarded{
-		Job:       e.cfg.info.name,
-		Queue:     e.cfg.info.queue,
-		MessageID: meta.MessageID,
-		Reason:    v.Reason,
-	})
+	e.observeRun(meta, took, converge.Discarded, nil)
 }
 
-func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, in time.Duration, took time.Duration, cause error) {
+func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, in time.Duration, took time.Duration) {
 	if !e.durable() {
 		e.recordFailure()
-		e.observeRun(meta, took, cause)
+		e.observeRun(meta, took, converge.Deferred, nil)
 		return
 	}
 	remaining := e.cfg.retry.MaxAge - e.deps.Clock.Now().Sub(meta.EnqueuedAt)
 	if remaining <= 0 {
-		e.observeRun(meta, took, nil)
+		e.observeRun(meta, took, converge.Shelved, nil)
 		e.shelve(sctx, d, meta, m, reasonMaxAge, nil)
 		return
 	}
@@ -615,7 +607,6 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 	delay := backoff.Floor(in)
 	if snoozes > backoff.NoBackoffCap {
 		delay = e.retryCurve().Delay(snoozes - backoff.NoBackoffCap)
-		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.info.name, ID: meta.MessageID, Consecutive: snoozes})
 	}
 	if delay > remaining {
 		delay = remaining
@@ -623,11 +614,11 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 	republished := env.forSnooze()
 	if err := e.deps.MQ.(converge.DelayedPublisher).PublishDelayed(sctx, e.cfg.info.queue, republished, delay); err != nil {
 		d.Nack(sctx, delay)
-		e.observeRun(meta, took, nil)
+		e.observeRun(meta, took, converge.Deferred, nil)
 		return
 	}
 	d.Ack(sctx)
-	e.observeRun(meta, took, nil)
+	e.observeRun(meta, took, converge.Deferred, nil)
 }
 
 func (e *engine) leaseLoop(ctx context.Context) {
@@ -640,9 +631,9 @@ func (e *engine) leaseLoop(ctx context.Context) {
 		}
 		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)
 		if err == nil && ok {
-			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.info.name, Acquired: true})
+			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.info.name, Held: true})
 			e.runActive(ctx, h)
-			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.info.name, Acquired: false})
+			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.info.name, Held: false})
 			if e.isDestroyed() {
 				return
 			}
@@ -727,14 +718,6 @@ func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m c
 	e.mu.Lock()
 	e.shelved++
 	e.mu.Unlock()
-	e.deps.Observer.Observe(converge.MessageDeadLettered{
-		Job:       e.cfg.info.name,
-		Queue:     e.cfg.info.queue,
-		MessageID: meta.MessageID,
-		Attempt:   meta.Attempt,
-		Reason:    reason,
-		Err:       cause,
-	})
 }
 
 func (e *engine) neutral(ctx context.Context, d converge.Delivery, m converge.Message) {

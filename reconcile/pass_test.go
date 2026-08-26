@@ -109,10 +109,10 @@ func TestRunOnceBacklogBeyondCapIsOneMakeupPass(t *testing.T) {
 	convergetest.Await(t, func() bool { return calls() == 1 })
 	convergetest.AssertStable(t, func() bool { return calls() == 1 })
 	if n := te.rec.Count(func(e converge.Event) bool {
-		_, ok := e.(converge.PassOverrun)
+		_, ok := e.(converge.ScheduleOverrun)
 		return ok
 	}); n != 0 {
-		t.Fatalf("missed boundaries must not be reported as overruns: got %d PassOverrun events", n)
+		t.Fatalf("missed boundaries must not be reported as overruns: got %d ScheduleOverrun events", n)
 	}
 	advanceUntil(t, te, time.Second, func() bool { return calls() == 2 })
 }
@@ -227,7 +227,7 @@ func TestPassResumesFromPersistedCursor(t *testing.T) {
 	}
 }
 
-func TestFirstPassOverrunSkipsWithoutMakeup(t *testing.T) {
+func TestFirstPassScheduleOverrunSkipsWithoutMakeup(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	slow := IDs(func(ctx context.Context) ([]ID, error) {
 		te.clock.Advance(150 * time.Minute)
@@ -236,7 +236,7 @@ func TestFirstPassOverrunSkipsWithoutMakeup(t *testing.T) {
 	startSchedule(t, te, slow, Every(time.Hour))
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.PassOverrun)
+			_, ok := e.(converge.ScheduleOverrun)
 			return ok
 		}) >= 1
 	})
@@ -299,8 +299,8 @@ func (k *blockOnSetKV) Set(ctx context.Context, key string, val []byte, ttl time
 	return k.KV.Set(ctx, key, val, ttl)
 }
 
-func isPassOverrunEvent(e converge.Event) bool {
-	_, ok := e.(converge.PassOverrun)
+func isScheduleOverrunEvent(e converge.Event) bool {
+	_, ok := e.(converge.ScheduleOverrun)
 	return ok
 }
 
@@ -325,8 +325,8 @@ func TestFirstPassHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T) 
 
 	te.clock.Advance(time.Hour)
 	convergetest.Await(t, func() bool { return runCount(te) == 2 })
-	if n := te.rec.Count(isPassOverrunEvent); n != 0 {
-		t.Fatalf("boundary must not be misclassified as overrun: got %d PassOverrun events", n)
+	if n := te.rec.Count(isScheduleOverrunEvent); n != 0 {
+		t.Fatalf("boundary must not be misclassified as overrun: got %d ScheduleOverrun events", n)
 	}
 }
 
@@ -355,8 +355,8 @@ func TestSteadyStateHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T
 
 	te.clock.Advance(time.Hour)
 	convergetest.Await(t, func() bool { return runCount(te) == 3 })
-	if n := te.rec.Count(isPassOverrunEvent); n != 0 {
-		t.Fatalf("second boundary must not be misclassified as overrun: got %d PassOverrun events", n)
+	if n := te.rec.Count(isScheduleOverrunEvent); n != 0 {
+		t.Fatalf("second boundary must not be misclassified as overrun: got %d ScheduleOverrun events", n)
 	}
 }
 

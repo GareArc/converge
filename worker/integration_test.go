@@ -133,10 +133,10 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		t.Fatalf("clean send RunCompleted{Err:nil} count = %d, want 1", n)
 	}
 	if n := eventCount(consumer.Events(), func(e converge.Event) bool {
-		md, ok := e.(converge.MessageDiscarded)
-		return ok && md.MessageID == rejectID && md.Reason == "rejected address"
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.ID == rejectID && rc.Outcome == converge.Discarded
 	}); n != 1 {
-		t.Fatalf("MessageDiscarded count = %d, want 1", n)
+		t.Fatalf("RunCompleted{Outcome: Discarded} count = %d, want 1", n)
 	}
 	if got := mailer.count(rejectedInviteEmail); got != 0 {
 		t.Fatalf("mailer called %d times for rejected address, want 0", got)
@@ -173,12 +173,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	}
 	convergetest.AdvanceUntil(t, consumer.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 2 })
 	convergetest.AdvanceUntil(t, consumer.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 3 })
-	convergetest.Await(t, func() bool {
-		return eventCount(consumer.Events(), func(e converge.Event) bool {
-			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == reasonMaxAttempts
-		}) == 1
-	})
+	convergetest.Await(t, func() bool { return len(shelfKeys(t, consumer.KV, "send-invite")) == 1 })
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&hardFailRuns) == 3 })
 	if got := atomic.LoadInt32(&escalations); got != 1 {
 		t.Fatalf("escalations = %d, want 1", got)
@@ -222,8 +217,8 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 
 	convergetest.AdvanceUntil(t, w.Clock, time.Minute, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
-			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == reasonMaxAge
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Shelved
 		}) == 1
 	})
 

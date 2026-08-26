@@ -90,7 +90,7 @@ func reconciledCount(h *convergetest.Harness, job, id string) int {
 	n := 0
 	for _, e := range h.Events() {
 		rc, ok := e.(converge.RunCompleted)
-		if ok && rc.Job == job && rc.ID == id && rc.Err == nil {
+		if ok && rc.Job == job && rc.ID == id && rc.Outcome == converge.Succeeded {
 			n++
 		}
 	}
@@ -151,7 +151,7 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 	convergetest.Await(t, func() bool {
 		for _, e := range h.Events() {
 			rc, ok := e.(converge.RunCompleted)
-			if ok && rc.Job == "app-runner" && rc.ID == "app_13" && rc.Err != nil {
+			if ok && rc.Job == "app-runner" && rc.ID == "app_13" && rc.Outcome == converge.Retrying {
 				return true
 			}
 		}
@@ -194,8 +194,8 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool {
 		for _, e := range h.Events() {
-			lt, ok := e.(converge.LeaseTransition)
-			if ok && lt.Job == "app-runner" && !lt.Acquired {
+			lt, ok := e.(converge.LeaseChanged)
+			if ok && lt.Job == "app-runner" && !lt.Held {
 				return true
 			}
 		}

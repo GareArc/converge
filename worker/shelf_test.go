@@ -32,12 +32,7 @@ func TestShelfListAndGetSeeRealShelvedMessage(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	convergetest.Await(t, func() bool {
-		return eventCount(w.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.MessageDeadLettered)
-			return ok
-		}) == 1
-	})
+	convergetest.Await(t, func() bool { return len(shelfKeys(t, w.KV, "job")) == 1 })
 
 	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
@@ -173,12 +168,7 @@ func TestShelfRequeueFullLoopSucceeds(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	convergetest.Await(t, func() bool {
-		return eventCount(w.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.MessageDeadLettered)
-			return ok
-		}) == 1
-	})
+	convergetest.Await(t, func() bool { return len(shelfKeys(t, w.KV, "job")) == 1 })
 
 	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {

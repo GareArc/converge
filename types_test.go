@@ -75,21 +75,37 @@ func TestRateZeroIsUnlimited(t *testing.T) {
 }
 
 var _ = []Event{
-	WakeDiscarded{},
-	PassOverrun{},
-	WrongSurfaceSignal{},
-	BackoffFallback{},
-	MessageDiscarded{},
-	MessageDeadLettered{},
-	QueueDepth{},
+	RunCompleted{},
+	LeaseChanged{},
+	ScheduleOverrun{},
+	NotificationDropped{},
 	JobDestroyed{},
 }
 
-func TestWakeDiscardReasonZeroIsHonest(t *testing.T) {
-	if got := (WakeDiscardReason{}).String(); got != "unknown" {
-		t.Fatalf("zero reason = %q, want unknown, never a fabricated name", got)
+func TestOutcomeZeroIsHonest(t *testing.T) {
+	if got := (Outcome{}).String(); got != "unknown" {
+		t.Fatalf("zero outcome = %q, want unknown, never a fabricated name", got)
 	}
-	if !(WakeDiscardReason{}).IsZero() || DiscardOverflow.IsZero() {
-		t.Fatal("IsZero semantics broken")
+}
+
+func TestOutcomeStrings(t *testing.T) {
+	cases := map[string]Outcome{
+		"succeeded": Succeeded,
+		"retrying":  Retrying,
+		"deferred":  Deferred,
+		"discarded": Discarded,
+		"shelved":   Shelved,
+	}
+	for want, o := range cases {
+		if got := o.String(); got != want {
+			t.Errorf("String() = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestOutcomeUnknownKindIsHonest(t *testing.T) {
+	future := Outcome{kind: outcomeKind(99)}
+	if got := future.String(); got != "unknown" {
+		t.Fatalf("future outcome kind = %q, want unknown", got)
 	}
 }

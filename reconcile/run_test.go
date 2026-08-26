@@ -72,15 +72,15 @@ func waitRun(t *testing.T, le *liveEngine) error {
 
 func acquired(rec *convergetest.Recorder) int {
 	return rec.Count(func(e converge.Event) bool {
-		lt, ok := e.(converge.LeaseTransition)
-		return ok && lt.Acquired
+		lt, ok := e.(converge.LeaseChanged)
+		return ok && lt.Held
 	})
 }
 
 func released(rec *convergetest.Recorder) int {
 	return rec.Count(func(e converge.Event) bool {
-		lt, ok := e.(converge.LeaseTransition)
-		return ok && !lt.Acquired
+		lt, ok := e.(converge.LeaseChanged)
+		return ok && !lt.Held
 	})
 }
 
@@ -736,6 +736,44 @@ func TestStopKeyDestroysTheJob(t *testing.T) {
 		}
 		return false
 	})
+}
+
+func TestJobDestroyedReportsTheConditionThatFired(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	stopKey := keys.Tombstone("test", "migration")
+	if err := Register(rt, Spec{
+		Name:      "migration",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
+		Until:     converge.StopKey(stopKey),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	if err := h.KV.Set(context.Background(), stopKey, []byte("1"), 0); err != nil {
+		t.Fatal(err)
+	}
+	h.Clock.Advance(2 * time.Minute)
+	h.Drain(t)
+	convergetest.Await(t, func() bool {
+		for _, s := range rt.Stats() {
+			if s.Job == "migration" && s.State == converge.Destroyed {
+				return true
+			}
+		}
+		return false
+	})
+	var causes []string
+	for _, e := range h.Events() {
+		if d, ok := e.(converge.JobDestroyed); ok && d.Job == "migration" {
+			causes = append(causes, d.Cause.String())
+		}
+	}
+	want := converge.StopKey(stopKey).String()
+	if len(causes) != 1 || causes[0] != want {
+		t.Fatalf("JobDestroyed causes = %v, want exactly one %q", causes, want)
+	}
 }
 
 func TestAlreadyPastDeadlineStillBecomesReadyThenStopsCleanly(t *testing.T) {

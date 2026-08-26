@@ -28,7 +28,7 @@ func (h *Harness) AssertReconciled(t testing.TB, job, id string) {
 		},
 	}, func() bool {
 		for _, e := range h.rec.Events() {
-			if rc, ok := e.(converge.RunCompleted); ok && rc.Job == job && rc.ID == id && rc.Err == nil {
+			if rc, ok := e.(converge.RunCompleted); ok && rc.Job == job && rc.ID == id && rc.Outcome == converge.Succeeded {
 				return true
 			}
 		}

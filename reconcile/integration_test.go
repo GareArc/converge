@@ -2,6 +2,7 @@ package reconcile_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -198,8 +199,8 @@ func TestMalformedNotificationsCountedAndDropped(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool {
 		return eventCount(h.Events(), func(e converge.Event) bool {
-			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.Reason == converge.DiscardUndecodable
+			nd, ok := e.(converge.NotificationDropped)
+			return ok && errors.Is(nd.Err, converge.ErrNotificationUndecodable)
 		}) == 1
 	})
 	convergetest.Await(t, func() bool {
