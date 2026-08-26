@@ -12,16 +12,11 @@ import (
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/internal/backoff"
-	"github.com/GareArc/converge/internal/keys"
 )
 
 func advanceUntil(t *testing.T, te *testEngine, step time.Duration, cond func() bool) {
 	t.Helper()
 	convergetest.AdvanceUntil(t, te.clock, step, cond)
-}
-
-func parkKey(e *engine, id ID) string {
-	return keys.ReconcileParked(e.deps.Namespace, e.cfg.name, string(id))
 }
 
 type testEngine struct {
@@ -175,42 +170,19 @@ type fakeWorkerSignal struct{}
 func (fakeWorkerSignal) Error() string                    { return "worker signal" }
 func (fakeWorkerSignal) ControlSurface() converge.Surface { return converge.SurfaceWorker }
 
-func TestForeignSignalParksImmediately(t *testing.T) {
-	te := startEngine(t, config{deadLetterAfter: 100}, func(ctx context.Context, id ID) error {
+func TestForeignSignalIsAPlainFailure(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
 		return fakeWorkerSignal{}
 	})
 	te.e.hint(context.Background(), "a")
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
-			ws, ok := e.(converge.WrongSurfaceSignal)
-			return ok && ws.Surface == converge.SurfaceWorker
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Err != nil
 		}) == 1
 	})
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.IDParked)
-			return ok
-		}) == 1
-	})
-	if s := te.e.Stats(); s.Parked != 1 {
-		t.Fatalf("foreign signal must park: %+v", s)
-	}
-}
-
-func TestDeadLetterAfterParksAndEvents(t *testing.T) {
-	te := startEngine(t, config{deadLetterAfter: 2}, func(ctx context.Context, id ID) error {
-		return errors.New("always")
-	})
-	te.e.hint(context.Background(), "a")
-	convergetest.Await(t, func() bool { return te.e.Stats().ConsecutiveFails >= 1 })
-	advanceUntil(t, te, time.Second, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			dl, ok := e.(converge.IDParked)
-			return ok && dl.ID == "a" && dl.Failures == 2
-		}) == 1
-	})
-	if s := te.e.Stats(); s.Parked != 1 {
-		t.Fatalf("stats = %+v", s)
+	if s := te.e.Stats(); s.ConsecutiveFails != 1 {
+		t.Fatalf("a foreign signal must count as an ordinary failure: %+v", s)
 	}
 }
 
@@ -459,40 +431,6 @@ func TestHintRespectsBackoff(t *testing.T) {
 	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
 }
 
-func TestHintRevivesParkedID(t *testing.T) {
-	kv := inmem.NewKV()
-	tr := NewTracker(kv, "job")
-	ctx := context.Background()
-	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	fail := true
-	runs := 0
-	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
-		mu.Lock()
-		defer mu.Unlock()
-		runs++
-		if fail {
-			return errors.New("boom")
-		}
-		return nil
-	})
-	te.e.hint(ctx, "a")
-	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
-	mu.Lock()
-	fail = false
-	mu.Unlock()
-	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
-		t.Fatal(err)
-	}
-	if err := te.e.Hint("a"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
-	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
-}
-
 func TestHintDoesNotPanicRacingShutdown(t *testing.T) {
 	spec := Spec{
 		Name:       "job",
@@ -544,32 +482,6 @@ func TestKeyNamespacing(t *testing.T) {
 	}
 }
 
-func TestDroppedHintOnForcedParkEmitsDiscard(t *testing.T) {
-	started := make(chan struct{})
-	release := make(chan struct{})
-	te := startEngine(t, config{deadLetterAfter: 1}, func(ctx context.Context, id ID) error {
-		close(started)
-		<-release
-		return errors.New("boom")
-	})
-	te.e.hint(context.Background(), "a")
-	<-started
-	te.e.hint(context.Background(), "a")
-	close(release)
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.IDParked)
-			return ok
-		}) == 1
-	})
-	if n := te.rec.Count(func(e converge.Event) bool {
-		wd, ok := e.(converge.WakeDiscarded)
-		return ok && wd.Reason == converge.DiscardParked
-	}); n != 1 {
-		t.Fatalf("droppedHint WakeDiscarded count = %d, want 1", n)
-	}
-}
-
 func TestSettleOnUnknownIDIsUnsettled(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	before := te.e.Stats()
@@ -603,220 +515,4 @@ func TestBackoffFallbackReportsTrueTripCount(t *testing.T) {
 		}
 	}
 	t.Fatal("no BackoffFallback event found")
-}
-
-func TestVersionZeroEventOnPark(t *testing.T) {
-	kv := inmem.NewKV()
-	tr := NewTracker(kv, "job")
-	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
-		return errors.New("boom")
-	})
-	te.e.hint(context.Background(), "a")
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.VersionZero)
-			return ok
-		}) == 1
-	})
-}
-
-func TestNoVersionZeroWhenProducerMarked(t *testing.T) {
-	kv := inmem.NewKV()
-	tr := NewTracker(kv, "job")
-	if _, err := tr.MarkChanged(context.Background(), "a"); err != nil {
-		t.Fatal(err)
-	}
-	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
-		return errors.New("boom")
-	})
-	te.e.hint(context.Background(), "a")
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.IDParked)
-			return ok
-		}) == 1
-	})
-	convergetest.AssertStable(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.VersionZero)
-			return ok
-		}) == 0
-	})
-	raw, ok, err := kv.Get(context.Background(), parkKey(te.e, "a"))
-	if err != nil || !ok || string(raw) != "1" {
-		t.Fatalf("mark = %q, %v, %v; want \"1\"", raw, ok, err)
-	}
-}
-
-type erroringVersions struct{}
-
-func (erroringVersions) Latest(context.Context, ID) (Version, error) {
-	return 0, errors.New("version source down")
-}
-
-func TestVersionAdvanceRevivesParked(t *testing.T) {
-	kv := inmem.NewKV()
-	tr := NewTracker(kv, "job")
-	ctx := context.Background()
-	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	fail := true
-	runs := 0
-	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
-		mu.Lock()
-		defer mu.Unlock()
-		runs++
-		if fail {
-			return errors.New("boom")
-		}
-		return nil
-	})
-	te.e.hint(ctx, "a")
-	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
-	mu.Lock()
-	fail = false
-	mu.Unlock()
-
-	te.e.hint(ctx, "a")
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
-
-	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
-		t.Fatal(err)
-	}
-	te.e.hint(ctx, "a")
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
-	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
-	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(ctx, parkKey(te.e, "a"))
-		return err == nil && !ok
-	})
-}
-
-func TestVersionSourceErrorKeepsParked(t *testing.T) {
-	kv := inmem.NewKV()
-	te := startEngineKV(t, config{deadLetterAfter: 1, versions: erroringVersions{}}, kv, func(context.Context, ID) error {
-		return errors.New("boom")
-	})
-	ctx := context.Background()
-	te.e.hint(ctx, "a")
-	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
-	te.e.hint(ctx, "a")
-	convergetest.AssertStable(t, func() bool { return te.e.Stats().Parked == 1 })
-	if n := te.rec.Count(func(e converge.Event) bool {
-		w, ok := e.(converge.WakeDiscarded)
-		return ok && w.Reason == converge.DiscardParked
-	}); n == 0 {
-		t.Fatal("undecidable revival must still event the dropped hint")
-	}
-}
-
-func TestMidRunVersionBumpStillRevives(t *testing.T) {
-	kv := inmem.NewKV()
-	tr := NewTracker(kv, "job")
-	ctx := context.Background()
-	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	runs := 0
-	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(hctx context.Context, id ID) error {
-		mu.Lock()
-		defer mu.Unlock()
-		runs++
-		if runs == 1 {
-			if _, err := tr.MarkChanged(hctx, id); err != nil {
-				return err
-			}
-			return errors.New("boom")
-		}
-		return nil
-	})
-	te.e.hint(ctx, "a")
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 2 })
-	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 0 })
-	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(ctx, parkKey(te.e, "a"))
-		return err == nil && !ok
-	})
-	if n := te.rec.Count(func(e converge.Event) bool {
-		_, ok := e.(converge.IDParked)
-		return ok
-	}); n != 1 {
-		t.Fatalf("park-then-revive must still event the park: got %d IDParked", n)
-	}
-}
-
-func TestInvalidMarkBlocksVersionRevival(t *testing.T) {
-	kv := inmem.NewKV()
-	tr := NewTracker(kv, "job")
-	ctx := context.Background()
-	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	runs := 0
-	te := startEngineKV(t, config{deadLetterAfter: 1, versions: tr}, kv, func(context.Context, ID) error {
-		mu.Lock()
-		runs++
-		mu.Unlock()
-		return errors.New("boom")
-	})
-	te.e.hint(ctx, "a")
-	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
-	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(ctx, parkKey(te.e, "a"))
-		return err == nil && ok
-	})
-	if _, err := tr.MarkChanged(ctx, "a"); err != nil {
-		t.Fatal(err)
-	}
-	if err := kv.Delete(ctx, parkKey(te.e, "a")); err != nil {
-		t.Fatal(err)
-	}
-	te.e.hint(ctx, "a")
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
-	if err := kv.Set(ctx, parkKey(te.e, "a"), []byte("junk"), 0); err != nil {
-		t.Fatal(err)
-	}
-	te.e.hint(ctx, "a")
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
-	convergetest.AssertStable(t, func() bool { return te.e.Stats().Parked == 1 })
-}
-
-func TestActivationClearsMarkForActiveID(t *testing.T) {
-	clock := convergetest.NewClock(wqStart)
-	kv := inmem.NewKVWithClock(clock)
-	e := &engine{cfg: config{name: "job", concurrency: 1, rec: Func(func(context.Context, ID) error { return nil })}, ready: make(chan struct{})}
-	if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &convergetest.Recorder{}, Clock: clock}); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	if err := kv.Set(ctx, parkKey(e, "a"), []byte("0"), 0); err != nil {
-		t.Fatal(err)
-	}
-	e.hint(ctx, "a")
-	e.loadParked(ctx)
-	if _, ok, err := kv.Get(ctx, parkKey(e, "a")); err != nil || ok {
-		t.Fatalf("mark for an already-queued id must be cleared at activation: ok=%v err=%v", ok, err)
-	}
-	if c := e.queue.counts(); c.parked != 0 || c.depth != 1 {
-		t.Fatalf("queued id must stay queued, not re-park: %+v", c)
-	}
-}
-
-func TestOnAllReplicasParksInMemoryOnly(t *testing.T) {
-	te := startEngine(t, config{runMode: converge.OnAllReplicas}, func(context.Context, ID) error {
-		return fakeWorkerSignal{}
-	})
-	te.e.hint(context.Background(), "a")
-	convergetest.Await(t, func() bool { return te.e.Stats().Parked == 1 })
-	keys, _, err := te.e.deps.KV.Scan(context.Background(), parkKey(te.e, ""), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(keys) != 0 {
-		t.Fatalf("OnAllReplicas must not write shared park marks: %v", keys)
-	}
 }

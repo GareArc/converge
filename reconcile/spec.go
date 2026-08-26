@@ -25,7 +25,6 @@ type Spec struct {
 	Triggers         []Trigger
 	Concurrency      int
 	RunMode          converge.RunMode
-	DeadLetterAfter  int
 	Versions         VersionSource
 	RateLimit        converge.Rate
 	Middleware       []converge.Middleware
@@ -46,9 +45,6 @@ func newEngine(s Spec) (*engine, error) {
 	if s.Concurrency < 0 {
 		return nil, fail("Concurrency must not be negative")
 	}
-	if s.DeadLetterAfter < 0 {
-		return nil, fail("DeadLetterAfter must not be negative")
-	}
 	if s.RateLimit.Events < 0 || s.RateLimit.Per < 0 {
 		return nil, fail("RateLimit must not be negative")
 	}
@@ -61,7 +57,6 @@ func newEngine(s Spec) (*engine, error) {
 		triggers:         slices.Clone(s.Triggers),
 		concurrency:      s.Concurrency,
 		runMode:          s.RunMode,
-		deadLetterAfter:  s.DeadLetterAfter,
 		versions:         s.Versions,
 		rateLimit:        s.RateLimit,
 		middleware:       slices.Clone(s.Middleware),
@@ -79,9 +74,6 @@ func newEngine(s Spec) (*engine, error) {
 	case converge.OnAllReplicas:
 		if s.Versions != nil {
 			return nil, fail("OnAllReplicas cannot use Versions")
-		}
-		if s.DeadLetterAfter > 0 {
-			return nil, fail("OnAllReplicas cannot use DeadLetterAfter")
 		}
 		if !s.RateLimit.IsZero() {
 			return nil, fail("OnAllReplicas cannot use RateLimit")

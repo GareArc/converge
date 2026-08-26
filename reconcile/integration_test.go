@@ -2,7 +2,6 @@ package reconcile_test
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -114,49 +113,6 @@ func TestTenMinuteTourPeriodic(t *testing.T) {
 	if len(stats) != 1 || stats[0].Job != "license-refresh" || stats[0].Surface != converge.SurfaceReconcile {
 		t.Fatalf("stats = %+v", stats)
 	}
-}
-
-type foreignSignal struct{}
-
-func (foreignSignal) Error() string                    { return "worker signal from a reconciler" }
-func (foreignSignal) ControlSurface() converge.Surface { return converge.SurfaceWorker }
-
-func TestForeignSignalParksImmediatelyEndToEnd(t *testing.T) {
-	h := convergetest.New(t)
-	rt := h.Build(t)
-	err := reconcile.Register(rt, reconcile.Spec{
-		Name: "confused",
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			return foreignSignal{}
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Drain(t)
-	convergetest.Await(t, func() bool {
-		return eventCount(h.Events(), func(e converge.Event) bool {
-			ws, ok := e.(converge.WrongSurfaceSignal)
-			return ok && ws.Job == "confused" && ws.Surface == converge.SurfaceWorker
-		}) == 1
-	})
-	convergetest.Await(t, func() bool {
-		return eventCount(h.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.IDParked)
-			return ok
-		}) == 1
-	})
-	convergetest.Await(t, func() bool {
-		for _, s := range rt.Stats() {
-			if s.Job == "confused" && s.Parked == 1 {
-				return true
-			}
-		}
-		return false
-	})
 }
 
 func TestMalformedHintsCountedAndDropped(t *testing.T) {
@@ -349,59 +305,4 @@ func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
 	}); n != 0 {
 		t.Fatalf("ErrOutdated must not count as failure: %d failed RunCompleted events", n)
 	}
-}
-
-func TestScenarioBParkedRevivesOnMarkChanged(t *testing.T) {
-	h := convergetest.New(t)
-	rt := h.Build(t)
-	tr := reconcile.NewTracker(h.KV, "deploy")
-	ctx := context.Background()
-	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	broken := true
-	converged := false
-	err := reconcile.Register(rt, reconcile.Spec{
-		Name:            "deploy",
-		Versions:        tr,
-		DeadLetterAfter: 2,
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			mu.Lock()
-			defer mu.Unlock()
-			if broken {
-				return errors.New("runner rejects config")
-			}
-			converged = true
-			return nil
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
-				return []string{"app-1"}, nil
-			}), reconcile.Every(time.Minute)),
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Drain(t)
-	convergetest.AdvanceUntil(t, h.Clock, time.Second, func() bool {
-		return eventCount(h.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.IDParked)
-			return ok
-		}) == 1
-	})
-	mu.Lock()
-	broken = false
-	mu.Unlock()
-	h.Clock.Advance(time.Minute)
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !converged })
-	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.AdvanceUntil(t, h.Clock, time.Minute, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return converged
-	})
 }

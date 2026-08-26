@@ -148,7 +148,15 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 
 	h.AssertReconciled(t, "workspace-credentials", "ws_42")
 
-	h.AssertParked(t, "app-runner", "app_13")
+	convergetest.Await(t, func() bool {
+		for _, e := range h.Events() {
+			rc, ok := e.(converge.RunCompleted)
+			if ok && rc.Job == "app-runner" && rc.ID == "app_13" && rc.Err != nil {
+				return true
+			}
+		}
+		return false
+	})
 
 	prod, err := worker.ProducerFrom(rt)
 	if err != nil {

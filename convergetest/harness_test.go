@@ -42,45 +42,6 @@ func TestReconcileRoundTrip(t *testing.T) {
 	h.AssertReconciled(t, "workspace-credentials", "ws_42")
 }
 
-func TestParkAfterDeadLetterThreshold(t *testing.T) {
-	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = reconcile.Register(rt, reconcile.Spec{
-		Name:            "flaky",
-		DeadLetterAfter: 2,
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
-			return errors.New("downstream broken")
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
-				return nil, nil
-			}), reconcile.Every(time.Hour)),
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Wake("flaky", "app_13")
-	h.Drain(t)
-	convergetest.AdvanceUntil(t, h.Clock, 250*time.Millisecond, func() bool {
-		return parked(h, "flaky", "app_13")
-	})
-	h.Drain(t)
-	h.AssertParked(t, "flaky", "app_13")
-}
-
-func parked(h *convergetest.Harness, job, id string) bool {
-	for _, e := range h.Events() {
-		if p, ok := e.(converge.IDParked); ok && p.Job == job && p.ID == id {
-			return true
-		}
-	}
-	return false
-}
-
 func TestScheduleBoundaryDrivesReconcile(t *testing.T) {
 	h := convergetest.New(t)
 	rt, err := converge.New(h.Options())

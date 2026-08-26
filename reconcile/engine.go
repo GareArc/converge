@@ -29,7 +29,6 @@ type config struct {
 	triggers         []Trigger
 	concurrency      int
 	runMode          converge.RunMode
-	deadLetterAfter  int
 	versions         VersionSource
 	rateLimit        converge.Rate
 	middleware       []converge.Middleware
@@ -42,7 +41,6 @@ type engine struct {
 	deps      converge.JobDeps
 	limit     *tokenbucket.Bucket
 	handler   converge.Handler
-	parks     parkStore
 	ready     chan struct{}
 	readyOnce sync.Once
 
@@ -72,13 +70,11 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 	}
 	e.handler = mw.Chain(mws, final)
 	e.limit = tokenbucket.New(e.cfg.rateLimit, deps.Clock)
-	e.parks = e.newParkStore(deps)
 	curve := backoff.Curve{Min: backoffMin, Max: backoffMax}
 	e.mu.Lock()
 	e.queue = newWakeQueue(deps.Clock, wakePolicy{
-		deadLetterAfter: e.cfg.deadLetterAfter,
-		backoff:         curve.Delay,
-		floor:           backoff.Floor,
+		backoff: curve.Delay,
+		floor:   backoff.Floor,
 	})
 	e.mu.Unlock()
 	return nil
@@ -176,7 +172,6 @@ func (e *engine) Stats() converge.JobStats {
 	if e.queue != nil {
 		c := e.queue.counts()
 		s.QueueDepth = c.depth
-		s.Parked = c.parked
 	}
 	return s
 }
@@ -190,9 +185,6 @@ func (e *engine) Info() converge.JobInfo {
 	}
 	if trig := triggersSetting(e.cfg.triggers); trig != "" {
 		settings["triggers"] = trig
-	}
-	if e.cfg.deadLetterAfter != 0 {
-		settings["dead-letter-after"] = strconv.Itoa(e.cfg.deadLetterAfter)
 	}
 	if !e.cfg.rateLimit.IsZero() {
 		settings["rate-limit"] = e.cfg.rateLimit.String()
@@ -262,40 +254,14 @@ func (e *engine) hintVia(ctx context.Context, q *wakeQueue, id ID) {
 	if q == nil {
 		return
 	}
-	res := q.wake(id, wakeHint)
-	if res == wakeDroppedParked && e.tryRevive(ctx, q, id) {
-		return
-	}
-	e.report(id, res)
-}
-
-func (e *engine) tryRevive(ctx context.Context, q *wakeQueue, id ID) bool {
-	if e.cfg.versions == nil {
-		return false
-	}
-	marked, ok := e.parks.read(ctx, id)
-	if !ok {
-		return false
-	}
-	latest, err := e.cfg.versions.Latest(ctx, id)
-	if err != nil || latest <= marked {
-		return false
-	}
-	e.clearPark(ctx, id)
-	return q.wake(id, wakeVersion) == wakeRevived
+	e.report(id, q.wake(id, wakeHint))
 }
 
 func (e *engine) report(id ID, res wakeResult) {
-	var reason converge.WakeDiscardReason
-	switch res {
-	case wakeDroppedParked:
-		reason = converge.DiscardParked
-	case wakeDroppedOverflow:
-		reason = converge.DiscardOverflow
-	default:
+	if res != wakeDroppedOverflow {
 		return
 	}
-	e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: reason})
+	e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
 }
 
 func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.WaitGroup) {
@@ -393,15 +359,11 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 	var (
 		kind  finishKind
 		delay time.Duration
-		wrong converge.Surface
 	)
 	s, isSig := sig.FromError(err)
 	switch {
 	case err == nil:
 		kind = finishSuccess
-	case isSig && s.ControlSurface() != converge.SurfaceReconcile:
-		kind = finishForcePark
-		wrong = s.ControlSurface()
 	case isSig:
 		if d, ok := checkAgainDelay(s); ok {
 			kind = finishDelay
@@ -432,20 +394,8 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 		Duration: took,
 		Err:      runErr(kind, err),
 	})
-	if kind == finishForcePark {
-		e.deps.Observer.Observe(converge.WrongSurfaceSignal{Job: e.cfg.name, ID: string(id), Surface: wrong})
-	}
 	if res.fallback {
 		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.name, ID: string(id), Consecutive: backoff.NoBackoffCap + 1})
-	}
-	if res.parked {
-		e.deps.Observer.Observe(converge.IDParked{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})
-		if !res.revived {
-			e.parkOrRevive(hctx, id, snap)
-		}
-	}
-	if res.droppedHint {
-		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardParked})
 	}
 }
 
@@ -474,41 +424,13 @@ func (e *engine) record(kind finishKind) {
 	case finishSuccess, finishDelay:
 		e.lastSuccess = now
 		e.consecFails = 0
-	case finishFailure, finishForcePark:
+	case finishFailure:
 		e.consecFails++
 	}
 }
 
 func (e *engine) key(parts ...string) string {
 	return keys.Reconcile(e.deps.Namespace, e.cfg.name, parts...)
-}
-
-func (e *engine) parkOrRevive(ctx context.Context, id ID, snap versionSnapshot) {
-	if !e.parks.enabled() {
-		return
-	}
-	if e.cfg.versions != nil && snap.known {
-		latest, err := e.cfg.versions.Latest(ctx, id)
-		if err == nil && latest > snap.v {
-			e.queue.wake(id, wakeVersion)
-			return
-		}
-	}
-	if e.cfg.versions != nil && snap.known && snap.v == 0 {
-		e.deps.Observer.Observe(converge.VersionZero{Job: e.cfg.name, ID: string(id)})
-	}
-	e.parks.mark(ctx, id, snap.v)
-}
-
-func (e *engine) loadParked(ctx context.Context) {
-	e.parks.scan(ctx, func(id ID) {
-		switch e.queue.restorePark(id) {
-		case restoreBusy:
-			e.clearPark(ctx, id)
-		case restoreOverflow:
-			e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
-		}
-	})
 }
 
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
@@ -603,8 +525,6 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 			e.heartbeat(ctx, h, hbStop, stopIntake, stopHandlers)
 		}()
 	}
-
-	e.loadParked(intake)
 
 	var aux sync.WaitGroup
 	for i, t := range e.cfg.triggers {

@@ -11,10 +11,9 @@ import (
 
 var wqStart = time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC)
 
-func testPolicy(deadLetterAfter int) wakePolicy {
+func testPolicy() wakePolicy {
 	return wakePolicy{
-		deadLetterAfter: deadLetterAfter,
-		backoff:         func(int) time.Duration { return time.Minute },
+		backoff: func(int) time.Duration { return time.Minute },
 		floor: func(d time.Duration) time.Duration {
 			if d < 250*time.Millisecond {
 				return 250 * time.Millisecond
@@ -24,9 +23,9 @@ func testPolicy(deadLetterAfter int) wakePolicy {
 	}
 }
 
-func newTestQueue(deadLetterAfter int) (*wakeQueue, *convergetest.Clock) {
+func newTestQueue() (*wakeQueue, *convergetest.Clock) {
 	clock := convergetest.NewClock(wqStart)
-	return newWakeQueue(clock, testPolicy(deadLetterAfter)), clock
+	return newWakeQueue(clock, testPolicy()), clock
 }
 
 func TestWakeStateMachineTable(t *testing.T) {
@@ -51,13 +50,10 @@ func TestWakeStateMachineTable(t *testing.T) {
 		{"delayed", wakeHint, wakePulledForward},
 		{"delayed", wakePoke, wakePulledForward},
 		{"delayed", wakeVersion, wakePulledForward},
-		{"parked", wakeHint, wakeDroppedParked},
-		{"parked", wakePoke, wakeRevived},
-		{"parked", wakeVersion, wakeRevived},
 	}
 	for _, r := range rows {
 		t.Run(r.state+"/"+className(r.class), func(t *testing.T) {
-			q, clock := newTestQueue(1)
+			q, clock := newTestQueue()
 			id := ID("x")
 			switch r.state {
 			case "idle":
@@ -67,8 +63,6 @@ func TestWakeStateMachineTable(t *testing.T) {
 				q.wake(id, wakeHint)
 				mustPop(t, q, clock, id)
 			case "backoff":
-				q2, c2 := newTestQueue(0)
-				q, clock = q2, c2
 				q.wake(id, wakeHint)
 				mustPop(t, q, clock, id)
 				q.finish(id, finishFailure, 0)
@@ -76,10 +70,6 @@ func TestWakeStateMachineTable(t *testing.T) {
 				q.wake(id, wakeHint)
 				mustPop(t, q, clock, id)
 				q.finish(id, finishDelay, time.Hour)
-			case "parked":
-				q.wake(id, wakeHint)
-				mustPop(t, q, clock, id)
-				q.finish(id, finishFailure, 0)
 			}
 			if got := q.wake(id, r.class); got != r.want {
 				t.Fatalf("%s + %s = %v, want %v", r.state, className(r.class), got, r.want)
@@ -108,7 +98,7 @@ func mustPop(t *testing.T, q *wakeQueue, clock *convergetest.Clock, want ID) {
 }
 
 func TestBypassRunsNow(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
@@ -120,7 +110,7 @@ func TestBypassRunsNow(t *testing.T) {
 }
 
 func TestBackoffEntryBecomesDueAfterDelay(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)
@@ -133,7 +123,7 @@ func TestBackoffEntryBecomesDueAfterDelay(t *testing.T) {
 }
 
 func TestRerunAfterSuccessRequeues(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.wake("x", wakeHint)
@@ -151,7 +141,7 @@ func TestRerunAfterSuccessRequeues(t *testing.T) {
 }
 
 func TestSecondWakeWhileRerunArmedCollapses(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.wake("x", wakePoke)
@@ -160,44 +150,8 @@ func TestSecondWakeWhileRerunArmedCollapses(t *testing.T) {
 	}
 }
 
-func TestDeadLetterAfterParks(t *testing.T) {
-	q, clock := newTestQueue(2)
-	q.wake("x", wakeHint)
-	mustPop(t, q, clock, "x")
-	if res := q.finish("x", finishFailure, 0); res.parked || res.attempt != 1 {
-		t.Fatalf("first failure = %+v", res)
-	}
-	clock.Advance(time.Minute)
-	mustPop(t, q, clock, "x")
-	res := q.finish("x", finishFailure, 0)
-	if !res.parked || res.attempt != 2 {
-		t.Fatalf("second failure = %+v, want parked", res)
-	}
-	c := q.counts()
-	if c.parked != 1 || c.depth != 0 {
-		t.Fatalf("counts = %+v", c)
-	}
-}
-
-func TestReviveResetsFailureCount(t *testing.T) {
-	q, clock := newTestQueue(2)
-	q.wake("x", wakeHint)
-	mustPop(t, q, clock, "x")
-	q.finish("x", finishFailure, 0)
-	clock.Advance(time.Minute)
-	mustPop(t, q, clock, "x")
-	q.finish("x", finishFailure, 0)
-	if got := q.wake("x", wakePoke); got != wakeRevived {
-		t.Fatalf("poke on parked = %v", got)
-	}
-	mustPop(t, q, clock, "x")
-	if res := q.finish("x", finishFailure, 0); res.parked {
-		t.Fatal("revived ID must get a fresh failure budget")
-	}
-}
-
 func TestDelayFloorsAndFallsBackAfterLimit(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	for i := 0; i < backoff.NoBackoffCap; i++ {
 		mustPop(t, q, clock, "x")
@@ -223,7 +177,7 @@ func TestDelayFloorsAndFallsBackAfterLimit(t *testing.T) {
 }
 
 func TestSuccessResetsNoBackoffStreak(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	for i := 0; i < backoff.NoBackoffCap-1; i++ {
 		mustPop(t, q, clock, "x")
@@ -240,31 +194,18 @@ func TestSuccessResetsNoBackoffStreak(t *testing.T) {
 }
 
 func TestNeutralRequeuesWithoutCounting(t *testing.T) {
-	q, clock := newTestQueue(1)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishNeutral, 0)
 	mustPop(t, q, clock, "x")
-	if res := q.finish("x", finishFailure, 0); !res.parked || res.attempt != 1 {
+	if res := q.finish("x", finishFailure, 0); res.attempt != 1 {
 		t.Fatalf("neutral must not consume the failure budget: %+v", res)
 	}
 }
 
-func TestForceParkParksImmediately(t *testing.T) {
-	q, clock := newTestQueue(0)
-	q.wake("x", wakeHint)
-	mustPop(t, q, clock, "x")
-	res := q.finish("x", finishForcePark, 0)
-	if !res.parked {
-		t.Fatal("force park must park")
-	}
-	if got := q.wake("x", wakeHint); got != wakeDroppedParked {
-		t.Fatalf("hint on force-parked = %v", got)
-	}
-}
-
 func TestDelayedHonorsRequestedDelay(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishDelay, time.Hour)
@@ -276,7 +217,7 @@ func TestDelayedHonorsRequestedDelay(t *testing.T) {
 }
 
 func TestOverflowDropsNewIDs(t *testing.T) {
-	q, _ := newTestQueue(0)
+	q, _ := newTestQueue()
 	for i := 0; i < wakeQueueBound; i++ {
 		q.ids[ID(strconv.Itoa(i))] = &idState{phase: phaseQueued}
 	}
@@ -288,29 +229,8 @@ func TestOverflowDropsNewIDs(t *testing.T) {
 	}
 }
 
-func TestRestoreParkReportsOverflow(t *testing.T) {
-	q, _ := newTestQueue(0)
-	for i := 0; i < wakeQueueBound; i++ {
-		if got := q.restorePark(ID(strconv.Itoa(i))); got != restoredParked {
-			t.Fatalf("restorePark %d = %d, want restoredParked while under bound", i, got)
-		}
-	}
-	if got := q.restorePark("new"); got != restoreOverflow {
-		t.Fatalf("restorePark beyond bound = %d, want restoreOverflow", got)
-	}
-	if got := q.restorePark(ID(strconv.Itoa(0))); got != restoredParked {
-		t.Fatalf("restorePark of an already-parked id at the bound = %d, want restoredParked", got)
-	}
-	if got := q.wake(ID(strconv.Itoa(1)), wakePoke); got != wakeRevived {
-		t.Fatalf("poke on a parked id = %d, want wakeRevived", got)
-	}
-	if got := q.restorePark(ID(strconv.Itoa(1))); got != restoreBusy {
-		t.Fatalf("restorePark of a queued id = %d, want restoreBusy", got)
-	}
-}
-
 func TestCountsAndReset(t *testing.T) {
-	q, clock := newTestQueue(1)
+	q, clock := newTestQueue()
 	q.wake("a", wakeHint)
 	q.wake("b", wakeHint)
 	mustPop(t, q, clock, "a")
@@ -320,18 +240,18 @@ func TestCountsAndReset(t *testing.T) {
 		t.Fatalf("depth = %d, want queued b + armed rerun a", c.depth)
 	}
 	q.finish("a", finishFailure, 0)
-	if q.counts().parked != 1 {
-		t.Fatal("a must be parked")
+	if q.counts().depth != 2 {
+		t.Fatal("a must still count toward depth while backing off")
 	}
 	q.reset()
 	c = q.counts()
-	if c.depth != 0 || c.parked != 0 {
+	if c.depth != 0 {
 		t.Fatalf("counts after reset = %+v", c)
 	}
 }
 
 func TestQuietReportsQueueState(t *testing.T) {
-	q, clock := newTestQueue(2)
+	q, clock := newTestQueue()
 	if !q.quiet(clock.Now()) {
 		t.Fatal("empty queue must be quiet")
 	}
@@ -356,13 +276,6 @@ func TestQuietReportsQueueState(t *testing.T) {
 	}
 	clock.Advance(time.Minute)
 	mustPop(t, q, clock, "a")
-	q.finish("a", finishFailure, 0)
-	if q.counts().parked != 1 {
-		t.Fatal("a must be parked")
-	}
-	if !q.quiet(clock.Now()) {
-		t.Fatal("a parked id must be quiet")
-	}
 }
 
 func heapLen(q *wakeQueue) int {
@@ -378,7 +291,7 @@ func idsLen(q *wakeQueue) int {
 }
 
 func TestUnknownFinishKindBehavesLikeFailure(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	res := q.finish("x", finishKind(99), 0)
@@ -392,32 +305,24 @@ func TestUnknownFinishKindBehavesLikeFailure(t *testing.T) {
 }
 
 func TestFinishOnUnknownIDIsUnsettled(t *testing.T) {
-	q, _ := newTestQueue(0)
+	q, _ := newTestQueue()
 	if res := q.finish("x", finishFailure, 0); res.settled {
 		t.Fatalf("finish on unregistered id = %+v, want unsettled", res)
 	}
 }
 
 func TestUnknownWakeClassFailsClosed(t *testing.T) {
-	qBackoff, clockBackoff := newTestQueue(0)
-	qBackoff.wake("x", wakeHint)
-	mustPop(t, qBackoff, clockBackoff, "x")
-	qBackoff.finish("x", finishFailure, 0)
-	if got := qBackoff.wake("x", wakeClass(99)); got != wakeCollapsed {
+	q, clock := newTestQueue()
+	q.wake("x", wakeHint)
+	mustPop(t, q, clock, "x")
+	q.finish("x", finishFailure, 0)
+	if got := q.wake("x", wakeClass(99)); got != wakeCollapsed {
 		t.Fatalf("unknown class on backoff id = %v, want collapsed", got)
-	}
-
-	qParked, clockParked := newTestQueue(1)
-	qParked.wake("x", wakeHint)
-	mustPop(t, qParked, clockParked, "x")
-	qParked.finish("x", finishFailure, 0)
-	if got := qParked.wake("x", wakeClass(99)); got != wakeDroppedParked {
-		t.Fatalf("unknown class on parked id = %v, want dropped", got)
 	}
 }
 
 func TestPendingPokeSurvivesFailure(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.wake("x", wakePoke)
@@ -428,40 +333,8 @@ func TestPendingPokeSurvivesFailure(t *testing.T) {
 	mustPop(t, q, clock, "x")
 }
 
-func TestPendingPokeSurvivesParking(t *testing.T) {
-	q, clock := newTestQueue(2)
-	q.wake("x", wakeHint)
-	mustPop(t, q, clock, "x")
-	q.finish("x", finishFailure, 0)
-	clock.Advance(time.Minute)
-	mustPop(t, q, clock, "x")
-	q.wake("x", wakePoke)
-	res := q.finish("x", finishFailure, 0)
-	if !res.parked || !res.revived {
-		t.Fatalf("failure with pending poke at threshold = %+v, want parked and revived", res)
-	}
-	mustPop(t, q, clock, "x")
-	if res := q.finish("x", finishFailure, 0); res.parked {
-		t.Fatal("revived-through-park id must get a fresh failure budget")
-	}
-}
-
-func TestPendingHintDroppedOnParking(t *testing.T) {
-	q, clock := newTestQueue(1)
-	q.wake("x", wakeHint)
-	mustPop(t, q, clock, "x")
-	q.wake("x", wakeHint)
-	res := q.finish("x", finishFailure, 0)
-	if !res.parked || !res.droppedHint {
-		t.Fatalf("failure with pending hint at threshold = %+v, want parked and droppedHint", res)
-	}
-	if got := q.wake("x", wakeHint); got != wakeDroppedParked {
-		t.Fatalf("post-park hint = %v, want dropped", got)
-	}
-}
-
 func TestPendingHintPullsDelayForward(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.wake("x", wakeHint)
@@ -469,29 +342,31 @@ func TestPendingHintPullsDelayForward(t *testing.T) {
 	mustPop(t, q, clock, "x")
 }
 
-func TestFallbackParksAfterRepeatedFallbacks(t *testing.T) {
-	q, clock := newTestQueue(2)
+func TestRepeatedFallbacksEachTripIndependently(t *testing.T) {
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	var last finishResult
+	trips := 0
 	for i := 0; i < 22; i++ {
 		mustPop(t, q, clock, "x")
 		last = q.finish("x", finishDelay, 0)
 		if last.fallback {
+			trips++
 			clock.Advance(time.Minute)
 		} else {
 			clock.Advance(250 * time.Millisecond)
 		}
 	}
-	if !last.fallback || !last.parked {
-		t.Fatalf("22nd requeue = %+v, want fallback and parked", last)
+	if trips != 2 {
+		t.Fatalf("fallback trips over 22 requeues = %d, want 2", trips)
 	}
-	if q.counts().parked != 1 {
-		t.Fatal("id must be parked after the second fallback")
+	if !last.fallback {
+		t.Fatalf("22nd requeue = %+v, want the second fallback trip", last)
 	}
 }
 
 func TestHeapStaysBounded(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	for i := 0; i < 200; i++ {
@@ -507,7 +382,7 @@ func TestHeapStaysBounded(t *testing.T) {
 }
 
 func TestStaleDuplicateHeapEntryDiscardedAfterDispatch(t *testing.T) {
-	q, clock := newTestQueue(0)
+	q, clock := newTestQueue()
 	q.wake("x", wakeHint)
 	mustPop(t, q, clock, "x")
 	q.finish("x", finishFailure, 0)

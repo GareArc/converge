@@ -24,7 +24,6 @@ const (
 )
 
 const (
-	kindVersionZero     = "version-zero"
 	kindWrongSurface    = "wrong-surface"
 	kindBackoffFallback = "backoff-fallback"
 	kindPassOverrun     = "pass-overrun"
@@ -32,7 +31,6 @@ const (
 
 type observer struct {
 	runDuration metric.Float64Histogram
-	parked      metric.Int64Counter
 	deadLetters metric.Int64Counter
 	discarded   metric.Int64Counter
 	leaseMoves  metric.Int64Counter
@@ -52,7 +50,6 @@ func NewObserver(meter metric.Meter) (converge.Observer, error) {
 		target     *metric.Int64Counter
 		name, desc string
 	}{
-		{&o.parked, "converge.parked", "Reconcile IDs parked after repeated failure."},
 		{&o.deadLetters, "converge.dead_letters", "Worker messages moved to the dead-letter store."},
 		{&o.discarded, "converge.discarded", "Work items dropped without running."},
 		{&o.leaseMoves, "converge.lease.transitions", "Job lease acquisitions and losses."},
@@ -76,8 +73,6 @@ func (o *observer) Observe(e converge.Event) {
 			attribute.String(attrSurface, v.Surface.String()),
 			attribute.String(attrStatus, runStatus(v.Err)),
 		))
-	case converge.IDParked:
-		o.parked.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
 	case converge.MessageDeadLettered:
 		o.deadLetters.Add(ctx, 1, metric.WithAttributes(
 			attribute.String(attrJob, v.Job),
@@ -101,8 +96,6 @@ func (o *observer) Observe(e converge.Event) {
 			attribute.String(attrJob, v.Job),
 			attribute.Bool(attrAcquired, v.Acquired),
 		))
-	case converge.VersionZero:
-		o.anomaly(ctx, v.Job, kindVersionZero)
 	case converge.WrongSurfaceSignal:
 		o.anomaly(ctx, v.Job, kindWrongSurface)
 	case converge.BackoffFallback:

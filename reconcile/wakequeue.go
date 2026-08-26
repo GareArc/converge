@@ -26,15 +26,6 @@ func (c wakeClass) bypassesBackoff() bool {
 	}
 }
 
-func (c wakeClass) revivesParked() bool {
-	switch c {
-	case wakePoke, wakeVersion:
-		return true
-	default:
-		return false
-	}
-}
-
 type idPhase int
 
 const (
@@ -42,7 +33,6 @@ const (
 	phaseRunning
 	phaseBackoff
 	phaseDelayed
-	phaseParked
 )
 
 type wakeResult int
@@ -53,8 +43,6 @@ const (
 	wakeRerunArmed
 	wakeBypassed
 	wakePulledForward
-	wakeRevived
-	wakeDroppedParked
 	wakeDroppedOverflow
 )
 
@@ -65,15 +53,13 @@ const (
 	finishFailure
 	finishDelay
 	finishNeutral
-	finishForcePark
 )
 
 const wakeQueueBound = 65536
 
 type wakePolicy struct {
-	deadLetterAfter int
-	backoff         func(consecutiveFails int) time.Duration
-	floor           func(d time.Duration) time.Duration
+	backoff func(consecutiveFails int) time.Duration
+	floor   func(d time.Duration) time.Duration
 }
 
 type idState struct {
@@ -87,18 +73,14 @@ type idState struct {
 }
 
 type finishResult struct {
-	attempt     int
-	parked      bool
-	rerun       bool
-	fallback    bool
-	settled     bool
-	droppedHint bool
-	revived     bool
+	attempt  int
+	rerun    bool
+	fallback bool
+	settled  bool
 }
 
 type queueCounts struct {
-	depth  int
-	parked int
+	depth int
 }
 
 type dueItem struct {
@@ -205,17 +187,6 @@ func (q *wakeQueue) wake(id ID, class wakeClass) wakeResult {
 		st.due = now
 		q.push(id, now)
 		return wakePulledForward
-	case phaseParked:
-		if !class.revivesParked() {
-			return wakeDroppedParked
-		}
-		st.phase = phaseQueued
-		st.due = now
-		st.fails = 0
-		st.noBackoff = 0
-		st.fallbacks = 0
-		q.push(id, now)
-		return wakeRevived
 	}
 	return wakeCollapsed
 }
@@ -226,7 +197,7 @@ func (q *wakeQueue) next(now time.Time) (ID, bool) {
 	for q.heap.Len() > 0 {
 		top := q.heap[0]
 		st := q.ids[top.id]
-		if st == nil || st.phase == phaseRunning || st.phase == phaseParked || !st.due.Equal(top.due) {
+		if st == nil || st.phase == phaseRunning || !st.due.Equal(top.due) {
 			heap.Pop(&q.heap)
 			continue
 		}
@@ -247,7 +218,7 @@ func (q *wakeQueue) nextDue() (time.Time, bool) {
 	for q.heap.Len() > 0 {
 		top := q.heap[0]
 		st := q.ids[top.id]
-		if st == nil || st.phase == phaseRunning || st.phase == phaseParked || !st.due.Equal(top.due) {
+		if st == nil || st.phase == phaseRunning || !st.due.Equal(top.due) {
 			heap.Pop(&q.heap)
 			continue
 		}
@@ -273,44 +244,15 @@ func (q *wakeQueue) applyBackoffOrBypass(id ID, st *idState, now time.Time, atte
 	return res
 }
 
-func (q *wakeQueue) applyPark(id ID, st *idState, now time.Time, attempt int) finishResult {
-	res := finishResult{attempt: attempt, parked: true, settled: true}
-	if st.hasPending && st.pending.revivesParked() {
-		st.hasPending = false
-		st.phase = phaseQueued
-		st.due = now
-		st.fails = 0
-		st.noBackoff = 0
-		st.fallbacks = 0
-		q.push(id, now)
-		res.revived = true
-		return res
-	}
-	if st.hasPending {
-		st.hasPending = false
-		res.droppedHint = true
-	}
-	st.phase = phaseParked
-	return res
-}
-
 func (q *wakeQueue) applyFailure(id ID, st *idState, now time.Time) finishResult {
 	st.fails++
 	st.noBackoff = 0
 	st.fallbacks = 0
-	attempt := st.fails
-	if q.policy.deadLetterAfter > 0 && attempt >= q.policy.deadLetterAfter {
-		return q.applyPark(id, st, now, attempt)
-	}
-	return q.applyBackoffOrBypass(id, st, now, attempt, q.policy.backoff(st.fails))
+	return q.applyBackoffOrBypass(id, st, now, st.fails, q.policy.backoff(st.fails))
 }
 
 func (q *wakeQueue) applyFallback(id ID, st *idState, now time.Time) finishResult {
-	attempt := st.fallbacks
-	if q.policy.deadLetterAfter > 0 && attempt >= q.policy.deadLetterAfter {
-		return q.applyPark(id, st, now, attempt)
-	}
-	return q.applyBackoffOrBypass(id, st, now, attempt, q.policy.backoff(st.fallbacks))
+	return q.applyBackoffOrBypass(id, st, now, st.fallbacks, q.policy.backoff(st.fallbacks))
 }
 
 func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishResult {
@@ -368,9 +310,6 @@ func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishRe
 		st.due = now
 		q.push(id, now)
 		return finishResult{settled: true}
-	case finishForcePark:
-		st.fails++
-		return q.applyPark(id, st, now, st.fails)
 	default:
 		return q.applyFailure(id, st, now)
 	}
@@ -380,9 +319,6 @@ func (q *wakeQueue) quiet(now time.Time) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for _, st := range q.ids {
-		if st.phase == phaseParked {
-			continue
-		}
 		if st.phase == phaseRunning {
 			return false
 		}
@@ -399,8 +335,6 @@ func (q *wakeQueue) counts() queueCounts {
 	var c queueCounts
 	for _, st := range q.ids {
 		switch st.phase {
-		case phaseParked:
-			c.parked++
 		case phaseQueued, phaseBackoff, phaseDelayed:
 			c.depth++
 		case phaseRunning:
@@ -410,30 +344,6 @@ func (q *wakeQueue) counts() queueCounts {
 		}
 	}
 	return c
-}
-
-type restoreResult int
-
-const (
-	restoredParked restoreResult = iota
-	restoreBusy
-	restoreOverflow
-)
-
-func (q *wakeQueue) restorePark(id ID) restoreResult {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if st := q.ids[id]; st != nil {
-		if st.phase == phaseParked {
-			return restoredParked
-		}
-		return restoreBusy
-	}
-	if len(q.ids) >= wakeQueueBound {
-		return restoreOverflow
-	}
-	q.ids[id] = &idState{phase: phaseParked}
-	return restoredParked
 }
 
 func (q *wakeQueue) reset() {

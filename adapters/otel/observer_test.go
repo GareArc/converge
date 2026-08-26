@@ -156,7 +156,7 @@ func TestDeadLetterCountsByReasonAndQueue(t *testing.T) {
 
 func TestDiscardsShareOneMetricSplitBySurface(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.WakeDiscarded{Job: "sync", ID: "ws-1", Reason: converge.DiscardParked})
+	obs.Observe(converge.WakeDiscarded{Job: "sync", ID: "ws-1", Reason: converge.DiscardOverflow})
 	obs.Observe(converge.MessageDiscarded{Job: "email", Queue: "email-q", MessageID: "m-1", Reason: "tenant 42 is gone"})
 
 	pts := sumPoints(t, collect(t, r), "converge.discarded")
@@ -171,8 +171,8 @@ func TestDiscardsShareOneMetricSplitBySurface(t *testing.T) {
 	if !ok {
 		t.Fatal("no reconcile data point")
 	}
-	if got := attrValue(t, rec.Attributes, "converge.reason"); got != "parked" {
-		t.Fatalf("reconcile converge.reason = %q, want parked", got)
+	if got := attrValue(t, rec.Attributes, "converge.reason"); got != "overflow" {
+		t.Fatalf("reconcile converge.reason = %q, want overflow", got)
 	}
 	if got := attrValue(t, rec.Attributes, "converge.job"); got != "sync" {
 		t.Fatalf("reconcile converge.job = %q, want sync", got)
@@ -198,24 +198,12 @@ func TestDiscardsShareOneMetricSplitBySurface(t *testing.T) {
 	}
 }
 
-func TestParkedAndLeaseTransitionsCount(t *testing.T) {
+func TestLeaseTransitionsCount(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.IDParked{Job: "sync", ID: "ws-1", Failures: 3})
 	obs.Observe(converge.LeaseTransition{Job: "sync", Acquired: true})
 	obs.Observe(converge.LeaseTransition{Job: "sync", Acquired: false})
 
-	rm := collect(t, r)
-	parkedPts := sumPoints(t, rm, "converge.parked")
-	if len(parkedPts) != 1 || parkedPts[0].Value != 1 {
-		t.Fatalf("converge.parked points = %+v, want a single point of 1", parkedPts)
-	}
-	if got := attrValue(t, parkedPts[0].Attributes, "converge.job"); got != "sync" {
-		t.Fatalf("converge.job = %q, want sync", got)
-	}
-	if _, ok := parkedPts[0].Attributes.Value(attribute.Key("converge.id")); ok {
-		t.Fatal("per-ID attribute exported; unbounded cardinality")
-	}
-	pts := sumPoints(t, rm, "converge.lease.transitions")
+	pts := sumPoints(t, collect(t, r), "converge.lease.transitions")
 	if len(pts) != 2 {
 		t.Fatalf("lease points = %d, want 2 (acquired true and false)", len(pts))
 	}
@@ -231,7 +219,6 @@ func TestEachAnomalyEventRecordsItsOwnKind(t *testing.T) {
 		kind  string
 		event converge.Event
 	}{
-		{"version-zero", converge.VersionZero{Job: "sync", ID: "ws-1"}},
 		{"wrong-surface", converge.WrongSurfaceSignal{Job: "sync", ID: "ws-1", Surface: converge.SurfaceWorker}},
 		{"backoff-fallback", converge.BackoffFallback{Job: "sync", ID: "ws-1", Consecutive: 11}},
 		{"pass-overrun", converge.PassOverrun{Job: "sync", Due: time.Unix(0, 0)}},

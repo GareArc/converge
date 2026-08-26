@@ -15,8 +15,6 @@ type Repo interface {
 	RunApp(ctx context.Context, appID string) error
 }
 
-const AppRunnerDeadLetterAfter = 1
-
 type workspaceReconciler struct{ repo Repo }
 
 func (r workspaceReconciler) Reconcile(ctx context.Context, id reconcile.ID) error {
@@ -40,10 +38,9 @@ func NewReconciler(rt *converge.Runtime, repo Repo) (struct{}, error) {
 		return struct{}{}, err
 	}
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:            "app-runner",
-		Reconciler:      appReconciler{repo: repo},
-		RunMode:         converge.OnOneReplica,
-		DeadLetterAfter: AppRunnerDeadLetterAfter,
+		Name:       "app-runner",
+		Reconciler: appReconciler{repo: repo},
+		RunMode:    converge.OnOneReplica,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(repo.AppIDs), reconcile.Every(time.Hour)),
 		},

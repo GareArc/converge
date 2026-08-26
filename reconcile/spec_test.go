@@ -30,7 +30,6 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"slash in name", func(s *Spec) { s.Name = "a/b" }, "must not contain"},
 		{"nil reconciler", func(s *Spec) { s.Reconciler = nil }, "Reconciler"},
 		{"negative concurrency", func(s *Spec) { s.Concurrency = -1 }, "Concurrency"},
-		{"negative dead letter", func(s *Spec) { s.DeadLetterAfter = -1 }, "DeadLetterAfter"},
 		{"negative rate", func(s *Spec) { s.RateLimit = converge.Rate{Events: -1, Per: time.Second} }, "RateLimit"},
 		{"half rate", func(s *Spec) { s.RateLimit = converge.Rate{Events: 5} }, "RateLimit"},
 		{"split across replicas", func(s *Spec) { s.RunMode = converge.SplitAcrossReplicas }, "SplitAcrossReplicas"},
@@ -38,10 +37,6 @@ func TestSpecValidationMatrix(t *testing.T) {
 			s.RunMode = converge.OnAllReplicas
 			s.Versions = fakeVersions{}
 		}, "Versions"},
-		{"all replicas with dead letter", func(s *Spec) {
-			s.RunMode = converge.OnAllReplicas
-			s.DeadLetterAfter = 3
-		}, "DeadLetterAfter"},
 		{"all replicas with rate limit", func(s *Spec) {
 			s.RunMode = converge.OnAllReplicas
 			s.RateLimit = converge.Rate{Events: 1, Per: time.Second}
@@ -155,7 +150,6 @@ func TestCustomPeriodicTriggerSatisfiesScheduleRequirement(t *testing.T) {
 func TestEngineInfoRendersScheduleSettings(t *testing.T) {
 	s := okSpec()
 	s.Concurrency = 2
-	s.DeadLetterAfter = 3
 	e, err := newEngine(s)
 	if err != nil {
 		t.Fatal(err)
@@ -168,10 +162,9 @@ func TestEngineInfoRendersScheduleSettings(t *testing.T) {
 		t.Fatalf("Queue = %q, want empty", info.Queue)
 	}
 	want := map[string]string{
-		"concurrency":       "2",
-		"schedule":          "every 1h",
-		"triggers":          "schedule",
-		"dead-letter-after": "3",
+		"concurrency": "2",
+		"schedule":    "every 1h",
+		"triggers":    "schedule",
 	}
 	if !reflect.DeepEqual(info.Settings, want) {
 		t.Fatalf("Settings = %+v, want %+v", info.Settings, want)

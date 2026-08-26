@@ -16,8 +16,6 @@ func TestLayout(t *testing.T) {
 		{"reconcile lease", ReconcileLease("", "job"), "converge/reconcile/job/lease"},
 		{"dlq prefix", WorkerDLQPrefix("ns", "job"), "ns/converge/worker/job/dlq/"},
 		{"dlq", WorkerDLQ("ns", "job", "m1"), "ns/converge/worker/job/dlq/m1"},
-		{"parked prefix", ReconcileParkedPrefix("ns", "job"), "ns/converge/reconcile/job/parked/"},
-		{"parked", ReconcileParked("ns", "job", "id1"), "ns/converge/reconcile/job/parked/id1"},
 		{"tracker", Tracker("t", "id1"), "converge/tracker/t/id1"},
 	}
 	for _, tc := range cases {

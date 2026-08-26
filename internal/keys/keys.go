@@ -28,8 +28,4 @@ func WorkerDLQPrefix(ns, job string) string { return Worker(ns, job, "dlq") + "/
 
 func WorkerDLQ(ns, job, messageID string) string { return WorkerDLQPrefix(ns, job) + messageID }
 
-func ReconcileParkedPrefix(ns, job string) string { return Reconcile(ns, job, "parked") + "/" }
-
-func ReconcileParked(ns, job, id string) string { return ReconcileParkedPrefix(ns, job) + id }
-
 func Tracker(namespace, id string) string { return "converge/tracker/" + namespace + "/" + id }

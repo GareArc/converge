@@ -87,8 +87,6 @@ func TestRateZeroIsUnlimited(t *testing.T) {
 var _ = []Event{
 	WakeDiscarded{},
 	PassOverrun{},
-	IDParked{},
-	VersionZero{},
 	WrongSurfaceSignal{},
 	BackoffFallback{},
 	MessageDiscarded{},
@@ -100,7 +98,7 @@ func TestWakeDiscardReasonZeroIsHonest(t *testing.T) {
 	if got := (WakeDiscardReason{}).String(); got != "unknown" {
 		t.Fatalf("zero reason = %q, want unknown, never a fabricated name", got)
 	}
-	if !(WakeDiscardReason{}).IsZero() || DiscardParked.IsZero() {
+	if !(WakeDiscardReason{}).IsZero() || DiscardOverflow.IsZero() {
 		t.Fatal("IsZero semantics broken")
 	}
 }

@@ -30,7 +30,6 @@ type wakeDiscardKind int
 
 const (
 	wakeDiscardUnset wakeDiscardKind = iota
-	wakeDiscardParked
 	wakeDiscardUndecodable
 	wakeDiscardEmptyID
 	wakeDiscardOverflow
@@ -39,7 +38,6 @@ const (
 type WakeDiscardReason struct{ kind wakeDiscardKind }
 
 var (
-	DiscardParked      = WakeDiscardReason{wakeDiscardParked}
 	DiscardUndecodable = WakeDiscardReason{wakeDiscardUndecodable}
 	DiscardEmptyID     = WakeDiscardReason{wakeDiscardEmptyID}
 	DiscardOverflow    = WakeDiscardReason{wakeDiscardOverflow}
@@ -49,8 +47,6 @@ func (r WakeDiscardReason) IsZero() bool { return r.kind == wakeDiscardUnset }
 
 func (r WakeDiscardReason) String() string {
 	switch r.kind {
-	case wakeDiscardParked:
-		return "parked"
 	case wakeDiscardUndecodable:
 		return "undecodable"
 	case wakeDiscardEmptyID:
@@ -76,22 +72,6 @@ type PassOverrun struct {
 }
 
 func (PassOverrun) event() {}
-
-type IDParked struct {
-	Job      string
-	ID       string
-	Failures int
-	Err      error
-}
-
-func (IDParked) event() {}
-
-type VersionZero struct {
-	Job string
-	ID  string
-}
-
-func (VersionZero) event() {}
 
 type WrongSurfaceSignal struct {
 	Job     string
