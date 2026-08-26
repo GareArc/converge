@@ -44,17 +44,19 @@ type engine struct {
 	ready     chan struct{}
 	readyOnce sync.Once
 
-	mu          sync.Mutex
-	queue       *wakeQueue
-	lastSuccess time.Time
-	lastErr     error
-	lastErrAt   time.Time
-	consecFails int
-	passes      int
-	active      bool
-	leaseHeld   bool
-	state       converge.State
-	opsInFlight sync.WaitGroup
+	mu           sync.Mutex
+	queue        *wakeQueue
+	lastSuccess  time.Time
+	lastErr      error
+	lastErrAt    time.Time
+	consecFails  int
+	passes       int
+	active       bool
+	leaseHeld    bool
+	backlog      int
+	backlogKnown bool
+	state        converge.State
+	opsInFlight  sync.WaitGroup
 
 	stopCh      chan struct{}
 	destroyOnce sync.Once
@@ -172,6 +174,8 @@ func (e *engine) Stats() converge.JobStats {
 		RunMode:          e.cfg.runMode,
 		State:            e.state,
 		LeaseHeld:        e.leaseHeld,
+		Backlog:          e.backlog,
+		BacklogKnown:     e.backlogKnown,
 		LastSuccess:      e.lastSuccess,
 		LastError:        e.lastErr,
 		LastErrorAt:      e.lastErrAt,
@@ -633,6 +637,12 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 		}()
 	}
 
+	backlogStop := make(chan struct{})
+	defer close(backlogStop)
+	if mq, queue, ok := e.backlogSource(); ok {
+		go e.pollBacklog(ctx, mq, queue, backlogStop)
+	}
+
 	var aux sync.WaitGroup
 	for i, t := range e.cfg.triggers {
 		aux.Add(1)
@@ -676,6 +686,45 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 			h.Release(context.WithoutCancel(ctx))
 		}
 	}
+}
+
+func (e *engine) backlogSource() (converge.MQ, string, bool) {
+	for _, t := range e.cfg.triggers {
+		if tr, ok := t.(*notificationTrigger); ok && tr.mq != nil {
+			return tr.mq, tr.queue, true
+		}
+	}
+	return nil, "", false
+}
+
+func (e *engine) pollBacklog(ctx context.Context, mq converge.MQ, queue string, stop <-chan struct{}) {
+	br, ok := mq.(converge.BacklogReporter)
+	if !ok {
+		return
+	}
+	interval := e.leaseInterval()
+	e.refreshBacklog(ctx, br, queue, interval)
+	for {
+		select {
+		case <-stop:
+			return
+		case <-e.deps.Clock.After(interval):
+			e.refreshBacklog(ctx, br, queue, interval)
+		}
+	}
+}
+
+func (e *engine) refreshBacklog(ctx context.Context, br converge.BacklogReporter, queue string, timeout time.Duration) {
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	n, err := br.Backlog(bctx, queue)
+	if err != nil {
+		return
+	}
+	e.mu.Lock()
+	e.backlog = n
+	e.backlogKnown = true
+	e.mu.Unlock()
 }
 
 func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stop <-chan struct{}, stopIntake, stopHandlers func()) {

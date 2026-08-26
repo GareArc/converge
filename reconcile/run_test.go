@@ -830,6 +830,52 @@ func TestOnAllReplicasAlreadyPastDeadlineStillBecomesReadyThenStopsCleanly(t *te
 	}
 }
 
+func TestScheduleOnlyJobNeverReportsBacklogKnown(t *testing.T) {
+	le, _ := startRun(t, specWithSchedule(), nil)
+	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })
+	le.clock.Advance(time.Hour)
+	convergetest.AssertStable(t, func() bool { return !le.e.Stats().BacklogKnown })
+}
+
+func TestBacklogKnownAfterPollingNotificationInbox(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	rec := &convergetest.Recorder{}
+	lease := inmem.NewLeaseWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	mq := convergetest.WrapMQ(inmem.NewMQWithClock(clock))
+	spec := specWithSchedule()
+	spec.Triggers = append(spec.Triggers, Notifications(NotificationsOpts{}))
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := converge.JobDeps{
+		MQ:           mq,
+		Lease:        lease,
+		KV:           kv,
+		Observer:     rec,
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.Run(ctx, deps)
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	convergetest.Await(t, func() bool { return e.Stats().LeaseHeld })
+	if err := mq.Publish(context.Background(), keys.Inbox("", "job"), converge.Message{Payload: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.AdvanceUntil(t, clock, 5*time.Second, func() bool { return e.Stats().Backlog >= 1 })
+	if s := e.Stats(); !s.BacklogKnown || s.Backlog < 1 {
+		t.Fatalf("Stats = %+v, want BacklogKnown with a nonzero backlog", s)
+	}
+}
+
 func TestHeartbeatSurvivesTransientExtendFailureDuringDrain(t *testing.T) {
 	clock, lease, cancel, done := startDrainingLeader(t)
 	h := lease.currentHandle()

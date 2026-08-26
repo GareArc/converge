@@ -1739,6 +1739,25 @@ func TestTimeoutCancelsTheRun(t *testing.T) {
 	}
 }
 
+func TestBacklogKnownAfterPollingInbox(t *testing.T) {
+	h := convergetest.NewWith(t, convergetest.Options{LeaseTTL: 30 * time.Second})
+	rt := h.Build(t)
+	task := NewTask[string]("job", TaskOpts{})
+	if err := Handle(rt, task, func(context.Context, string) error { return nil }, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	if err := task.Enqueue(context.Background(), p, "x", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	convergetest.AdvanceUntil(t, h.Clock, 5*time.Second, func() bool { return jobStats(t, rt, "job").Backlog >= 1 })
+	if s := jobStats(t, rt, "job"); !s.BacklogKnown || s.Backlog < 1 {
+		t.Fatalf("Stats = %+v, want BacklogKnown with a nonzero backlog", s)
+	}
+}
+
 func TestShelveStopsAfterOneAttempt(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)

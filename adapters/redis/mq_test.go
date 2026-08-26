@@ -23,13 +23,32 @@ const (
 	testDelayedKey = "convredis:d:q"
 )
 
+type miniEnv struct {
+	client  *redis.Client
+	clock   *convergetest.Clock
+	advance func(d time.Duration)
+}
+
 func TestMQPortMiniredis(t *testing.T) {
+	const retention = time.Hour
+	var (
+		mu   sync.Mutex
+		envs = map[string]*miniEnv{}
+	)
 	var advance func(d time.Duration)
-	portcheck.MQ(t, func(t *testing.T) converge.MQ {
-		client, clock, adv := openMini(t)
-		advance = adv
-		return convredis.NewStreamsMQ(client, convredis.StreamsOpts{Clock: clock, Visibility: time.Minute})
-	}, portcheck.MQOptions{Advance: func(d time.Duration) { advance(d) }, Visibility: time.Minute})
+	open := func(t *testing.T) converge.MQ {
+		mu.Lock()
+		e, ok := envs[t.Name()]
+		if !ok {
+			client, clock, adv := openMini(t)
+			e = &miniEnv{client: client, clock: clock, advance: adv}
+			envs[t.Name()] = e
+		}
+		mu.Unlock()
+		advance = e.advance
+		return convredis.NewStreamsMQ(e.client, convredis.StreamsOpts{Clock: e.clock, Visibility: time.Minute, Retention: retention})
+	}
+	portcheck.MQ(t, open, portcheck.MQOptions{Advance: func(d time.Duration) { advance(d) }, Visibility: time.Minute, Retention: retention})
 }
 
 func TestMQPortRealRedis(t *testing.T) {

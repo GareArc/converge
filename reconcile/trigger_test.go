@@ -165,13 +165,18 @@ func TestNotificationsBindResolvesOwnInboxAndCapabilities(t *testing.T) {
 	bare := bareMQ{}
 	e2 := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
 	e2.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &convergetest.Recorder{}}
-	if err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(e2); err == nil {
-		t.Fatal("OnOneReplica without GroupConsumer must error")
+	if err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(e2); err != nil {
+		t.Fatalf("OnOneReplica binds through base Consume; no capability is required: %v", err)
 	}
 	e3 := &engine{cfg: config{name: "job", runMode: converge.OnAllReplicas}}
 	e3.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &convergetest.Recorder{}}
 	if err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(e3); err == nil {
 		t.Fatal("OnAllReplicas without BroadcastConsumer must error")
+	}
+	e4 := &engine{cfg: config{name: "job", runMode: converge.Competing}}
+	e4.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &convergetest.Recorder{}}
+	if err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(e4); err == nil {
+		t.Fatal("Competing without GroupConsumer must error")
 	}
 }
 

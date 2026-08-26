@@ -21,10 +21,20 @@ var (
 
 func TestMQContract(t *testing.T) {
 	clock := convergetest.NewClock(time.Date(2026, 8, 16, 0, 0, 0, 0, time.UTC))
-	portcheck.MQ(t,
-		func(t *testing.T) converge.MQ { return inmem.NewMQWithClock(clock) },
-		portcheck.MQOptions{Advance: clock.Advance, Visibility: inmem.DefaultVisibility},
-	)
+	const retention = time.Hour
+	var mu sync.Mutex
+	stores := map[string]*inmem.MQ{}
+	open := func(t *testing.T) converge.MQ {
+		mu.Lock()
+		defer mu.Unlock()
+		if mq, ok := stores[t.Name()]; ok {
+			return mq
+		}
+		mq := inmem.NewMQWithOpts(inmem.Options{Clock: clock, Retention: retention})
+		stores[t.Name()] = mq
+		return mq
+	}
+	portcheck.MQ(t, open, portcheck.MQOptions{Advance: clock.Advance, Visibility: inmem.DefaultVisibility, Retention: retention})
 }
 
 func TestStaleDeliveryCannotDisturbSuccessor(t *testing.T) {

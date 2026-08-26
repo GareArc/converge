@@ -81,15 +81,17 @@ func (t *notificationTrigger) bind(e *engine) error {
 		}
 		return fmt.Errorf("reconcile: job %q: Notifications needs Options.MQ", e.cfg.name)
 	}
-	if e.cfg.runMode == converge.OnAllReplicas {
+	switch e.cfg.runMode {
+	case converge.OnAllReplicas:
 		if _, ok := t.mq.(converge.BroadcastConsumer); !ok {
 			return fmt.Errorf("reconcile: job %q: notifications from %q need the BroadcastConsumer capability", e.cfg.name, t.queue)
 		}
 		t.broadcast = true
-		return nil
-	}
-	if _, ok := t.mq.(converge.GroupConsumer); !ok {
-		return fmt.Errorf("reconcile: job %q: notifications from %q need the GroupConsumer capability", e.cfg.name, t.queue)
+	case converge.OnOneReplica:
+	default:
+		if _, ok := t.mq.(converge.GroupConsumer); !ok {
+			return fmt.Errorf("reconcile: job %q: notifications from %q need the GroupConsumer capability", e.cfg.name, t.queue)
+		}
 	}
 	return nil
 }
@@ -111,9 +113,12 @@ func (e *engine) runNotifications(ctx context.Context, t *notificationTrigger) {
 		e.deliverNotification(ctx, t, d)
 	}
 	e.supervise(ctx, func() {
-		if t.broadcast {
+		switch e.cfg.runMode {
+		case converge.OnAllReplicas:
 			t.mq.(converge.BroadcastConsumer).ConsumeBroadcast(ctx, t.queue, deliver)
-		} else {
+		case converge.OnOneReplica:
+			t.mq.Consume(ctx, t.queue, deliver)
+		default:
 			t.mq.(converge.GroupConsumer).ConsumeGroup(ctx, t.queue, e.key("notifications"), deliver)
 		}
 	})

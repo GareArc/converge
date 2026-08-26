@@ -23,9 +23,10 @@ const DefaultVisibility = 30 * time.Second
 const pollInterval = 2 * time.Millisecond
 
 type MQ struct {
-	mu     sync.Mutex
-	clock  converge.Clock
-	queues map[string]*mqQueue
+	mu        sync.Mutex
+	clock     converge.Clock
+	retention time.Duration
+	queues    map[string]*mqQueue
 }
 
 type mqQueue struct {
@@ -54,13 +55,21 @@ type mqMsg struct {
 	deadline    time.Time
 }
 
-func NewMQ() *MQ { return NewMQWithClock(nil) }
+type Options struct {
+	Clock     converge.Clock
+	Retention time.Duration
+}
 
-func NewMQWithClock(c converge.Clock) *MQ {
+func NewMQ() *MQ { return NewMQWithOpts(Options{}) }
+
+func NewMQWithClock(c converge.Clock) *MQ { return NewMQWithOpts(Options{Clock: c}) }
+
+func NewMQWithOpts(o Options) *MQ {
+	c := o.Clock
 	if c == nil {
 		c = wallClock{}
 	}
-	return &MQ{clock: c, queues: map[string]*mqQueue{}}
+	return &MQ{clock: c, retention: o.Retention, queues: map[string]*mqQueue{}}
 }
 
 func (q *MQ) Publish(ctx context.Context, queue string, m converge.Message) error {
@@ -72,6 +81,7 @@ func (q *MQ) publish(queue string, m converge.Message, delay time.Duration) erro
 	defer q.mu.Unlock()
 	now := q.clock.Now()
 	qu := q.ensureQueue(queue)
+	q.pruneBacklog(qu, now)
 	qu.seq++
 	s := storedMsg{id: qu.seq, m: cloneMessage(m), enqueuedAt: now, notBefore: now.Add(delay)}
 	qu.backlog = append(qu.backlog, s)
@@ -126,6 +136,7 @@ func (q *MQ) ensureQueue(name string) *mqQueue {
 
 func (q *MQ) ensureGroup(queue, group string) *mqGroup {
 	qu := q.ensureQueue(queue)
+	q.pruneBacklog(qu, q.clock.Now())
 	g := qu.groups[group]
 	if g == nil {
 		g = &mqGroup{inflight: map[int]*mqMsg{}}
@@ -135,6 +146,34 @@ func (q *MQ) ensureGroup(queue, group string) *mqGroup {
 		qu.groups[group] = g
 	}
 	return g
+}
+
+func (q *MQ) pruneBacklog(qu *mqQueue, now time.Time) {
+	if q.retention <= 0 {
+		return
+	}
+	cutoff := now.Add(-q.retention)
+	i := 0
+	for i < len(qu.backlog) && !qu.backlog[i].enqueuedAt.After(cutoff) {
+		i++
+	}
+	if i == 0 {
+		return
+	}
+	kept := make([]storedMsg, len(qu.backlog)-i)
+	copy(kept, qu.backlog[i:])
+	qu.backlog = kept
+}
+
+func (q *MQ) Backlog(_ context.Context, queue string) (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	qu, ok := q.queues[queue]
+	if !ok {
+		return 0, nil
+	}
+	q.pruneBacklog(qu, q.clock.Now())
+	return len(qu.backlog), nil
 }
 
 func (g *mqGroup) next(now time.Time) *mqMsg {

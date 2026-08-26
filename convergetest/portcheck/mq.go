@@ -14,6 +14,7 @@ import (
 type MQOptions struct {
 	Advance    func(d time.Duration)
 	Visibility time.Duration
+	Retention  time.Duration
 }
 
 func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
@@ -301,6 +302,37 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 			assertBroadcastStopsOnCancel(t, base, bc)
 		})
 	})
+
+	t.Run("RetentionDropsOldEntries", func(t *testing.T) {
+		if o.Advance == nil || o.Retention == 0 {
+			t.Skip("adapter does not expose retention")
+		}
+		mq := open(t)
+		mustPublish(t, mq, queue, converge.Message{Kind: probeKind, Payload: []byte("stale")})
+		o.Advance(o.Retention + time.Minute)
+		mq2, ch, ctx := startConsumer(t, open)
+		_ = mq2
+		_ = ctx
+		assertNoDelivery(t, ch)
+	})
+
+	t.Run("BacklogCountsUnconsumed", func(t *testing.T) {
+		mq := open(t)
+		br, ok := mq.(converge.BacklogReporter)
+		if !ok {
+			t.Skip("adapter does not report backlog")
+		}
+		for i := 0; i < 3; i++ {
+			mustPublish(t, mq, queue, converge.Message{Kind: probeKind, Payload: []byte{byte(i)}})
+		}
+		n, err := br.Backlog(context.Background(), queue)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 3 {
+			t.Fatalf("backlog = %d, want 3", n)
+		}
+	})
 }
 
 func assertConsumeStopsOnCancel(t *testing.T, queue string, run func(ctx context.Context, deliver func(converge.Delivery)) error, publish func(converge.Message)) {
@@ -437,6 +469,8 @@ func assertNoDelivery(t *testing.T, ch chan converge.Delivery) {
 }
 
 const probeKind = "converge.portcheck.probe"
+
+const queue = "q"
 
 func awaitBroadcastAttach(t *testing.T, mq converge.MQ, queue string, subs ...chan converge.Delivery) {
 	t.Helper()

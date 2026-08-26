@@ -16,6 +16,7 @@ import (
 
 const (
 	DefaultVisibility = 5 * time.Minute
+	DefaultRetention  = 24 * time.Hour
 
 	reservedGroup    = "converge"
 	blockInterval    = 100 * time.Millisecond
@@ -41,16 +42,20 @@ const (
 
 type StreamsOpts struct {
 	Clock      converge.Clock
+	Retention  time.Duration
 	Visibility time.Duration
 }
 
 func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) converge.MQ {
-	m := &streamsMQ{rdb: rdb, clock: o.Clock, visibility: o.Visibility}
+	m := &streamsMQ{rdb: rdb, clock: o.Clock, visibility: o.Visibility, retention: o.Retention}
 	if m.clock == nil {
 		m.clock = wallClock{}
 	}
 	if m.visibility <= 0 {
 		m.visibility = DefaultVisibility
+	}
+	if m.retention <= 0 {
+		m.retention = DefaultRetention
 	}
 	return m
 }
@@ -59,6 +64,7 @@ type streamsMQ struct {
 	rdb        *redis.Client
 	clock      converge.Clock
 	visibility time.Duration
+	retention  time.Duration
 }
 
 type wallClock struct{}
@@ -85,7 +91,41 @@ func (m *streamsMQ) Publish(ctx context.Context, queue string, msg converge.Mess
 	if err != nil {
 		return err
 	}
-	return m.rdb.XAdd(ctx, &redis.XAddArgs{Stream: streamKey(queue), Values: values}).Err()
+	key := streamKey(queue)
+	if err := m.rdb.XAdd(ctx, &redis.XAddArgs{Stream: key, Values: values}).Err(); err != nil {
+		return err
+	}
+	return m.trimRetention(ctx, key)
+}
+
+func (m *streamsMQ) trimRetention(ctx context.Context, key string) error {
+	if m.retention <= 0 {
+		return nil
+	}
+	return m.rdb.XTrimMinID(ctx, key, retentionMinID(m.clock.Now(), m.retention)).Err()
+}
+
+func retentionMinID(now time.Time, retention time.Duration) string {
+	return strconv.FormatInt(now.Add(-retention).UnixMilli(), 10)
+}
+
+func (m *streamsMQ) Backlog(ctx context.Context, queue string) (int, error) {
+	n, err := m.rdb.XLen(ctx, streamKey(queue)).Result()
+	if err != nil {
+		return 0, err
+	}
+	pending, err := m.rdb.XPending(ctx, streamKey(queue), reservedGroup).Result()
+	if err != nil {
+		if strings.HasPrefix(err.Error(), noGroupPrefix) {
+			return int(n), nil
+		}
+		return 0, err
+	}
+	backlog := n - pending.Count
+	if backlog < 0 {
+		backlog = 0
+	}
+	return int(backlog), nil
 }
 
 func (m *streamsMQ) PublishDelayed(ctx context.Context, queue string, msg converge.Message, delay time.Duration) error {
@@ -203,7 +243,11 @@ func pause(ctx context.Context) bool {
 }
 
 func (m *streamsMQ) ensureGroup(ctx context.Context, queue, group string) error {
-	err := m.rdb.XGroupCreateMkStream(ctx, streamKey(queue), group, groupStartID).Err()
+	key := streamKey(queue)
+	if err := m.trimRetention(ctx, key); err != nil {
+		return err
+	}
+	err := m.rdb.XGroupCreateMkStream(ctx, key, group, groupStartID).Err()
 	if err != nil && strings.HasPrefix(err.Error(), busyGroupPrefix) {
 		return nil
 	}

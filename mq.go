@@ -30,3 +30,7 @@ type BroadcastConsumer interface {
 type DelayedPublisher interface {
 	PublishDelayed(ctx context.Context, queue string, m Message, delay time.Duration) error
 }
+
+type BacklogReporter interface {
+	Backlog(ctx context.Context, queue string) (int, error)
+}
