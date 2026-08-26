@@ -100,8 +100,8 @@ checking stock for SKU-1002
 ## The principle
 
 Your function's second argument is what changed shape from chapter 1:
-instead of taking nothing, it takes one value — the name of whichever SKU
-converge wants checked right now. That name is an
+instead of taking nothing, it takes one value — the name of the SKU that
+converge wants to check right now. That name is an
 [ID](../glossary.md#id): the name of one thing a job looks after. converge
 doesn't tell your function what changed about `"SKU-1001"` or why
 it's due; it just says `"SKU-1001"`, and your function looks at that SKU's

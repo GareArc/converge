@@ -112,7 +112,7 @@ once, one per customer or one per product, and that is the general form:
 
 Delete the `KV: inmem.NewKV(),` line and run it again:
 
-```
+```text
 2026/08/24 16:57:56 reconcile: job "sync-inventory": Schedule needs Options.KV
 exit status 1
 ```

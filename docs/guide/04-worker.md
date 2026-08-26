@@ -90,7 +90,7 @@ line could come first.
 cd examples && go run ./guide/04-worker
 ```
 
-```
+```text
 charging order ORD-4417
 charging order ORD-4418
 ```
@@ -148,7 +148,7 @@ budget with `Retry: worker.RetryPolicy{MaxAttempts: 2}` so it stops
 quickly, and enqueue only `ORD-4417` so there's nothing else
 competing for attention. Run it again, giving it three seconds:
 
-```
+```text
 charging order ORD-4417
 charging order ORD-4417
 ```
@@ -161,14 +161,18 @@ budget spent — went quiet. Nothing prints a third time; the process runs
 out its three seconds and exits with status 0, same as the working
 version. `ORD-4417` didn't vanish, though — it's sitting in the
 dead-letter queue this chapter's principle described, waiting for someone
-to requeue it.
+to requeue it. Waiting only until this process exits, in this example: the
+`MQ` here is `inmem`, so the dead-letter queue lives in memory alongside
+it. [Chapter 6](06-production.md) puts all of this on Redis, which is what
+makes "waiting for someone to requeue it" mean waiting for a person rather
+than for the next line of `main`.
 
 ## A caveat
 
 converge makes sure your handler is called at least once for every
 message; it never silently drops one, but it may call your handler more
-than once for the same message. If your process dies after sending the
-email but before converge records that the message succeeded, converge
+than once for the same message. If your process dies after charging the
+card but before converge records that the message succeeded, converge
 redelivers it, and your handler runs again for the same
 `ChargeOrder{OrderID: "ORD-4417"}`. A handler can run twice for one
 message, so make it safe to run twice — and this chapter's example is

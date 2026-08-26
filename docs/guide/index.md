@@ -69,7 +69,7 @@ and the [reference](../reference/kernel.md) is the condensed API.
 
 Every term this guide uses has a plain-language definition in
 [the glossary](../glossary.md). For what converge deliberately does not do,
-see the [README](https://github.com/GareArc/converge/blob/main/README.md#what-it-deliberately-does-not-do) for the
+see the [README](https://github.com/GareArc/converge/blob/main/README.md#non-goals) for the
 short version, or [the reference](../reference/kernel.md#v1-limits) for the
 precise one.
 
@@ -96,9 +96,12 @@ around, whether or not anything has changed**. So every side effect it
 performs has to depend on what it finds, not on the fact that it ran. "Email
 the buyer when a SKU is back in stock" must not send an email every time —
 write it to work toward "a notification exists": read the stored
-`notified_at` fact, send only if it is absent, and record that you sent it. A
-side effect you cannot make conditional like that is a one-time action; send
-it through `worker` instead.
+`notified_at` fact, send only if it is absent, and record that you sent it.
+That turns "every pass" into "once, plus a rare repeat if the process dies
+between sending and recording" — conditional, not exactly-once, which is the
+most any handler on either surface gets. A side effect you cannot make
+conditional like that is a one-time action; send it through `worker`
+instead.
 
 When in doubt, it is a reconcile job. A queue whose messages carry
 `{"sku": X, "type": "changed"}` is not carrying work — it is

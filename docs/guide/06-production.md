@@ -27,6 +27,7 @@ Redis address is a service you cannot deploy twice:
 package main
 
 import (
+	"fmt"
 	"os"
 	"time"
 )
@@ -46,21 +47,51 @@ func env(key, fallback string) string {
 	return fallback
 }
 
-func configFromEnv() Config {
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	return d, nil
+}
+
+func configFromEnv() (Config, error) {
+	syncEvery, err := envDuration("SYNC_EVERY", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	drainTimeout, err := envDuration("DRAIN_TIMEOUT", 20*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		RedisAddr:    env("REDIS_ADDR", "localhost:6379"),
 		Namespace:    env("CONVERGE_NAMESPACE", "shop"),
 		DebugAddr:    env("DEBUG_ADDR", "localhost:6060"),
-		SyncEvery:    10 * time.Second,
-		DrainTimeout: 20 * time.Second,
-	}
+		SyncEvery:    syncEvery,
+		DrainTimeout: drainTimeout,
+	}, nil
 }
 ```
 
 Every value has a working default, so the program runs with no environment
 set at all — and every value can be overridden, so the same binary runs in
-staging and production. That is the whole trick, and it is the reason this
-is a separate file rather than a literal in the middle of `main`.
+staging and production. `REDIS_ADDR`, `CONVERGE_NAMESPACE` and `DEBUG_ADDR`
+are strings; `SYNC_EVERY` and `DRAIN_TIMEOUT` are Go durations, so `30s`,
+`5m` and `1h30m` all parse. That is the whole trick, and it is the reason
+this is a separate file rather than a literal in the middle of `main`.
+
+`configFromEnv` returns an error rather than falling back quietly, because
+a duration it cannot parse is not a value it can guess. `SYNC_EVERY=10x`
+stops the process at startup with `SYNC_EVERY: time: unknown unit "x" in
+duration "10x"` — before the [lease](../glossary.md#lease), before the
+first sweep. A service that
+started anyway would sweep on a schedule nobody chose, and you would find
+out from a graph rather than from a crash.
 
 Then the composition root:
 
@@ -135,7 +166,10 @@ func registerJobs(rt *converge.Runtime, rdb *redis.Client, cfg Config) error {
 				return err
 			}
 			if inbound > 0 {
-				return rdb.Decr(ctx, "warehouse:"+string(id)+":inbound").Err()
+				if err := rdb.Decr(ctx, "warehouse:"+string(id)+":inbound").Err(); err != nil {
+					return err
+				}
+				return reconcile.CheckAgain{In: time.Second}
 			}
 			return nil
 		}),
@@ -157,7 +191,10 @@ func registerJobs(rt *converge.Runtime, rdb *redis.Client, cfg Config) error {
 }
 
 func main() {
-	cfg := configFromEnv()
+	cfg, err := configFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer rdb.Close()
@@ -187,7 +224,14 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/debug/jobs/", debughttp.ReadOnlyHandler(rt))
-	debug := &http.Server{Addr: cfg.DebugAddr, Handler: mux}
+	debug := &http.Server{
+		Addr:              cfg.DebugAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		if err := debug.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Println("debug server:", err)
@@ -209,7 +253,7 @@ func main() {
 }
 ```
 
-Read it as four groups rather than eighty lines.
+Read it as four groups rather than a hundred and fifty lines.
 
 **The ports.** `MQ`, `Lease` and `KV` are all `convredis` now, pointed at
 one client. These are the three lines chapters 1 through 5 kept in memory,
@@ -231,6 +275,14 @@ and returns an error, so the wiring is testable without `main`.
 runtime knows over HTTP. `signal.NotifyContext` turns SIGINT and SIGTERM
 into the cancellation `rt.Run` already understands, and `DrainTimeout` is
 how long converge will wait for in-flight work before giving up on it.
+
+The four timeouts on that `http.Server` are not decoration. Every one of
+them defaults to zero, and zero means no timeout, so a debug server left at
+the defaults will hold a connection open forever for a client that opens
+one and then says nothing. It is bound to localhost here, but "it's only
+the debug port" is how debug ports end up exposed, and a handler that
+answers `/debug/jobs/` is worth exactly as much uptime as the service it
+reports on.
 
 ## Run it
 
