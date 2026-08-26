@@ -47,9 +47,12 @@ type engine struct {
 	mu          sync.Mutex
 	queue       *wakeQueue
 	lastSuccess time.Time
+	lastErr     error
+	lastErrAt   time.Time
 	consecFails int
 	passes      int
 	active      bool
+	leaseHeld   bool
 	state       converge.State
 	opsInFlight sync.WaitGroup
 
@@ -167,15 +170,35 @@ func (e *engine) Stats() converge.JobStats {
 		Job:              e.cfg.name,
 		Surface:          converge.SurfaceReconcile,
 		RunMode:          e.cfg.runMode,
-		LastSuccess:      e.lastSuccess,
-		ConsecutiveFails: e.consecFails,
 		State:            e.state,
+		LeaseHeld:        e.leaseHeld,
+		LastSuccess:      e.lastSuccess,
+		LastError:        e.lastErr,
+		LastErrorAt:      e.lastErrAt,
+		ConsecutiveFails: e.consecFails,
 	}
 	if e.queue != nil {
 		c := e.queue.counts()
-		s.QueueDepth = c.depth
+		s.InFlight = c.inFlight
+		s.Failing = c.failing
 	}
 	return s
+}
+
+func (e *engine) FailingIDs() []converge.FailingID {
+	e.mu.Lock()
+	q := e.queue
+	e.mu.Unlock()
+	if q == nil {
+		return nil
+	}
+	return q.failing()
+}
+
+func (e *engine) setLeaseHeld(held bool) {
+	e.mu.Lock()
+	e.leaseHeld = held
+	e.mu.Unlock()
 }
 
 func (e *engine) Info() converge.JobInfo {
@@ -390,14 +413,14 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 	default:
 		kind = finishFailure
 	}
-	res := e.queue.finish(id, kind, delay)
+	res := e.queue.finish(id, kind, delay, err)
 	if !res.settled {
 		return
 	}
 	if kind == finishNeutral {
 		return
 	}
-	e.record(kind)
+	e.record(kind, err)
 	outcome, oerr := converge.Retrying, err
 	switch {
 	case err == nil:
@@ -432,7 +455,7 @@ func isDeferralSignal(s sig.Signal) bool {
 	return errors.Is(s, ErrOutdated)
 }
 
-func (e *engine) record(kind finishKind) {
+func (e *engine) record(kind finishKind, err error) {
 	now := e.deps.Clock.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -442,6 +465,8 @@ func (e *engine) record(kind finishKind) {
 		e.consecFails = 0
 	case finishFailure:
 		e.consecFails++
+		e.lastErr = err
+		e.lastErrAt = now
 	}
 }
 
@@ -550,8 +575,10 @@ func (e *engine) leaseLoop(ctx context.Context) error {
 		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)
 		e.markReady()
 		if err == nil && ok {
+			e.setLeaseHeld(true)
 			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.name, Held: true})
 			e.runActive(ctx, h)
+			e.setLeaseHeld(false)
 			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.name, Held: false})
 			if ctx.Err() != nil {
 				return nil

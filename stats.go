@@ -6,11 +6,24 @@ type JobStats struct {
 	Job              string
 	Surface          Surface
 	RunMode          RunMode
-	QueueDepth       int
-	Parked           int
-	LastSuccess      time.Time
-	ConsecutiveFails int
 	State            State
+	LeaseHeld        bool
+	InFlight         int
+	Backlog          int
+	BacklogKnown     bool
+	Failing          int
+	Shelved          int
+	LastSuccess      time.Time
+	LastError        error
+	LastErrorAt      time.Time
+	ConsecutiveFails int
+}
+
+type FailingID struct {
+	ID       string
+	Failures int
+	Err      error
+	NextTry  time.Time
 }
 
 type JobInfo struct {

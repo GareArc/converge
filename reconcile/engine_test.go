@@ -477,3 +477,67 @@ func TestSettleOnUnknownIDIsUnsettled(t *testing.T) {
 		t.Fatalf("unsettled finish must emit no events, got %d", n)
 	}
 }
+
+func TestStatsReportsLastErrorAndPersistsThroughRecovery(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls == 1 {
+			return errors.New("boom")
+		}
+		return nil
+	})
+	te.e.notify(context.Background(), "a")
+	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	s := te.e.Stats()
+	if s.LastError == nil || s.LastError.Error() != "boom" {
+		t.Fatalf("LastError = %v, want boom", s.LastError)
+	}
+	if s.LastErrorAt.IsZero() {
+		t.Fatal("LastErrorAt must be set after a failure")
+	}
+	if s.Failing != 1 {
+		t.Fatalf("Failing = %d, want 1", s.Failing)
+	}
+	advanceUntil(t, te, time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
+	convergetest.Await(t, func() bool { return te.e.Stats().Failing == 0 })
+	s = te.e.Stats()
+	if s.LastError == nil || s.LastError.Error() != "boom" {
+		t.Fatalf("LastError after recovery = %v, want it to persist as boom", s.LastError)
+	}
+}
+
+func TestFailingIDsNamesTheFailingIDAndOmitsHealthy(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
+		if id == "bad" {
+			return errors.New("upstream refused")
+		}
+		return nil
+	})
+	te.e.notify(context.Background(), "good")
+	te.e.notify(context.Background(), "bad")
+	convergetest.Await(t, func() bool { return te.e.Stats().Failing == 1 })
+	ids := te.e.FailingIDs()
+	if len(ids) != 1 || ids[0].ID != "bad" {
+		t.Fatalf("FailingIDs = %+v, want exactly [bad]", ids)
+	}
+	if ids[0].Err == nil || ids[0].Err.Error() != "upstream refused" {
+		t.Fatalf("FailingIDs[0].Err = %v, want upstream refused", ids[0].Err)
+	}
+}
+
+func TestStatsReportsLeaseHeldWhileLeaderAndFalseAfterRelease(t *testing.T) {
+	le, cancel := startRun(t, specWithSchedule(), nil)
+	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })
+	convergetest.Await(t, func() bool { return le.e.Stats().LeaseHeld })
+	cancel()
+	if err := waitRun(t, le); err != nil {
+		t.Fatal(err)
+	}
+	if le.e.Stats().LeaseHeld {
+		t.Fatal("LeaseHeld must be false after shutdown releases the lease")
+	}
+}

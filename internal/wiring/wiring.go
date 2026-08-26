@@ -41,6 +41,21 @@ func Jobs(rt *converge.Runtime) ([]converge.JobInfo, error) {
 	return infos, nil
 }
 
+func FailingIDs(rt *converge.Runtime, job string) ([]converge.FailingID, error) {
+	raw, err := hook.FailingIDs(rt, job)
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, nil
+	}
+	ids, ok := raw.([]converge.FailingID)
+	if !ok {
+		return nil, fmt.Errorf("wiring: failing ids returned %T, want []converge.FailingID", raw)
+	}
+	return ids, nil
+}
+
 func Attach(o converge.Options, fn func(rt any)) (converge.Options, error) {
 	out := hook.AttachOptions(o, fn)
 	opts, ok := out.(converge.Options)

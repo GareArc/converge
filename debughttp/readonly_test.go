@@ -3,10 +3,12 @@ package debughttp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -206,8 +208,10 @@ func TestReadOnlyJobRowJSONKeysPinned(t *testing.T) {
 	}
 	row := jobs[0].(map[string]any)
 	assertExactKeys(t, row, []string{
-		"job", "surface", "run_mode", "queue", "settings",
-		"queue_depth", "parked", "last_success", "consecutive_fails",
+		"job", "surface", "run_mode", "state", "queue", "settings",
+		"lease_held", "in_flight", "backlog", "backlog_known",
+		"failing", "shelved", "last_success", "last_error", "last_error_at",
+		"consecutive_fails",
 	})
 }
 
@@ -359,4 +363,34 @@ func TestReadOnlyHandlerNilRuntimePanics(t *testing.T) {
 		}
 	}()
 	debughttp.ReadOnlyHandler(nil)
+}
+
+func TestReadOnlyHandlerNamesFailingIDs(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	if err := reconcile.Register(rt, reconcile.Spec{
+		Name: "flaky",
+		Reconcile: func(_ context.Context, id reconcile.ID) error {
+			if id == "bad" {
+				return errors.New("upstream refused")
+			}
+			return nil
+		},
+		Triggers: []reconcile.Trigger{reconcile.Schedule(
+			reconcile.StringIDs(func(context.Context) ([]string, error) { return []string{"good", "bad"}, nil }),
+			reconcile.Every(time.Hour))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+
+	rr := httptest.NewRecorder()
+	debughttp.ReadOnlyHandler(rt).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/debug/jobs/flaky", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, `"bad"`) || !strings.Contains(body, "upstream refused") {
+		t.Fatalf("failing ID not reported: %s", body)
+	}
+	if strings.Contains(body, `"good"`) {
+		t.Fatalf("healthy ID reported as failing: %s", body)
+	}
 }

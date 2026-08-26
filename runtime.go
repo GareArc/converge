@@ -126,6 +126,23 @@ func init() {
 		opts.attach = func(rt *Runtime) { attach(rt) }
 		return opts
 	}
+	hook.FailingIDs = func(rt any, jobName string) (any, error) {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return nil, fmt.Errorf("converge: failing: %T is not a usable *converge.Runtime", rt)
+		}
+		r.mu.Lock()
+		j, ok := r.jobs[jobName]
+		r.mu.Unlock()
+		if !ok {
+			return nil, fmt.Errorf("converge: unknown job %q", jobName)
+		}
+		fl, ok := j.(interface{ FailingIDs() []FailingID })
+		if !ok {
+			return nil, nil
+		}
+		return fl.FailingIDs(), nil
+	}
 }
 
 func (rt *Runtime) register(j job) error {

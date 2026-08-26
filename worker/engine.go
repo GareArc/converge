@@ -60,9 +60,13 @@ type engine struct {
 	readyOnce sync.Once
 
 	mu          sync.Mutex
-	depth       int
+	inFlight    int
 	shelved     int
+	retrying    map[string]time.Time
+	leaseHeld   bool
 	lastSuccess time.Time
+	lastErr     error
+	lastErrAt   time.Time
 	consecFails int
 	state       converge.State
 
@@ -79,7 +83,7 @@ func (e *engine) markReady() { e.readyOnce.Do(func() { close(e.ready) }) }
 func (e *engine) Quiet() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.depth == 0
+	return e.inFlight == 0
 }
 
 func (e *engine) Notify(string) error {
@@ -101,18 +105,55 @@ func (e *engine) shelfKey(id string) string {
 }
 
 func (e *engine) Stats() converge.JobStats {
+	failing := e.failing()
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return converge.JobStats{
 		Job:              e.cfg.info.name,
 		Surface:          converge.SurfaceWorker,
 		RunMode:          e.cfg.runMode,
-		QueueDepth:       e.depth,
-		Parked:           e.shelved,
-		LastSuccess:      e.lastSuccess,
-		ConsecutiveFails: e.consecFails,
 		State:            e.state,
+		LeaseHeld:        e.leaseHeld,
+		InFlight:         e.inFlight,
+		Failing:          failing,
+		Shelved:          e.shelved,
+		LastSuccess:      e.lastSuccess,
+		LastError:        e.lastErr,
+		LastErrorAt:      e.lastErrAt,
+		ConsecutiveFails: e.consecFails,
 	}
+}
+
+const workerRetryingBound = 65536
+
+func (e *engine) failing() int {
+	now := e.deps.Clock.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, until := range e.retrying {
+		if !until.After(now) {
+			delete(e.retrying, id)
+		}
+	}
+	return len(e.retrying)
+}
+
+func (e *engine) markRetrying(id string, delay time.Duration) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.retrying == nil {
+		e.retrying = map[string]time.Time{}
+	}
+	if len(e.retrying) >= workerRetryingBound {
+		return
+	}
+	e.retrying[id] = e.deps.Clock.Now().Add(delay)
+}
+
+func (e *engine) setLeaseHeld(held bool) {
+	e.mu.Lock()
+	e.leaseHeld = held
+	e.mu.Unlock()
 }
 
 func (e *engine) Info() converge.JobInfo {
@@ -395,11 +436,11 @@ func (e *engine) receive(ictx, hctx context.Context, d converge.Delivery, slots 
 	if e.durable() {
 		d.Extend(ictx, e.cfg.visibility)
 	}
-	e.setDepth(1)
+	e.setInFlight(1)
 	select {
 	case slots <- struct{}{}:
 	case <-ictx.Done():
-		e.setDepth(-1)
+		e.setInFlight(-1)
 		e.neutral(context.WithoutCancel(ictx), d, m)
 		return
 	}
@@ -407,14 +448,14 @@ func (e *engine) receive(ictx, hctx context.Context, d converge.Delivery, slots 
 	go func() {
 		defer wg.Done()
 		defer func() { <-slots }()
-		defer e.setDepth(-1)
+		defer e.setInFlight(-1)
 		e.process(hctx, d, m)
 	}()
 }
 
-func (e *engine) setDepth(delta int) {
+func (e *engine) setInFlight(delta int) {
 	e.mu.Lock()
-	e.depth += delta
+	e.inFlight += delta
 	e.mu.Unlock()
 }
 
@@ -512,7 +553,7 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		e.neutral(sctx, d, m)
 		return
 	}
-	e.recordFailure()
+	e.recordFailure(err)
 	e.observeRun(meta, took, converge.Retrying, err)
 	if !e.durable() {
 		return
@@ -521,7 +562,9 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		e.shelve(sctx, d, meta, m, reasonMaxAttempts, err)
 		return
 	}
-	d.Nack(sctx, e.retryCurve().Delay(meta.Attempt))
+	delay := e.retryCurve().Delay(meta.Attempt)
+	e.markRetrying(meta.MessageID, delay)
+	d.Nack(sctx, delay)
 }
 
 func (e *engine) retryCurve() backoff.Curve {
@@ -536,9 +579,12 @@ func (e *engine) recordSuccess() {
 	e.mu.Unlock()
 }
 
-func (e *engine) recordFailure() {
+func (e *engine) recordFailure(err error) {
+	now := e.deps.Clock.Now()
 	e.mu.Lock()
 	e.consecFails++
+	e.lastErr = err
+	e.lastErrAt = now
 	e.mu.Unlock()
 }
 
@@ -567,10 +613,10 @@ func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m conve
 		e.discard(sctx, d, meta, *v, took)
 		return true
 	case Snooze:
-		e.snooze(sctx, d, m, meta, v.In, took)
+		e.snooze(sctx, d, m, meta, v.In, err, took)
 		return true
 	case *Snooze:
-		e.snooze(sctx, d, m, meta, v.In, took)
+		e.snooze(sctx, d, m, meta, v.In, err, took)
 		return true
 	case Shelve:
 		e.observeRun(meta, took, converge.Shelved, err)
@@ -590,9 +636,9 @@ func (e *engine) discard(sctx context.Context, d converge.Delivery, meta Meta, v
 	e.observeRun(meta, took, converge.Discarded, nil)
 }
 
-func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, in time.Duration, took time.Duration) {
+func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, in time.Duration, err error, took time.Duration) {
 	if !e.durable() {
-		e.recordFailure()
+		e.recordFailure(err)
 		e.observeRun(meta, took, converge.Deferred, nil)
 		return
 	}
@@ -631,8 +677,10 @@ func (e *engine) leaseLoop(ctx context.Context) {
 		}
 		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)
 		if err == nil && ok {
+			e.setLeaseHeld(true)
 			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.info.name, Held: true})
 			e.runActive(ctx, h)
+			e.setLeaseHeld(false)
 			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.info.name, Held: false})
 			if e.isDestroyed() {
 				return
@@ -684,7 +732,7 @@ func (e *engine) extendLoop(ctx context.Context, d converge.Delivery, stop <-cha
 }
 
 func (e *engine) shelveOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) {
-	e.recordFailure()
+	e.recordFailure(cause)
 	if !e.durable() {
 		return
 	}
@@ -711,7 +759,9 @@ func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m c
 		err = e.deps.KV.Set(ctx, e.shelfKey(meta.MessageID), raw, 0)
 	}
 	if err != nil {
-		d.Nack(ctx, e.retryCurve().Delay(meta.Attempt))
+		delay := e.retryCurve().Delay(meta.Attempt)
+		e.markRetrying(meta.MessageID, delay)
+		d.Nack(ctx, delay)
 		return
 	}
 	d.Ack(ctx)

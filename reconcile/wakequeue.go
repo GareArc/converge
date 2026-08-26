@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"container/heap"
+	"sort"
 	"sync"
 	"time"
 
@@ -64,6 +65,7 @@ type idState struct {
 	fails      int
 	noBackoff  int
 	fallbacks  int
+	lastErr    error
 }
 
 type finishResult struct {
@@ -74,7 +76,8 @@ type finishResult struct {
 }
 
 type queueCounts struct {
-	depth int
+	inFlight int
+	failing  int
 }
 
 type dueItem struct {
@@ -238,10 +241,11 @@ func (q *wakeQueue) applyBackoffOrBypass(id ID, st *idState, now time.Time, atte
 	return res
 }
 
-func (q *wakeQueue) applyFailure(id ID, st *idState, now time.Time) finishResult {
+func (q *wakeQueue) applyFailure(id ID, st *idState, now time.Time, err error) finishResult {
 	st.fails++
 	st.noBackoff = 0
 	st.fallbacks = 0
+	st.lastErr = err
 	return q.applyBackoffOrBypass(id, st, now, st.fails, q.policy.backoff(st.fails))
 }
 
@@ -249,7 +253,7 @@ func (q *wakeQueue) applyFallback(id ID, st *idState, now time.Time) finishResul
 	return q.applyBackoffOrBypass(id, st, now, st.fallbacks, q.policy.backoff(st.fallbacks))
 }
 
-func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishResult {
+func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration, err error) finishResult {
 	now := q.clock.Now()
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -274,7 +278,7 @@ func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishRe
 		delete(q.ids, id)
 		return res
 	case finishFailure:
-		return q.applyFailure(id, st, now)
+		return q.applyFailure(id, st, now, err)
 	case finishDelay:
 		st.noBackoff++
 		if st.noBackoff > backoff.NoBackoffCap {
@@ -305,7 +309,7 @@ func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration) finishRe
 		q.push(id, now)
 		return finishResult{settled: true}
 	default:
-		return q.applyFailure(id, st, now)
+		return q.applyFailure(id, st, now, err)
 	}
 }
 
@@ -329,15 +333,36 @@ func (q *wakeQueue) counts() queueCounts {
 	var c queueCounts
 	for _, st := range q.ids {
 		switch st.phase {
-		case phaseQueued, phaseBackoff, phaseDelayed:
-			c.depth++
 		case phaseRunning:
-			if st.hasPending {
-				c.depth++
-			}
+			c.inFlight++
+		case phaseBackoff:
+			c.failing++
 		}
 	}
 	return c
+}
+
+func (q *wakeQueue) failing() []converge.FailingID {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	ids := make([]ID, 0)
+	for id, st := range q.ids {
+		if st.phase == phaseBackoff {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	out := make([]converge.FailingID, 0, len(ids))
+	for _, id := range ids {
+		st := q.ids[id]
+		out = append(out, converge.FailingID{
+			ID:       string(id),
+			Failures: st.fails,
+			Err:      st.lastErr,
+			NextTry:  st.due,
+		})
+	}
+	return out
 }
 
 func (q *wakeQueue) reset() {

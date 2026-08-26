@@ -31,6 +31,8 @@ var RunPassNow func(rt any, ctx context.Context, job string) error
 
 var Quiet func(rt any) bool
 
+var FailingIDs func(rt any, job string) (any, error)
+
 var StopConditionDeadline func(c any) (time.Time, bool)
 
 var StopConditionKey func(c any) (string, bool)

@@ -493,11 +493,11 @@ func TestConcurrencyBounds(t *testing.T) {
 		defer mu.Unlock()
 		return running == 2
 	})
-	convergetest.Await(t, func() bool { return jobStats(t, rt, "job").QueueDepth == 3 })
+	convergetest.Await(t, func() bool { return jobStats(t, rt, "job").InFlight == 3 })
 	convergetest.AssertStable(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return running == 2 && jobStats(t, rt, "job").QueueDepth == 3
+		return running == 2 && jobStats(t, rt, "job").InFlight == 3
 	})
 	close(gate)
 	convergetest.Await(t, func() bool {
@@ -984,7 +984,7 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), p, "two", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	convergetest.Await(t, func() bool { return jobStats(t, rt, "job").QueueDepth == 2 })
+	convergetest.Await(t, func() bool { return jobStats(t, rt, "job").InFlight == 2 })
 
 	before := pmq.publishes.Load()
 
@@ -1808,8 +1808,8 @@ func TestShelveOnBroadcastWithoutKVDropsInsteadOfPanicking(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool { return shelves.Load() == 1 })
 	convergetest.AssertStable(t, func() bool { return shelves.Load() == 1 })
-	if got := jobStats(t, rt, "broadcast-shelve").Parked; got != 0 {
-		t.Fatalf("Parked = %d, want 0 when there is no shelf to write to", got)
+	if got := jobStats(t, rt, "broadcast-shelve").Shelved; got != 0 {
+		t.Fatalf("Shelved = %d, want 0 when there is no shelf to write to", got)
 	}
 }
 
@@ -2016,5 +2016,40 @@ func TestOutcomesAreReported(t *testing.T) {
 		if got[outcome] != n {
 			t.Fatalf("%s = %d, want %d (all: %v)", outcome, got[outcome], n, got)
 		}
+	}
+}
+
+func TestFailingPrunesExpiredEntriesOnRead(t *testing.T) {
+	clock := convergetest.NewClock(wstart)
+	e := &engine{deps: converge.JobDeps{Clock: clock}}
+	e.markRetrying("a", time.Second)
+	e.markRetrying("b", time.Minute)
+	if got := e.failing(); got != 2 {
+		t.Fatalf("failing = %d, want 2", got)
+	}
+	clock.Advance(time.Second)
+	if got := e.failing(); got != 1 {
+		t.Fatalf("failing after first expiry = %d, want 1", got)
+	}
+	if _, ok := e.retrying["a"]; ok {
+		t.Fatal("expired entry must be pruned from the map, not just excluded from the count")
+	}
+}
+
+func TestFailingCapsAtBoundAndDropsNewWrites(t *testing.T) {
+	clock := convergetest.NewClock(wstart)
+	e := &engine{deps: converge.JobDeps{Clock: clock}}
+	for i := 0; i < workerRetryingBound; i++ {
+		e.markRetrying(strconv.Itoa(i), time.Hour)
+	}
+	if got := e.failing(); got != workerRetryingBound {
+		t.Fatalf("failing = %d, want the bound %d", got, workerRetryingBound)
+	}
+	e.markRetrying("overflow", time.Hour)
+	if got := e.failing(); got != workerRetryingBound {
+		t.Fatalf("failing after overflow write = %d, want still %d (dropped)", got, workerRetryingBound)
+	}
+	if _, ok := e.retrying["overflow"]; ok {
+		t.Fatal("write past the bound must be dropped, not recorded")
 	}
 }
