@@ -453,31 +453,38 @@ func (e *engine) setState(s converge.State) {
 	e.mu.Unlock()
 }
 
-func (e *engine) destroyed(ctx context.Context) bool {
+func (e *engine) destroyed(ctx context.Context) (converge.StopCondition, bool) {
 	if e.cfg.until.IsZero() || e.deps.KV == nil {
-		return false
+		return converge.StopCondition{}, false
 	}
 	if at, ok := hook.StopConditionDeadline(e.cfg.until); ok && !e.deps.Clock.Now().Before(at) {
 		e.deps.KV.Set(ctx, keys.Tombstone(e.deps.Namespace, e.cfg.name), []byte("1"), 0)
-		return true
+		return e.cfg.until, true
 	}
 	key := keys.Tombstone(e.deps.Namespace, e.cfg.name)
 	if k, ok := hook.StopConditionKey(e.cfg.until); ok {
 		key = k
 	}
-	_, found, err := e.deps.KV.Get(ctx, key)
-	return err == nil && found
+	if _, found, err := e.deps.KV.Get(ctx, key); err != nil || !found {
+		return converge.StopCondition{}, false
+	}
+	return converge.StopKey(key), true
 }
 
 func (e *engine) checkDestroy(ctx context.Context) bool {
-	if !e.destroyed(ctx) {
+	cause, ok := e.destroyed(ctx)
+	if !ok {
 		return false
 	}
+	first := false
 	e.destroyOnce.Do(func() {
 		e.setState(converge.Destroyed)
-		e.deps.Observer.Observe(converge.JobDestroyed{Job: e.cfg.name, Cause: e.cfg.until})
 		close(e.stopCh)
+		first = true
 	})
+	if first {
+		e.deps.Observer.Observe(converge.JobDestroyed{Job: e.cfg.name, Cause: cause})
+	}
 	return true
 }
 

@@ -1944,3 +1944,108 @@ func TestStopKeyDestroysTheJob(t *testing.T) {
 	}
 	convergetest.AssertStable(t, func() bool { return runs.Load() == before })
 }
+
+func TestDeadlineDestroysACompetingWorker(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: wns})
+	rt := w.Build(t)
+	tk := NewTask[string]("migration", TaskOpts{})
+	var runs atomic.Int64
+	cutover := w.Clock.Now().Add(time.Hour)
+	err := Handle(rt, tk, func(context.Context, string) error {
+		runs.Add(1)
+		return nil
+	}, HandleOpts{Until: converge.Deadline(cutover)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	if mode := jobStats(t, rt, "migration").RunMode; mode != converge.Competing {
+		t.Fatalf("RunMode = %v, want the worker default %v", mode, converge.Competing)
+	}
+	p := wProducer(t, w.MQ, w.Clock)
+	if err := tk.Enqueue(context.Background(), p, "before", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return runs.Load() == 1 })
+
+	convergetest.AdvanceUntil(t, w.Clock, destroyCheckInterval, func() bool {
+		return jobStats(t, rt, "migration").State == converge.Destroyed
+	})
+
+	before := runs.Load()
+	if err := tk.Enqueue(context.Background(), p, "after", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.AssertStable(t, func() bool { return runs.Load() == before })
+}
+
+func TestJobDestroyedReportsTheConditionThatFired(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: wns})
+	rt := w.Build(t)
+	tk := NewTask[string]("migration", TaskOpts{})
+	cutover := w.Clock.Now().Add(365 * 24 * time.Hour)
+	err := Handle(rt, tk, func(context.Context, string) error { return nil },
+		HandleOpts{Until: converge.Deadline(cutover)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	tombstone := keys.Tombstone(wns, "migration")
+	if err := w.KV.Set(context.Background(), tombstone, []byte("1"), 0); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.AdvanceUntil(t, w.Clock, destroyCheckInterval, func() bool {
+		return jobStats(t, rt, "migration").State == converge.Destroyed
+	})
+
+	var causes []string
+	for _, e := range w.Events() {
+		if d, ok := e.(converge.JobDestroyed); ok && d.Job == "migration" {
+			causes = append(causes, d.Cause.String())
+		}
+	}
+	want := converge.StopKey(tombstone).String()
+	if len(causes) != 1 || causes[0] != want {
+		t.Fatalf("JobDestroyed causes = %v, want exactly one %q", causes, want)
+	}
+}
+
+func TestDestructionCancelsInFlightRunsWithoutDraining(t *testing.T) {
+	drain := 365 * 24 * time.Hour
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: wns, DrainTimeout: drain})
+	rt := w.Build(t)
+	tk := NewTask[string]("migration", TaskOpts{})
+	stopKey := keys.Tombstone(wns, "migration")
+	entered := make(chan struct{}, 1)
+	ended := make(chan error, 1)
+	err := Handle(rt, tk, func(ctx context.Context, _ string) error {
+		entered <- struct{}{}
+		<-ctx.Done()
+		ended <- ctx.Err()
+		return ctx.Err()
+	}, HandleOpts{Until: converge.StopKey(stopKey)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	startedAt := w.Clock.Now()
+	p := wProducer(t, w.MQ, w.Clock)
+	if err := tk.Enqueue(context.Background(), p, "x", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return len(entered) > 0 })
+
+	if err := w.KV.Set(context.Background(), stopKey, []byte("1"), 0); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.AdvanceUntil(t, w.Clock, destroyCheckInterval, func() bool { return len(ended) > 0 })
+	if got := <-ended; !errors.Is(got, context.Canceled) {
+		t.Fatalf("in-flight run ended with %v, want context.Canceled", got)
+	}
+	if elapsed := w.Clock.Now().Sub(startedAt); elapsed >= drain {
+		t.Fatalf("run was cancelled after %s, want cancellation without waiting out DrainTimeout %s", elapsed, drain)
+	}
+	if state := jobStats(t, rt, "migration").State; state != converge.Destroyed {
+		t.Fatalf("State = %v, want %v", state, converge.Destroyed)
+	}
+}

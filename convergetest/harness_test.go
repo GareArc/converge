@@ -622,6 +622,53 @@ func TestRuntimeExitedEarlyFatalsWithCrashWording(t *testing.T) {
 	}
 }
 
+type quitJob struct {
+	ready chan struct{}
+	rt    *converge.Runtime
+}
+
+func (j *quitJob) Name() string { return "quit" }
+
+func (j *quitJob) Run(context.Context, converge.JobDeps) error {
+	close(j.ready)
+	<-j.rt.Ready()
+	return nil
+}
+
+func (j *quitJob) Ready() <-chan struct{} { return j.ready }
+
+func (j *quitJob) Stats() converge.JobStats {
+	return converge.JobStats{Job: j.Name(), State: converge.Active}
+}
+
+func (j *quitJob) Info() converge.JobInfo { return converge.JobInfo{Job: j.Name()} }
+
+func (j *quitJob) Quiet() bool { return true }
+
+func (j *quitJob) Notify(string) error { return nil }
+
+func (j *quitJob) RunPassNow(context.Context) error { return nil }
+
+func TestCleanExitWithoutDestructionStillFatals(t *testing.T) {
+	fake := &fakeTB{}
+	t.Cleanup(fake.runCleanups)
+	h := convergetest.NewWith(fake, convergetest.Options{})
+	rt := h.Build(fake)
+	if err := hook.RegisterJob(rt, &quitJob{ready: make(chan struct{}), rt: rt}); err != nil {
+		t.Fatal(err)
+	}
+	h.Runtime(fake)
+
+	convergetest.Await(t, func() bool {
+		h.Wake("quit", "id")
+		return len(fake.messages()) > 0
+	})
+	msgs := fake.messages()
+	if !strings.Contains(msgs[0], "runtime exited early") {
+		t.Fatalf("Fatalf message = %q, want a clean exit nobody asked for still reported as a crash", msgs[0])
+	}
+}
+
 func TestRuntimeReturnsAttachedRuntime(t *testing.T) {
 	h := convergetest.New(t)
 	rt, err := converge.New(h.Options())

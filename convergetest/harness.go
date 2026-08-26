@@ -244,7 +244,7 @@ func (h *Harness) checkAlive(t testing.TB, allowStopped bool) bool {
 			t.Fatalf("convergetest: harness was stopped via Stop(t); this verb needs a running runtime, call Events to inspect recorded state instead")
 			return false
 		}
-		if err == nil {
+		if err == nil && h.anyDestroyed() {
 			return true
 		}
 		t.Fatalf("convergetest: runtime exited early: %v", err)
@@ -252,6 +252,21 @@ func (h *Harness) checkAlive(t testing.TB, allowStopped bool) bool {
 	default:
 		return true
 	}
+}
+
+func (h *Harness) anyDestroyed() bool {
+	h.mu.Lock()
+	rt := h.rt
+	h.mu.Unlock()
+	if rt == nil {
+		return false
+	}
+	for _, s := range rt.Stats() {
+		if s.State == converge.Destroyed {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Harness) waitForStop(t testing.TB) error {
