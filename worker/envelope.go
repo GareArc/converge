@@ -96,7 +96,7 @@ func seedMessage(kind string, version int, now time.Time, headers map[string]str
 	return converge.Message{Kind: kind, Headers: h, Payload: payload}, nil
 }
 
-func requeueMessage(rec DeadLetter, now time.Time) converge.Message {
+func requeueMessage(rec ShelvedMessage, now time.Time) converge.Message {
 	h := maps.Clone(rec.Headers)
 	if h == nil {
 		h = map[string]string{}

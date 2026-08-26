@@ -11,7 +11,7 @@ import (
 )
 
 func TestOutcomesAreWorkerSignals(t *testing.T) {
-	for _, err := range []error{Snooze{In: time.Second}, Discard{Reason: "gone"}} {
+	for _, err := range []error{Snooze{In: time.Second}, Discard{Reason: "gone"}, Shelve{Reason: "gone"}} {
 		s, ok := sig.FromError(fmt.Errorf("wrap: %w", err))
 		if !ok || s.ControlSurface() != converge.SurfaceWorker {
 			t.Fatalf("%T not detected as a worker signal", err)
@@ -23,7 +23,7 @@ func TestOutcomesAreWorkerSignals(t *testing.T) {
 }
 
 func TestPointerOutcomesAreWorkerSignals(t *testing.T) {
-	for _, err := range []error{&Snooze{In: time.Second}, &Discard{Reason: "gone"}} {
+	for _, err := range []error{&Snooze{In: time.Second}, &Discard{Reason: "gone"}, &Shelve{Reason: "gone"}} {
 		s, ok := sig.FromError(fmt.Errorf("wrap: %w", err))
 		if !ok || s.ControlSurface() != converge.SurfaceWorker {
 			t.Fatalf("%T not detected as a worker signal", err)

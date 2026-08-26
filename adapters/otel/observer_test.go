@@ -136,15 +136,15 @@ func TestDeadLetterCountsByReasonAndQueue(t *testing.T) {
 		Queue:     "email-q",
 		MessageID: "m-1",
 		Attempt:   5,
-		Reason:    converge.DeadLetterMaxAttempts,
+		Reason:    "max attempts",
 	})
 
 	pts := sumPoints(t, collect(t, r), "converge.dead_letters")
 	if len(pts) != 1 || pts[0].Value != 1 {
 		t.Fatalf("points = %+v, want a single point of 1", pts)
 	}
-	if got := attrValue(t, pts[0].Attributes, "converge.reason"); got != "max-attempts" {
-		t.Fatalf("converge.reason = %q, want max-attempts", got)
+	if got := attrValue(t, pts[0].Attributes, "converge.reason"); got != "max attempts" {
+		t.Fatalf("converge.reason = %q, want max attempts", got)
 	}
 	if got := attrValue(t, pts[0].Attributes, "converge.queue"); got != "email-q" {
 		t.Fatalf("converge.queue = %q, want email-q", got)

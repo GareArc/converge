@@ -30,6 +30,6 @@ func WorkerLease(ns, job string) string { return Worker(ns, job, "lease") }
 
 func ReconcileLease(ns, job string) string { return Reconcile(ns, job, "lease") }
 
-func WorkerDLQPrefix(ns, job string) string { return Worker(ns, job, "dlq") + "/" }
+func WorkerShelfPrefix(ns, job string) string { return Worker(ns, job, "shelf") + "/" }
 
-func WorkerDLQ(ns, job, messageID string) string { return WorkerDLQPrefix(ns, job) + messageID }
+func WorkerShelf(ns, job, messageID string) string { return WorkerShelfPrefix(ns, job) + messageID }

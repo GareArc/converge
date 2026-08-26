@@ -17,7 +17,7 @@ import (
 	"github.com/GareArc/converge/inmem"
 )
 
-func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
+func TestShelfListAndGetSeeRealShelvedMessage(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -39,11 +39,11 @@ func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
 		}) == 1
 	})
 
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := dlq.List(context.Background())
+	list, err := shelf.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +57,8 @@ func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
 	if entry.Queue != wInbox("job") {
 		t.Fatalf("Queue = %q, want %q", entry.Queue, wInbox("job"))
 	}
-	if entry.Reason != converge.DeadLetterMaxAttempts.String() {
-		t.Fatalf("Reason = %q, want %q", entry.Reason, converge.DeadLetterMaxAttempts.String())
+	if entry.Reason != reasonMaxAttempts {
+		t.Fatalf("Reason = %q, want %q", entry.Reason, reasonMaxAttempts)
 	}
 	if entry.Error == "" {
 		t.Fatal("want non-empty Error")
@@ -74,7 +74,7 @@ func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
 		t.Fatalf("payload = %q, want %q", payload, "hello")
 	}
 
-	got, err := dlq.Get(context.Background(), entry.MessageID)
+	got, err := shelf.Get(context.Background(), entry.MessageID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,44 +83,44 @@ func TestDLQListAndGetSeeRealDeadLetter(t *testing.T) {
 	}
 }
 
-func TestDLQGetAbsentReturnsNotFound(t *testing.T) {
+func TestShelfGetAbsentReturnsNotFound(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = dlq.Get(context.Background(), "nope")
-	if !errors.Is(err, ErrDeadLetterNotFound) {
-		t.Fatalf("err = %v, want ErrDeadLetterNotFound", err)
+	_, err = shelf.Get(context.Background(), "nope")
+	if !errors.Is(err, ErrNotShelved) {
+		t.Fatalf("err = %v, want ErrNotShelved", err)
 	}
 }
 
-func TestDLQRequeueAbsentReturnsNotFound(t *testing.T) {
+func TestShelfRequeueAbsentReturnsNotFound(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = dlq.Requeue(context.Background(), "nope")
-	if !errors.Is(err, ErrDeadLetterNotFound) {
-		t.Fatalf("err = %v, want ErrDeadLetterNotFound", err)
+	err = shelf.Requeue(context.Background(), "nope")
+	if !errors.Is(err, ErrNotShelved) {
+		t.Fatalf("err = %v, want ErrNotShelved", err)
 	}
 }
 
-func TestDLQListSurfacesUndecodableRecord(t *testing.T) {
+func TestShelfListSurfacesUndecodableRecord(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
-	key := "wt/converge/worker/job/dlq/badid"
+	key := "wt/converge/worker/job/shelf/badid"
 	if err := w.KV.Set(context.Background(), key, []byte(`{not valid json`), 0); err != nil {
 		t.Fatal(err)
 	}
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := dlq.List(context.Background())
+	list, err := shelf.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestDLQListSurfacesUndecodableRecord(t *testing.T) {
 		t.Fatal("want non-empty decode Error")
 	}
 
-	got, err := dlq.Get(context.Background(), "badid")
+	got, err := shelf.Get(context.Background(), "badid")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestDLQListSurfacesUndecodableRecord(t *testing.T) {
 	}
 }
 
-func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
+func TestShelfRequeueFullLoopSucceeds(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -180,27 +180,27 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 		}) == 1
 	})
 
-	keys := dlqKeys(t, w.KV, "job")
+	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, w.KV, keys[0])
+	rec := shelfRecordAt(t, w.KV, keys[0])
 
 	mu.Lock()
 	firstMessageID := metas[0].MessageID
 	mu.Unlock()
 	if rec.MessageID != firstMessageID {
-		t.Fatalf("dlq record message id = %q, want %q", rec.MessageID, firstMessageID)
+		t.Fatalf("shelf record message id = %q, want %q", rec.MessageID, firstMessageID)
 	}
 
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fail.Store(false)
 	w.Clock.Advance(time.Hour)
 	wantEnqueuedAt := w.Clock.Now()
-	if err := dlq.Requeue(context.Background(), rec.MessageID); err != nil {
+	if err := shelf.Requeue(context.Background(), rec.MessageID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -232,8 +232,8 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 	if got := second.Headers[converge.HeaderAttempt]; got != "0" {
 		t.Fatalf("attempt header on requeue = %q, want %q (requeue resets to base attempt, not absence)", got, "0")
 	}
-	if keys := dlqKeys(t, w.KV, "job"); len(keys) != 0 {
-		t.Fatalf("dlq keys after requeue = %v, want none", keys)
+	if keys := shelfKeys(t, w.KV, "job"); len(keys) != 0 {
+		t.Fatalf("shelf keys after requeue = %v, want none", keys)
 	}
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
@@ -243,15 +243,15 @@ func TestDLQRequeueFullLoopSucceeds(t *testing.T) {
 	}
 }
 
-func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
+func TestShelfRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
-	rec := DeadLetter{
+	rec := ShelvedMessage{
 		Task:           "job",
 		Queue:          wInbox("job"),
 		MessageID:      "anon-deadbeef",
 		Attempt:        1,
-		Reason:         converge.DeadLetterMaxAttempts.String(),
+		Reason:         reasonMaxAttempts,
 		Error:          "boom",
 		EnqueuedAt:     w.Clock.Now(),
 		DeadLetteredAt: w.Clock.Now(),
@@ -266,17 +266,17 @@ func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := "wt/converge/worker/job/dlq/" + rec.MessageID
+	key := "wt/converge/worker/job/shelf/" + rec.MessageID
 	if err := w.KV.Set(context.Background(), key, raw, 0); err != nil {
 		t.Fatal(err)
 	}
 
 	ch := startConsumer(t, w.MQ, wInbox("job"))
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := dlq.Requeue(context.Background(), rec.MessageID); err != nil {
+	if err := shelf.Requeue(context.Background(), rec.MessageID); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return len(ch) >= 1 })
@@ -290,8 +290,8 @@ func TestDLQRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	if got := string(m.Payload); got != `"hello"` {
 		t.Fatalf("payload = %q, want %q", got, `"hello"`)
 	}
-	if keys := dlqKeys(t, w.KV, "job"); len(keys) != 0 {
-		t.Fatalf("dlq keys after requeue = %v, want none", keys)
+	if keys := shelfKeys(t, w.KV, "job"); len(keys) != 0 {
+		t.Fatalf("shelf keys after requeue = %v, want none", keys)
 	}
 }
 
@@ -331,7 +331,7 @@ func (k *duplicateScanKV) Scan(ctx context.Context, prefix, cursor string) ([]st
 	return keys[:1], "", nil
 }
 
-func TestDLQListDedupesAcrossScanPages(t *testing.T) {
+func TestShelfListDedupesAcrossScanPages(t *testing.T) {
 	var dkv *duplicateScanKV
 	w := convergetest.NewWith(t, convergetest.Options{
 		Namespace: "wt",
@@ -342,12 +342,12 @@ func TestDLQListDedupesAcrossScanPages(t *testing.T) {
 	})
 	rt := w.Build(t)
 	ctx := context.Background()
-	rec := DeadLetter{
+	rec := ShelvedMessage{
 		Task:           "job",
 		Queue:          wInbox("job"),
 		MessageID:      "id-0",
 		Attempt:        1,
-		Reason:         converge.DeadLetterMaxAttempts.String(),
+		Reason:         reasonMaxAttempts,
 		EnqueuedAt:     w.Clock.Now(),
 		DeadLetteredAt: w.Clock.Now(),
 		Payload:        []byte(`"hello"`),
@@ -356,16 +356,16 @@ func TestDLQListDedupesAcrossScanPages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := "wt/converge/worker/job/dlq/id-0"
+	key := "wt/converge/worker/job/shelf/id-0"
 	if err := dkv.Set(ctx, key, raw, 0); err != nil {
 		t.Fatal(err)
 	}
 
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := dlq.List(ctx)
+	list, err := shelf.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,29 +374,29 @@ func TestDLQListDedupesAcrossScanPages(t *testing.T) {
 	}
 }
 
-func TestDLQPurgeAbsentIsNil(t *testing.T) {
+func TestShelfPurgeAbsentIsNil(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := dlq.Purge(context.Background(), "nope"); err != nil {
+	if err := shelf.Purge(context.Background(), "nope"); err != nil {
 		t.Fatalf("Purge absent = %v, want nil", err)
 	}
 }
 
-func TestDLQPurgeAllReturnsCount(t *testing.T) {
+func TestShelfPurgeAllRemovesEverything(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := DeadLetter{
+		rec := ShelvedMessage{
 			Task:           "job",
 			Queue:          wInbox("job"),
 			MessageID:      fmt.Sprintf("id-%d", i),
 			Attempt:        1,
-			Reason:         converge.DeadLetterMaxAttempts.String(),
+			Reason:         reasonMaxAttempts,
 			EnqueuedAt:     w.Clock.Now(),
 			DeadLetteredAt: w.Clock.Now(),
 			Payload:        []byte(`"hello"`),
@@ -405,62 +405,58 @@ func TestDLQPurgeAllReturnsCount(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		key := fmt.Sprintf("wt/converge/worker/job/dlq/id-%d", i)
+		key := fmt.Sprintf("wt/converge/worker/job/shelf/id-%d", i)
 		if err := w.KV.Set(ctx, key, raw, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := dlq.PurgeAll(ctx)
-	if err != nil {
+	if err := shelf.PurgeAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if n != 3 {
-		t.Fatalf("PurgeAll count = %d, want 3", n)
-	}
-	if keys := dlqKeys(t, w.KV, "job"); len(keys) != 0 {
-		t.Fatalf("dlq keys after PurgeAll = %v, want none", keys)
+	if keys := shelfKeys(t, w.KV, "job"); len(keys) != 0 {
+		t.Fatalf("shelf keys after PurgeAll = %v, want none", keys)
 	}
 }
 
-func TestDLQFromNilRuntimeErrors(t *testing.T) {
-	dlq, err := DLQFrom(nil, "job")
-	if err == nil || dlq != nil {
-		t.Fatalf("dlq, err = %v, %v, want error and nil DLQ", dlq, err)
+func TestShelfFromNilRuntimeErrors(t *testing.T) {
+	shelf, err := ShelfFrom(nil, "job")
+	if err == nil || shelf != nil {
+		t.Fatalf("shelf, err = %v, %v, want error and nil Shelf", shelf, err)
 	}
 }
 
-func TestDLQFromUnbuiltRuntimeErrors(t *testing.T) {
-	dlq, err := DLQFrom(&converge.Runtime{}, "job")
-	if err == nil || dlq != nil {
-		t.Fatalf("dlq, err = %v, %v, want error and nil DLQ", dlq, err)
+func TestShelfFromUnbuiltRuntimeErrors(t *testing.T) {
+	shelf, err := ShelfFrom(&converge.Runtime{}, "job")
+	if err == nil || shelf != nil {
+		t.Fatalf("shelf, err = %v, %v, want error and nil Shelf", shelf, err)
 	}
 }
 
-func TestDLQFromEmptyJobErrors(t *testing.T) {
+func TestShelfFromEmptyJobErrors(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
-	dlq, err := DLQFrom(rt, "")
-	if err == nil || dlq != nil {
-		t.Fatalf("dlq, err = %v, %v, want error and nil DLQ", dlq, err)
+	shelf, err := ShelfFrom(rt, "")
+	if err == nil || shelf != nil {
+		t.Fatalf("shelf, err = %v, %v, want error and nil Shelf", shelf, err)
 	}
 }
 
-func TestDLQFromUnregisteredJobSucceeds(t *testing.T) {
+func TestShelfFromUnregisteredJobSucceeds(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
-	dlq, err := DLQFrom(rt, "ghost-job")
+	shelf, err := ShelfFrom(rt, "ghost-job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if dlq == nil {
-		t.Fatal("want non-nil DLQ")
+	if shelf == nil {
+		t.Fatal("want non-nil Shelf")
 	}
-	list, err := dlq.List(context.Background())
+	list, err := shelf.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +465,7 @@ func TestDLQFromUnregisteredJobSucceeds(t *testing.T) {
 	}
 }
 
-func TestDLQRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
+func TestShelfRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 	var cmq *convergetest.MQ
 	w := convergetest.NewWith(t, convergetest.Options{
 		Namespace: "wt",
@@ -479,12 +475,12 @@ func TestDLQRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 		},
 	})
 	rt := w.Build(t)
-	rec := DeadLetter{
+	rec := ShelvedMessage{
 		Task:           "job",
 		Queue:          wInbox("job"),
 		MessageID:      "msg-1",
 		Attempt:        1,
-		Reason:         converge.DeadLetterMaxAttempts.String(),
+		Reason:         reasonMaxAttempts,
 		Error:          "boom",
 		EnqueuedAt:     w.Clock.Now(),
 		DeadLetteredAt: w.Clock.Now(),
@@ -500,24 +496,24 @@ func TestDLQRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key := "wt/converge/worker/job/dlq/" + rec.MessageID
+	key := "wt/converge/worker/job/shelf/" + rec.MessageID
 	if err := w.KV.Set(context.Background(), key, raw, 0); err != nil {
 		t.Fatal(err)
 	}
 
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
 	publishErr := errors.New("transient publish failure")
 	cmq.FailNextPublish(publishErr)
 
-	err = dlq.Requeue(context.Background(), rec.MessageID)
+	err = shelf.Requeue(context.Background(), rec.MessageID)
 	if !errors.Is(err, publishErr) {
 		t.Fatalf("Requeue err = %v, want %v", err, publishErr)
 	}
 
-	got, err := dlq.Get(context.Background(), rec.MessageID)
+	got, err := shelf.Get(context.Background(), rec.MessageID)
 	if err != nil {
 		t.Fatalf("record missing after failed publish: %v", err)
 	}
@@ -529,18 +525,18 @@ func TestDLQRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 	}
 }
 
-func TestDLQListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
+func TestShelfListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	ctx := context.Background()
 	const total = 150
 	for i := 0; i < total; i++ {
-		rec := DeadLetter{
+		rec := ShelvedMessage{
 			Task:           "job",
 			Queue:          wInbox("job"),
 			MessageID:      fmt.Sprintf("id-%03d", i),
 			Attempt:        1,
-			Reason:         converge.DeadLetterMaxAttempts.String(),
+			Reason:         reasonMaxAttempts,
 			EnqueuedAt:     w.Clock.Now(),
 			DeadLetteredAt: w.Clock.Now(),
 			Payload:        []byte(`"hello"`),
@@ -549,17 +545,17 @@ func TestDLQListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		key := fmt.Sprintf("wt/converge/worker/job/dlq/id-%03d", i)
+		key := fmt.Sprintf("wt/converge/worker/job/shelf/id-%03d", i)
 		if err := w.KV.Set(ctx, key, raw, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	list, err := dlq.List(ctx)
+	list, err := shelf.List(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,22 +563,18 @@ func TestDLQListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
 		t.Fatalf("List returned %d entries, want %d (cursor must be followed past the inmem Scan page size)", len(list), total)
 	}
 	seen := map[string]bool{}
-	for _, dl := range list {
-		seen[dl.MessageID] = true
+	for _, rec := range list {
+		seen[rec.MessageID] = true
 	}
 	if len(seen) != total {
 		t.Fatalf("List returned %d distinct message ids, want %d", len(seen), total)
 	}
 
-	n, err := dlq.PurgeAll(ctx)
-	if err != nil {
+	if err := shelf.PurgeAll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if n != total {
-		t.Fatalf("PurgeAll count = %d, want %d (cursor must be followed past the inmem Scan page size)", n, total)
-	}
-	if keys := dlqKeys(t, w.KV, "job"); len(keys) != 0 {
-		t.Fatalf("dlq keys after PurgeAll = %v, want none", keys)
+	if keys := shelfKeys(t, w.KV, "job"); len(keys) != 0 {
+		t.Fatalf("shelf keys after PurgeAll = %v, want none (cursor must be followed past the inmem Scan page size)", keys)
 	}
 }
 
@@ -621,7 +613,7 @@ func (k *failingDeleteKV) Scan(ctx context.Context, prefix, cursor string) ([]st
 	return k.inner.Scan(ctx, prefix, cursor)
 }
 
-func TestDLQPurgeAllPartialFailureReturnsCountAndError(t *testing.T) {
+func TestShelfPurgeAllPartialFailureLeavesRemainder(t *testing.T) {
 	clock := convergetest.NewClock(wstart)
 	fk := &failingDeleteKV{inner: inmem.NewKVWithClock(clock), failAfter: 2}
 	rt, err := converge.New(converge.Options{Namespace: "wt", KV: fk, Clock: clock})
@@ -630,12 +622,12 @@ func TestDLQPurgeAllPartialFailureReturnsCountAndError(t *testing.T) {
 	}
 	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		rec := DeadLetter{
+		rec := ShelvedMessage{
 			Task:           "job",
 			Queue:          wInbox("job"),
 			MessageID:      fmt.Sprintf("id-%d", i),
 			Attempt:        1,
-			Reason:         converge.DeadLetterMaxAttempts.String(),
+			Reason:         reasonMaxAttempts,
 			EnqueuedAt:     clock.Now(),
 			DeadLetteredAt: clock.Now(),
 			Payload:        []byte(`"hello"`),
@@ -644,26 +636,25 @@ func TestDLQPurgeAllPartialFailureReturnsCountAndError(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		key := fmt.Sprintf("wt/converge/worker/job/dlq/id-%d", i)
+		key := fmt.Sprintf("wt/converge/worker/job/shelf/id-%d", i)
 		if err := fk.Set(ctx, key, raw, 0); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := dlq.PurgeAll(ctx)
-	if err == nil {
+	if err := shelf.PurgeAll(ctx); err == nil {
 		t.Fatal("want a non-nil error from PurgeAll on a mid-sweep delete failure")
 	}
-	if n != 1 {
-		t.Fatalf("PurgeAll count = %d, want 1 (only the delete before the injected failure)", n)
+	if keys := shelfKeys(t, fk, "job"); len(keys) != 2 {
+		t.Fatalf("shelf keys after partial PurgeAll = %v, want exactly 2 remaining (one delete before the injected failure)", keys)
 	}
 }
 
-func TestDLQRequeueNoMQErrors(t *testing.T) {
+func TestShelfRequeueNoMQErrors(t *testing.T) {
 	clock := convergetest.NewClock(wstart)
 	kv := inmem.NewKVWithClock(clock)
 	rt, err := converge.New(converge.Options{Namespace: "wt", KV: kv, Clock: clock})
@@ -671,12 +662,12 @@ func TestDLQRequeueNoMQErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	rec := DeadLetter{
+	rec := ShelvedMessage{
 		Task:           "job",
 		Queue:          wInbox("job"),
 		MessageID:      "msg-1",
 		Attempt:        1,
-		Reason:         converge.DeadLetterMaxAttempts.String(),
+		Reason:         reasonMaxAttempts,
 		EnqueuedAt:     clock.Now(),
 		DeadLetteredAt: clock.Now(),
 		Payload:        []byte(`"hello"`),
@@ -685,20 +676,20 @@ func TestDLQRequeueNoMQErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Set(ctx, "wt/converge/worker/job/dlq/msg-1", raw, 0); err != nil {
+	if err := kv.Set(ctx, "wt/converge/worker/job/shelf/msg-1", raw, 0); err != nil {
 		t.Fatal(err)
 	}
 
-	dlq, err := DLQFrom(rt, "job")
+	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = dlq.Requeue(ctx, "msg-1")
+	err = shelf.Requeue(ctx, "msg-1")
 	if err == nil || !strings.Contains(err.Error(), "Options.MQ") {
 		t.Fatalf("err = %v, want mention of no MQ", err)
 	}
 
-	got, err := dlq.Get(ctx, "msg-1")
+	got, err := shelf.Get(ctx, "msg-1")
 	if err != nil {
 		t.Fatal(err)
 	}

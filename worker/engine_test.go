@@ -54,9 +54,9 @@ func jobStats(t *testing.T, rt *converge.Runtime, job string) converge.JobStats 
 	return converge.JobStats{}
 }
 
-func dlqKeys(t *testing.T, kv converge.KV, job string) []string {
+func shelfKeys(t *testing.T, kv converge.KV, job string) []string {
 	t.Helper()
-	prefix := "wt/converge/worker/" + job + "/dlq/"
+	prefix := "wt/converge/worker/" + job + "/shelf/"
 	keys, _, err := kv.Scan(context.Background(), prefix, "")
 	if err != nil {
 		t.Fatal(err)
@@ -64,13 +64,13 @@ func dlqKeys(t *testing.T, kv converge.KV, job string) []string {
 	return keys
 }
 
-func dlqRecordAt(t *testing.T, kv converge.KV, key string) DeadLetter {
+func shelfRecordAt(t *testing.T, kv converge.KV, key string) ShelvedMessage {
 	t.Helper()
 	raw, ok, err := kv.Get(context.Background(), key)
 	if err != nil || !ok {
-		t.Fatalf("get dlq record %q: ok=%v err=%v", key, ok, err)
+		t.Fatalf("get shelf record %q: ok=%v err=%v", key, ok, err)
 	}
-	var rec DeadLetter
+	var rec ShelvedMessage
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestInfoReportsTheNamespacedInboxOnceBound(t *testing.T) {
 	}
 }
 
-func TestErrorRetriesWithBackoffThenDeadLetters(t *testing.T) {
+func TestErrorRetriesWithBackoffThenShelves(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -184,26 +184,26 @@ func TestErrorRetriesWithBackoffThenDeadLetters(t *testing.T) {
 		}) == 1
 	})
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 3 })
-	keys := dlqKeys(t, w.KV, "job")
+	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, w.KV, keys[0])
+	rec := shelfRecordAt(t, w.KV, keys[0])
 	if rec.Attempt != 3 {
-		t.Fatalf("dlq record attempt = %d, want 3", rec.Attempt)
+		t.Fatalf("shelf record attempt = %d, want 3", rec.Attempt)
 	}
-	if rec.Reason != converge.DeadLetterMaxAttempts.String() {
-		t.Fatalf("dlq record reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAttempts.String())
+	if rec.Reason != reasonMaxAttempts {
+		t.Fatalf("shelf record reason = %q, want %q", rec.Reason, reasonMaxAttempts)
 	}
 	if rec.Error == "" {
-		t.Fatal("dlq record error must be non-empty")
+		t.Fatal("shelf record error must be non-empty")
 	}
 	var payload string
 	if err := json.Unmarshal(rec.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
 	if payload != "hello" {
-		t.Fatalf("dlq record payload = %q, want %q", payload, "hello")
+		t.Fatalf("shelf record payload = %q, want %q", payload, "hello")
 	}
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		_, ok := e.(converge.MessageDeadLettered)
@@ -256,7 +256,7 @@ func TestMetaAttemptCountsTransportRedeliveries(t *testing.T) {
 	}
 }
 
-func TestDecodeFailureDeadLettersImmediately(t *testing.T) {
+func TestDecodeFailureShelvesImmediately(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -281,7 +281,7 @@ func TestDecodeFailureDeadLettersImmediately(t *testing.T) {
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == converge.DeadLetterUndecodable
+			return ok && dl.Reason == reasonUndecodable
 		}) == 1
 	})
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&ran) == 0 })
@@ -291,27 +291,27 @@ func TestDecodeFailureDeadLettersImmediately(t *testing.T) {
 	}); n != 1 {
 		t.Fatalf("RunCompleted with non-nil Err count = %d, want 1", n)
 	}
-	keys := dlqKeys(t, w.KV, "job")
+	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, w.KV, keys[0])
-	if rec.Reason != converge.DeadLetterUndecodable.String() {
-		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterUndecodable.String())
+	rec := shelfRecordAt(t, w.KV, keys[0])
+	if rec.Reason != reasonUndecodable {
+		t.Fatalf("reason = %q, want %q", rec.Reason, reasonUndecodable)
 	}
 }
 
-func TestReceiptGuardsDeadLetter(t *testing.T) {
+func TestReceiptGuardsShelving(t *testing.T) {
 	type tc struct {
 		name       string
 		mutate     func(h map[string]string)
-		wantReason converge.DeadLetterReason
+		wantReason string
 	}
 	cases := []tc{
-		{"missing schema header", func(h map[string]string) { delete(h, converge.HeaderSchemaVersion) }, converge.DeadLetterSchemaVersion},
-		{"wrong schema version", func(h map[string]string) { h[converge.HeaderSchemaVersion] = "2" }, converge.DeadLetterSchemaVersion},
-		{"unparseable attempt", func(h map[string]string) { h[converge.HeaderAttempt] = "nope" }, converge.DeadLetterUndecodable},
-		{"attempt header overflow", func(h map[string]string) { h[converge.HeaderAttempt] = strconv.Itoa(math.MaxInt) }, converge.DeadLetterUndecodable},
+		{"missing schema header", func(h map[string]string) { delete(h, converge.HeaderSchemaVersion) }, reasonSchemaVersion},
+		{"wrong schema version", func(h map[string]string) { h[converge.HeaderSchemaVersion] = "2" }, reasonSchemaVersion},
+		{"unparseable attempt", func(h map[string]string) { h[converge.HeaderAttempt] = "nope" }, reasonUndecodable},
+		{"attempt header overflow", func(h map[string]string) { h[converge.HeaderAttempt] = strconv.Itoa(math.MaxInt) }, reasonUndecodable},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -350,13 +350,13 @@ func TestReceiptGuardsDeadLetter(t *testing.T) {
 			}); n != 0 {
 				t.Fatalf("RunCompleted must not fire, got %d", n)
 			}
-			keys := dlqKeys(t, w.KV, "job")
+			keys := shelfKeys(t, w.KV, "job")
 			if len(keys) != 1 {
-				t.Fatalf("dlq keys = %v, want exactly 1", keys)
+				t.Fatalf("shelf keys = %v, want exactly 1", keys)
 			}
-			rec := dlqRecordAt(t, w.KV, keys[0])
-			if rec.Reason != c.wantReason.String() {
-				t.Fatalf("reason = %q, want %q", rec.Reason, c.wantReason.String())
+			rec := shelfRecordAt(t, w.KV, keys[0])
+			if rec.Reason != c.wantReason {
+				t.Fatalf("reason = %q, want %q", rec.Reason, c.wantReason)
 			}
 		})
 	}
@@ -394,24 +394,24 @@ func TestForeignKindInTheInboxStillRuns(t *testing.T) {
 	}
 }
 
-type failingDLQKV struct {
+type failingShelfKV struct {
 	inner converge.KV
 
 	mu     sync.Mutex
 	failed bool
 }
 
-func (k *failingDLQKV) Get(ctx context.Context, key string) ([]byte, bool, error) {
+func (k *failingShelfKV) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	return k.inner.Get(ctx, key)
 }
 
-func (k *failingDLQKV) SetCAS(ctx context.Context, key string, old, new []byte) (bool, error) {
+func (k *failingShelfKV) SetCAS(ctx context.Context, key string, old, new []byte) (bool, error) {
 	return k.inner.SetCAS(ctx, key, old, new)
 }
 
-func (k *failingDLQKV) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+func (k *failingShelfKV) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
 	k.mu.Lock()
-	if !k.failed && strings.Contains(key, "/dlq/") {
+	if !k.failed && strings.Contains(key, "/shelf/") {
 		k.failed = true
 		k.mu.Unlock()
 		return errors.New("kv write failed")
@@ -420,20 +420,20 @@ func (k *failingDLQKV) Set(ctx context.Context, key string, val []byte, ttl time
 	return k.inner.Set(ctx, key, val, ttl)
 }
 
-func (k *failingDLQKV) Delete(ctx context.Context, key string) error {
+func (k *failingShelfKV) Delete(ctx context.Context, key string) error {
 	return k.inner.Delete(ctx, key)
 }
 
-func (k *failingDLQKV) Scan(ctx context.Context, prefix, cursor string) ([]string, string, error) {
+func (k *failingShelfKV) Scan(ctx context.Context, prefix, cursor string) ([]string, string, error) {
 	return k.inner.Scan(ctx, prefix, cursor)
 }
 
-func TestDeadLetterKVFailureNacksAndRecovers(t *testing.T) {
-	var fkv *failingDLQKV
+func TestShelvingKVFailureNacksAndRecovers(t *testing.T) {
+	var fkv *failingShelfKV
 	w := convergetest.NewWith(t, convergetest.Options{
 		Namespace: "wt",
 		KV: func(clock *convergetest.Clock) converge.KV {
-			fkv = &failingDLQKV{inner: inmem.NewKVWithClock(clock)}
+			fkv = &failingShelfKV{inner: inmem.NewKVWithClock(clock)}
 			return fkv
 		},
 	})
@@ -461,9 +461,9 @@ func TestDeadLetterKVFailureNacksAndRecovers(t *testing.T) {
 	if got := atomic.LoadInt32(&ran); got != 1 {
 		t.Fatalf("handler ran %d times, want exactly 1", got)
 	}
-	keys := dlqKeys(t, fkv, "job")
+	keys := shelfKeys(t, fkv, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		_, ok := e.(converge.MessageDeadLettered)
@@ -601,8 +601,8 @@ func TestDiscardAcksWithEvent(t *testing.T) {
 	if stats.LastSuccess.IsZero() {
 		t.Fatal("LastSuccess not stamped")
 	}
-	if keys := dlqKeys(t, w.KV, "job"); len(keys) != 0 {
-		t.Fatalf("dlq keys = %v, want none", keys)
+	if keys := shelfKeys(t, w.KV, "job"); len(keys) != 0 {
+		t.Fatalf("shelf keys = %v, want none", keys)
 	}
 }
 
@@ -706,22 +706,22 @@ func TestSnoozeClampedToMaxAge(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 
-	deadLettered := func() bool {
+	shelved := func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == converge.DeadLetterMaxAge
+			return ok && dl.Reason == reasonMaxAge
 		}) == 1
 	}
 	const step = 40 * time.Second
 	const maxAdvance = 6 * time.Minute
 	var advanced time.Duration
 	deadline := time.Now().Add(2 * time.Second)
-	for !deadLettered() {
+	for !shelved() {
 		if advanced >= maxAdvance {
-			t.Fatalf("max-age dead-letter not observed within %s of simulated clock advance; snooze was not clamped", maxAdvance)
+			t.Fatalf("max-age shelving not observed within %s of simulated clock advance; snooze was not clamped", maxAdvance)
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for max-age dead-letter")
+			t.Fatal("timed out waiting for max-age shelving")
 		}
 		w.Clock.Advance(step)
 		advanced += step
@@ -729,17 +729,17 @@ func TestSnoozeClampedToMaxAge(t *testing.T) {
 	}
 
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
-	keys := dlqKeys(t, w.KV, "job")
+	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, w.KV, keys[0])
-	if rec.Reason != converge.DeadLetterMaxAge.String() {
-		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAge.String())
+	rec := shelfRecordAt(t, w.KV, keys[0])
+	if rec.Reason != reasonMaxAge {
+		t.Fatalf("reason = %q, want %q", rec.Reason, reasonMaxAge)
 	}
 }
 
-func TestSnoozeWithSpentBudgetDeadLettersImmediately(t *testing.T) {
+func TestSnoozeWithSpentBudgetShelvesImmediately(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -776,13 +776,13 @@ func TestSnoozeWithSpentBudgetDeadLettersImmediately(t *testing.T) {
 	})
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 
-	keys := dlqKeys(t, w.KV, "job")
+	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, w.KV, keys[0])
-	if rec.Reason != converge.DeadLetterMaxAge.String() {
-		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAge.String())
+	rec := shelfRecordAt(t, w.KV, keys[0])
+	if rec.Reason != reasonMaxAge {
+		t.Fatalf("reason = %q, want %q", rec.Reason, reasonMaxAge)
 	}
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
@@ -850,9 +850,9 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 		}) == 2
 	})
 
-	keys := dlqKeys(t, w.KV, "job")
+	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
 	var ids []string
 	for _, e := range w.Events() {
@@ -871,7 +871,7 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	}
 }
 
-func TestWrongSurfaceSignalDeadLetters(t *testing.T) {
+func TestWrongSurfaceSignalShelves(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -891,7 +891,7 @@ func TestWrongSurfaceSignalDeadLetters(t *testing.T) {
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == converge.DeadLetterWrongSurface
+			return ok && dl.Reason == reasonWrongSurface
 		}) == 1
 	})
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
@@ -907,13 +907,13 @@ func TestWrongSurfaceSignalDeadLetters(t *testing.T) {
 	}); n != 1 {
 		t.Fatalf("RunCompleted{Err != nil} count = %d, want 1", n)
 	}
-	keys := dlqKeys(t, w.KV, "job")
+	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, w.KV, keys[0])
-	if rec.Reason != converge.DeadLetterWrongSurface.String() {
-		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterWrongSurface.String())
+	rec := shelfRecordAt(t, w.KV, keys[0])
+	if rec.Reason != reasonWrongSurface {
+		t.Fatalf("reason = %q, want %q", rec.Reason, reasonWrongSurface)
 	}
 }
 
@@ -1805,5 +1805,38 @@ func TestTimeoutCancelsTheRun(t *testing.T) {
 	convergetest.AdvanceUntil(t, h.Clock, 10*time.Second, func() bool { return len(deadline) > 0 })
 	if err := <-deadline; !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("run ended with %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestShelveStopsAfterOneAttempt(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	task := NewTask[string]("charge", TaskOpts{})
+	var attempts atomic.Int64
+	if err := Handle(rt, task, func(context.Context, string) error {
+		attempts.Add(1)
+		return Shelve{Reason: "card revoked"}
+	}, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	if err := task.Enqueue(context.Background(), p, "o-1", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1", got)
+	}
+	shelf, err := ShelfFrom(rt, "charge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recs, err := shelf.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].Reason != "card revoked" {
+		t.Fatalf("shelved messages = %+v, want one with reason %q", recs, "card revoked")
 	}
 }

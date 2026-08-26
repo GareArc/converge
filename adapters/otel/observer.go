@@ -77,7 +77,7 @@ func (o *observer) Observe(e converge.Event) {
 		o.deadLetters.Add(ctx, 1, metric.WithAttributes(
 			attribute.String(attrJob, v.Job),
 			attribute.String(attrQueue, v.Queue),
-			attribute.String(attrReason, v.Reason.String()),
+			attribute.String(attrReason, v.Reason),
 		))
 	case converge.WakeDiscarded:
 		o.discarded.Add(ctx, 1, metric.WithAttributes(

@@ -405,7 +405,7 @@ func TestNewWithCustomKVReachesRuntime(t *testing.T) {
 	h.Drain(t)
 
 	convergetest.Await(t, func() bool {
-		keys, _, err := captured.Scan(context.Background(), "test/converge/worker/dead-job/dlq/", "")
+		keys, _, err := captured.Scan(context.Background(), "test/converge/worker/dead-job/shelf/", "")
 		return err == nil && len(keys) == 1
 	})
 }

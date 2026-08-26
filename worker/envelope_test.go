@@ -232,7 +232,7 @@ func TestRequeueMessage(t *testing.T) {
 		converge.HeaderMessageID:     "msg-1",
 		converge.HeaderSchemaVersion: "3",
 	}
-	rec := DeadLetter{
+	rec := ShelvedMessage{
 		Task:    "job",
 		Payload: []byte("payload"),
 		Headers: maps.Clone(headers),
@@ -264,6 +264,6 @@ func TestRequeueMessage(t *testing.T) {
 		t.Fatalf("enqueued-at = %q, want %q", got.Headers[converge.HeaderEnqueuedAt], want)
 	}
 	if rec.Headers[converge.HeaderAttempt] != "5" || rec.Headers[converge.HeaderSnoozes] != "2" {
-		t.Fatalf("source DeadLetter headers mutated: %+v", rec.Headers)
+		t.Fatalf("source ShelvedMessage headers mutated: %+v", rec.Headers)
 	}
 }

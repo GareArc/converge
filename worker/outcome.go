@@ -24,3 +24,12 @@ type Discard struct {
 func (d Discard) Error() string { return "worker: discard: " + d.Reason }
 
 func (Discard) ControlSurface() converge.Surface { return converge.SurfaceWorker }
+
+type Shelve struct {
+	_      struct{}
+	Reason string
+}
+
+func (d Shelve) Error() string { return "worker: shelved: " + d.Reason }
+
+func (Shelve) ControlSurface() converge.Surface { return converge.SurfaceWorker }

@@ -176,7 +176,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	convergetest.Await(t, func() bool {
 		return eventCount(consumer.Events(), func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == converge.DeadLetterMaxAttempts
+			return ok && dl.Reason == reasonMaxAttempts
 		}) == 1
 	})
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&hardFailRuns) == 3 })
@@ -184,13 +184,13 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		t.Fatalf("escalations = %d, want 1", got)
 	}
 
-	keys := dlqKeys(t, consumer.KV, "send-invite")
+	keys := shelfKeys(t, consumer.KV, "send-invite")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, consumer.KV, keys[0])
-	if rec.Reason != converge.DeadLetterMaxAttempts.String() {
-		t.Fatalf("dlq reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAttempts.String())
+	rec := shelfRecordAt(t, consumer.KV, keys[0])
+	if rec.Reason != reasonMaxAttempts {
+		t.Fatalf("shelf reason = %q, want %q", rec.Reason, reasonMaxAttempts)
 	}
 	wantPayload := invitePayload{Email: hardFailInviteEmail, Team: "eng"}
 	var gotPayload invitePayload
@@ -198,7 +198,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if gotPayload != wantPayload {
-		t.Fatalf("dlq payload = %+v, want %+v", gotPayload, wantPayload)
+		t.Fatalf("shelf payload = %+v, want %+v", gotPayload, wantPayload)
 	}
 }
 
@@ -223,7 +223,7 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 	convergetest.AdvanceUntil(t, w.Clock, time.Minute, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
 			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == converge.DeadLetterMaxAge
+			return ok && dl.Reason == reasonMaxAge
 		}) == 1
 	})
 
@@ -233,15 +233,15 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 	stopped := atomic.LoadInt32(&runs)
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == stopped })
 
-	keys := dlqKeys(t, w.KV, "job")
+	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, w.KV, keys[0])
-	if rec.Reason != converge.DeadLetterMaxAge.String() {
-		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAge.String())
+	rec := shelfRecordAt(t, w.KV, keys[0])
+	if rec.Reason != reasonMaxAge {
+		t.Fatalf("reason = %q, want %q", rec.Reason, reasonMaxAge)
 	}
 	if rec.Attempt != 1 {
-		t.Fatalf("dlq record attempt = %d, want 1", rec.Attempt)
+		t.Fatalf("shelf record attempt = %d, want 1", rec.Attempt)
 	}
 }

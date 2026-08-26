@@ -92,27 +92,3 @@ func TestWakeDiscardReasonZeroIsHonest(t *testing.T) {
 		t.Fatal("IsZero semantics broken")
 	}
 }
-
-func TestDeadLetterReasonZeroIsHonest(t *testing.T) {
-	if got := (DeadLetterReason{}).String(); got != "unknown" {
-		t.Fatalf("zero reason = %q, want unknown, never a fabricated name", got)
-	}
-	if !(DeadLetterReason{}).IsZero() || DeadLetterMaxAttempts.IsZero() {
-		t.Fatal("IsZero semantics broken")
-	}
-}
-
-func TestDeadLetterReasonString(t *testing.T) {
-	cases := map[string]DeadLetterReason{
-		"max-attempts":   DeadLetterMaxAttempts,
-		"max-age":        DeadLetterMaxAge,
-		"schema-version": DeadLetterSchemaVersion,
-		"undecodable":    DeadLetterUndecodable,
-		"wrong-surface":  DeadLetterWrongSurface,
-	}
-	for want, reason := range cases {
-		if got := reason.String(); got != want {
-			t.Errorf("String() = %q, want %q", got, want)
-		}
-	}
-}

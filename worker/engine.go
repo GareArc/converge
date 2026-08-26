@@ -21,6 +21,14 @@ import (
 	"github.com/GareArc/converge/internal/tokenbucket"
 )
 
+const (
+	reasonMaxAttempts   = "max attempts"
+	reasonMaxAge        = "max age"
+	reasonSchemaVersion = "schema version"
+	reasonUndecodable   = "undecodable"
+	reasonWrongSurface  = "wrong surface"
+)
+
 type taskInfo struct {
 	name    string
 	queue   string
@@ -51,7 +59,7 @@ type engine struct {
 
 	mu          sync.Mutex
 	depth       int
-	deadLetters int
+	shelved     int
 	lastSuccess time.Time
 	consecFails int
 }
@@ -82,8 +90,8 @@ func (e *engine) key(parts ...string) string {
 	return keys.Worker(e.deps.Namespace, e.cfg.info.name, parts...)
 }
 
-func (e *engine) dlqKey(id string) string {
-	return keys.WorkerDLQ(e.deps.Namespace, e.cfg.info.name, id)
+func (e *engine) shelfKey(id string) string {
+	return keys.WorkerShelf(e.deps.Namespace, e.cfg.info.name, id)
 }
 
 func (e *engine) Stats() converge.JobStats {
@@ -94,7 +102,7 @@ func (e *engine) Stats() converge.JobStats {
 		Surface:          converge.SurfaceWorker,
 		RunMode:          e.cfg.runMode,
 		QueueDepth:       e.depth,
-		Parked:           e.deadLetters,
+		Parked:           e.shelved,
 		LastSuccess:      e.lastSuccess,
 		ConsecutiveFails: e.consecFails,
 	}
@@ -154,7 +162,7 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	}
 	if e.durable() {
 		if deps.KV == nil {
-			return fmt.Errorf("worker: job %q: dead-lettering needs Options.KV", e.cfg.info.name)
+			return fmt.Errorf("worker: job %q: shelving needs Options.KV", e.cfg.info.name)
 		}
 		if _, ok := deps.MQ.(converge.DelayedPublisher); !ok {
 			return fmt.Errorf("worker: job %q: Snooze needs the DelayedPublisher capability", e.cfg.info.name)
@@ -310,7 +318,7 @@ func (e *engine) setDepth(delta int) {
 	e.deps.Observer.Observe(converge.QueueDepth{Job: e.cfg.info.name, Queue: e.cfg.info.queue, Depth: depth})
 }
 
-func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, converge.DeadLetterReason) {
+func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, string) {
 	env := newEnvelope(d, m)
 	attempt, ok := env.attempt()
 	meta := Meta{
@@ -323,28 +331,28 @@ func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, conver
 		Headers:     maps.Clone(m.Headers),
 	}
 	if !e.durable() {
-		return meta, converge.DeadLetterReason{}
+		return meta, ""
 	}
 	if env.schemaVersion() != strconv.Itoa(e.cfg.info.version) {
-		return meta, converge.DeadLetterSchemaVersion
+		return meta, reasonSchemaVersion
 	}
 	if !ok {
-		return meta, converge.DeadLetterUndecodable
+		return meta, reasonUndecodable
 	}
 	if e.deps.Clock.Now().Sub(meta.EnqueuedAt) > e.cfg.retry.MaxAge {
-		return meta, converge.DeadLetterMaxAge
+		return meta, reasonMaxAge
 	}
 	if meta.Attempt > e.cfg.retry.MaxAttempts {
-		return meta, converge.DeadLetterMaxAttempts
+		return meta, reasonMaxAttempts
 	}
-	return meta, converge.DeadLetterReason{}
+	return meta, ""
 }
 
 func (e *engine) process(hctx context.Context, d converge.Delivery, m converge.Message) {
 	meta, guard := e.classify(d, m)
 	sctx := context.WithoutCancel(hctx)
-	if !guard.IsZero() {
-		e.deadLetter(sctx, d, meta, m, guard, nil)
+	if guard != "" {
+		e.shelve(sctx, d, meta, m, guard, nil)
 		return
 	}
 	stopHB := make(chan struct{})
@@ -391,7 +399,7 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 	var dec decodeError
 	if errors.As(err, &dec) {
 		e.observeRun(meta, took, err)
-		e.deadLetterOrDrop(sctx, d, meta, m, converge.DeadLetterUndecodable, err)
+		e.shelveOrDrop(sctx, d, meta, m, reasonUndecodable, err)
 		return
 	}
 	if s, ok := sig.FromError(err); ok {
@@ -409,7 +417,7 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		return
 	}
 	if meta.Attempt >= e.cfg.retry.MaxAttempts {
-		e.deadLetter(sctx, d, meta, m, converge.DeadLetterMaxAttempts, err)
+		e.shelve(sctx, d, meta, m, reasonMaxAttempts, err)
 		return
 	}
 	d.Nack(sctx, e.retryCurve().Delay(meta.Attempt))
@@ -448,7 +456,7 @@ func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m conve
 	if s.ControlSurface() != converge.SurfaceWorker {
 		e.deps.Observer.Observe(converge.WrongSurfaceSignal{Job: e.cfg.info.name, ID: meta.MessageID, Surface: s.ControlSurface()})
 		e.observeRun(meta, took, err)
-		e.deadLetterOrDrop(sctx, d, meta, m, converge.DeadLetterWrongSurface, err)
+		e.shelveOrDrop(sctx, d, meta, m, reasonWrongSurface, err)
 		return true
 	}
 	switch v := s.(type) {
@@ -463,6 +471,14 @@ func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m conve
 		return true
 	case *Snooze:
 		e.snooze(sctx, d, m, meta, v.In, took, err)
+		return true
+	case Shelve:
+		e.observeRun(meta, took, err)
+		e.shelve(sctx, d, meta, m, v.Reason, nil)
+		return true
+	case *Shelve:
+		e.observeRun(meta, took, err)
+		e.shelve(sctx, d, meta, m, v.Reason, nil)
 		return true
 	}
 	return false
@@ -489,7 +505,7 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 	remaining := e.cfg.retry.MaxAge - e.deps.Clock.Now().Sub(meta.EnqueuedAt)
 	if remaining <= 0 {
 		e.observeRun(meta, took, nil)
-		e.deadLetter(sctx, d, meta, m, converge.DeadLetterMaxAge, nil)
+		e.shelve(sctx, d, meta, m, reasonMaxAge, nil)
 		return
 	}
 	env := newEnvelope(d, m)
@@ -565,21 +581,21 @@ func (e *engine) extendLoop(ctx context.Context, d converge.Delivery, stop <-cha
 	}
 }
 
-func (e *engine) deadLetterOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason converge.DeadLetterReason, cause error) {
+func (e *engine) shelveOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) {
 	e.recordFailure()
 	if !e.durable() {
 		return
 	}
-	e.deadLetter(ctx, d, meta, m, reason, cause)
+	e.shelve(ctx, d, meta, m, reason, cause)
 }
 
-func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason converge.DeadLetterReason, cause error) {
-	rec := DeadLetter{
+func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) {
+	rec := ShelvedMessage{
 		Task:           e.cfg.info.name,
 		Queue:          e.cfg.info.queue,
 		MessageID:      meta.MessageID,
 		Attempt:        meta.Attempt,
-		Reason:         reason.String(),
+		Reason:         reason,
 		EnqueuedAt:     meta.EnqueuedAt,
 		DeadLetteredAt: e.deps.Clock.Now(),
 		Headers:        meta.Headers,
@@ -590,7 +606,7 @@ func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta,
 	}
 	raw, err := json.Marshal(rec)
 	if err == nil {
-		err = e.deps.KV.Set(ctx, e.dlqKey(meta.MessageID), raw, 0)
+		err = e.deps.KV.Set(ctx, e.shelfKey(meta.MessageID), raw, 0)
 	}
 	if err != nil {
 		d.Nack(ctx, e.retryCurve().Delay(meta.Attempt))
@@ -598,7 +614,7 @@ func (e *engine) deadLetter(ctx context.Context, d converge.Delivery, meta Meta,
 	}
 	d.Ack(ctx)
 	e.mu.Lock()
-	e.deadLetters++
+	e.shelved++
 	e.mu.Unlock()
 	e.deps.Observer.Observe(converge.MessageDeadLettered{
 		Job:       e.cfg.info.name,

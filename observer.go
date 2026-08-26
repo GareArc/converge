@@ -98,52 +98,12 @@ type MessageDiscarded struct {
 
 func (MessageDiscarded) event() {}
 
-type deadLetterReasonKind int
-
-const (
-	deadLetterReasonUnset deadLetterReasonKind = iota
-	deadLetterMaxAttempts
-	deadLetterMaxAge
-	deadLetterSchemaVersion
-	deadLetterUndecodable
-	deadLetterWrongSurface
-)
-
-type DeadLetterReason struct{ kind deadLetterReasonKind }
-
-var (
-	DeadLetterMaxAttempts   = DeadLetterReason{deadLetterMaxAttempts}
-	DeadLetterMaxAge        = DeadLetterReason{deadLetterMaxAge}
-	DeadLetterSchemaVersion = DeadLetterReason{deadLetterSchemaVersion}
-	DeadLetterUndecodable   = DeadLetterReason{deadLetterUndecodable}
-	DeadLetterWrongSurface  = DeadLetterReason{deadLetterWrongSurface}
-)
-
-func (r DeadLetterReason) IsZero() bool { return r.kind == deadLetterReasonUnset }
-
-func (r DeadLetterReason) String() string {
-	switch r.kind {
-	case deadLetterMaxAttempts:
-		return "max-attempts"
-	case deadLetterMaxAge:
-		return "max-age"
-	case deadLetterSchemaVersion:
-		return "schema-version"
-	case deadLetterUndecodable:
-		return "undecodable"
-	case deadLetterWrongSurface:
-		return "wrong-surface"
-	default:
-		return "unknown"
-	}
-}
-
 type MessageDeadLettered struct {
 	Job       string
 	Queue     string
 	MessageID string
 	Attempt   int
-	Reason    DeadLetterReason
+	Reason    string
 	Err       error
 }
 

@@ -18,8 +18,8 @@ func TestLayout(t *testing.T) {
 		{"reconcile", Reconcile("ns", "job", "x"), "ns/converge/reconcile/job/x"},
 		{"worker lease", WorkerLease("ns", "job"), "ns/converge/worker/job/lease"},
 		{"reconcile lease", ReconcileLease("", "job"), "converge/reconcile/job/lease"},
-		{"dlq prefix", WorkerDLQPrefix("ns", "job"), "ns/converge/worker/job/dlq/"},
-		{"dlq", WorkerDLQ("ns", "job", "m1"), "ns/converge/worker/job/dlq/m1"},
+		{"shelf prefix", WorkerShelfPrefix("ns", "job"), "ns/converge/worker/job/shelf/"},
+		{"shelf", WorkerShelf("ns", "job", "m1"), "ns/converge/worker/job/shelf/m1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
