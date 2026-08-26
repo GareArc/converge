@@ -130,6 +130,9 @@ func TestEngineInfoRendersDefaults(t *testing.T) {
 	if info.Job != "job" || info.Surface != converge.SurfaceWorker || info.RunMode != converge.Competing {
 		t.Fatalf("identity = %+v", info)
 	}
+	if info.Queue != "" {
+		t.Fatalf("Queue = %q, want empty before bind", info.Queue)
+	}
 	want := map[string]string{
 		"concurrency":    strconv.Itoa(DefaultConcurrency),
 		"visibility":     "5m",

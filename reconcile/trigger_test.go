@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -185,6 +186,26 @@ func TestNotificationsFromBindKeepsGivenQueue(t *testing.T) {
 	}
 	if trig.queue != "legacy:queue" {
 		t.Fatalf("queue = %q, want the foreign name unchanged", trig.queue)
+	}
+}
+
+func TestMissingMQErrorNamesTheTriggerConstructor(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	bareEngine := func() *engine {
+		e := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
+		e.deps = converge.JobDeps{Clock: clock, Observer: &convergetest.Recorder{}}
+		return e
+	}
+	err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(bareEngine())
+	if err == nil || !strings.Contains(err.Error(), "Notifications needs Options.MQ") {
+		t.Fatalf("Notifications bind error = %v, want it to name Notifications", err)
+	}
+	if strings.Contains(err.Error(), "NotificationsFrom") {
+		t.Fatalf("Notifications bind error = %v, must not name NotificationsFrom", err)
+	}
+	err = (NotificationsFrom("legacy:queue", NotificationsOpts{ID: RawID()}).(*notificationTrigger)).bind(bareEngine())
+	if err == nil || !strings.Contains(err.Error(), `NotificationsFrom("legacy:queue")`) {
+		t.Fatalf(`NotificationsFrom bind error = %v, want it to name NotificationsFrom("legacy:queue")`, err)
 	}
 }
 

@@ -57,9 +57,6 @@ func (e *engine) markReady() { e.readyOnce.Do(func() { close(e.ready) }) }
 
 func (e *engine) bindCore(deps converge.JobDeps) error {
 	e.deps = deps
-	if e.cfg.concurrency <= 0 {
-		e.cfg.concurrency = 1
-	}
 	mws := append(slices.Clone(deps.Middleware), e.cfg.middleware...)
 	final := func(ctx context.Context, r converge.Run) error {
 		return e.invoke(ctx, ID(r.ID))

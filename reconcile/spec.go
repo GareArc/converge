@@ -83,6 +83,8 @@ func newEngine(s Spec) (*engine, error) {
 				if tr.opts.ID == nil {
 					return nil, fail("NotificationsFrom needs an ID function")
 				}
+			} else if tr.opts.MQ != nil {
+				return nil, fail("Notifications always reads Options.MQ; MQ is NotificationsFrom only")
 			}
 		}
 	}

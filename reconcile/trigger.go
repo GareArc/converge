@@ -76,7 +76,10 @@ func (t *notificationTrigger) bind(e *engine) error {
 		t.mq = e.deps.MQ
 	}
 	if t.mq == nil {
-		return fmt.Errorf("reconcile: job %q: Notifications(%q) needs an MQ", e.cfg.name, t.queue)
+		if t.foreign {
+			return fmt.Errorf("reconcile: job %q: NotificationsFrom(%q) needs an MQ", e.cfg.name, t.queue)
+		}
+		return fmt.Errorf("reconcile: job %q: Notifications needs Options.MQ", e.cfg.name)
 	}
 	if e.cfg.runMode == converge.OnAllReplicas {
 		if _, ok := t.mq.(converge.BroadcastConsumer); !ok {

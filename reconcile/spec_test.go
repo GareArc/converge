@@ -41,6 +41,9 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"notifications-from trigger without id function", func(s *Spec) {
 			s.Triggers = append(s.Triggers, NotificationsFrom("q", NotificationsOpts{}))
 		}, "ID function"},
+		{"notifications trigger sets MQ", func(s *Spec) {
+			s.Triggers = append(s.Triggers, Notifications(NotificationsOpts{MQ: bareMQ{}}))
+		}, "MQ"},
 		{"no periodic trigger", func(s *Spec) {
 			s.Triggers = []Trigger{Notifications(NotificationsOpts{})}
 		}, "Schedule trigger"},
