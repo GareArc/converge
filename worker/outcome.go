@@ -30,6 +30,6 @@ type Shelve struct {
 	Reason string
 }
 
-func (d Shelve) Error() string { return "worker: shelved: " + d.Reason }
+func (s Shelve) Error() string { return "worker: shelved: " + s.Reason }
 
 func (Shelve) ControlSurface() converge.Surface { return converge.SurfaceWorker }

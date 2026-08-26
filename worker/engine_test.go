@@ -1841,6 +1841,47 @@ func TestShelveStopsAfterOneAttempt(t *testing.T) {
 	}
 }
 
+func TestShelveOnBroadcastWithoutKVDropsInsteadOfPanicking(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{
+		Namespace: wns,
+		KV:        func(*convergetest.Clock) converge.KV { return nil },
+	})
+	rt := w.Build(t)
+	tk := NewTask[string]("broadcast-shelve", TaskOpts{})
+	var warm, shelves atomic.Int64
+	err := Handle(rt, tk, func(_ context.Context, payload string) error {
+		if payload == "warm" {
+			warm.Add(1)
+			return nil
+		}
+		shelves.Add(1)
+		return Shelve{Reason: "card revoked"}
+	}, HandleOpts{RunMode: converge.OnAllReplicas})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	p := wProducer(t, w.MQ, w.Clock)
+	deadline := time.Now().Add(2 * time.Second)
+	for warm.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("broadcast subscription never became live")
+		}
+		if err := tk.Enqueue(context.Background(), p, "warm", EnqueueOpts{}); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return shelves.Load() == 1 })
+	convergetest.AssertStable(t, func() bool { return shelves.Load() == 1 })
+	if got := jobStats(t, rt, "broadcast-shelve").Parked; got != 0 {
+		t.Fatalf("Parked = %d, want 0 when there is no shelf to write to", got)
+	}
+}
+
 func TestDeadlineDestroysTheJob(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt", LeaseTTL: 30 * time.Second})
 	rt := w.Build(t)

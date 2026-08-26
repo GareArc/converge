@@ -543,11 +543,11 @@ func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m conve
 		return true
 	case Shelve:
 		e.observeRun(meta, took, err)
-		e.shelve(sctx, d, meta, m, v.Reason, nil)
+		e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil)
 		return true
 	case *Shelve:
 		e.observeRun(meta, took, err)
-		e.shelve(sctx, d, meta, m, v.Reason, nil)
+		e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil)
 		return true
 	}
 	return false
