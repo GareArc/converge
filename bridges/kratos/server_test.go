@@ -14,6 +14,20 @@ import (
 	"github.com/go-kratos/kratos/v2/transport"
 )
 
+type blockingReconciler struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingReconciler) Reconcile(ctx context.Context, id reconcile.ID) error {
+	select {
+	case r.entered <- struct{}{}:
+	default:
+	}
+	<-r.release
+	return nil
+}
+
 func buildRuntime(t *testing.T, register func(*converge.Runtime)) *converge.Runtime {
 	t.Helper()
 	h := convergetest.New(t)
@@ -85,6 +99,46 @@ type brokenKV struct {
 
 func (brokenKV) Get(context.Context, string) ([]byte, bool, error) {
 	return nil, false, errKVUnavailable
+}
+
+func TestStopReportsAnIncompleteDrain(t *testing.T) {
+	r := &blockingReconciler{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	if err := reconcile.Register(rt, reconcile.Spec{
+		Name:      "blocker",
+		Reconcile: r.Reconcile,
+		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv := convkratos.Server(rt)
+
+	started := make(chan error, 1)
+	go func() { started <- srv.Start(context.Background()) }()
+	select {
+	case <-rt.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime never became ready")
+	}
+	select {
+	case <-r.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconciler never ran")
+	}
+
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := srv.Stop(expired); !errors.Is(err, convkratos.ErrDrainIncomplete) {
+		t.Fatalf("Stop with an expired context = %v, want ErrDrainIncomplete", err)
+	}
+
+	close(r.release)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after the handler was released")
+	}
 }
 
 func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {

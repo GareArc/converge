@@ -301,41 +301,31 @@ func TestReadOnlyUnknownPath404(t *testing.T) {
 }
 
 func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
-	cases := []struct {
-		name    string
-		handler func(rt *converge.Runtime) http.Handler
-	}{
-		{"ReadOnlyHandler", func(rt *converge.Runtime) http.Handler { return debughttp.ReadOnlyHandler(rt) }},
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
+	rt := w.Build(t)
+	registerReconcileJob(t, rt, "license-refresh")
+
+	outer := http.NewServeMux()
+	outer.Handle("/debug/jobs/", debughttp.ReadOnlyHandler(rt))
+	srv := httptest.NewServer(outer)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/debug/jobs")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-			rt := w.Build(t)
-			registerReconcileJob(t, rt, "license-refresh")
-
-			outer := http.NewServeMux()
-			outer.Handle("/debug/jobs/", c.handler(rt))
-			srv := httptest.NewServer(outer)
-			t.Cleanup(srv.Close)
-
-			resp, err := http.Get(srv.URL + "/debug/jobs")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("status = %d, want 200 (the guide's own %q mounting must serve the bare path)", resp.StatusCode, "/debug/jobs/")
-			}
-			var body struct {
-				Jobs []map[string]any `json:"jobs"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if len(body.Jobs) != 1 || body.Jobs[0]["job"] != "license-refresh" {
-				t.Fatalf("jobs = %+v, want one row for license-refresh", body.Jobs)
-			}
-		})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the guide's own %q mounting must serve the bare path)", resp.StatusCode, "/debug/jobs/")
+	}
+	var body struct {
+		Jobs []map[string]any `json:"jobs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Jobs) != 1 || body.Jobs[0]["job"] != "license-refresh" {
+		t.Fatalf("jobs = %+v, want one row for license-refresh", body.Jobs)
 	}
 }
 
