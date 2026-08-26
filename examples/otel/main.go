@@ -66,8 +66,8 @@ func run() (err error) {
 	}
 
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:       "demo",
-		Reconciler: &flaky{},
+		Name:      "demo",
+		Reconcile: (&flaky{}).Reconcile,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(
 				reconcile.StringIDs(func(context.Context) ([]string, error) {

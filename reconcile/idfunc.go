@@ -27,16 +27,6 @@ func IDFromJSONField(field string) IDFunc {
 	}
 }
 
-func IDFromJSONFields(fields ...string) IDFunc {
-	return func(payload []byte) (ID, error) {
-		vals, err := jsonStringFields(payload, fields...)
-		if err != nil {
-			return "", err
-		}
-		return JoinID(vals...), nil
-	}
-}
-
 func jsonStringFields(payload []byte, fields ...string) ([]string, error) {
 	if len(fields) == 0 {
 		return nil, errors.New("reconcile: no fields specified")

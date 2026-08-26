@@ -83,9 +83,9 @@ func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:             "unreachable",
-		Reconciler:       reconcile.Func(func(context.Context, reconcile.ID) error { return nil }),
-		AllowUnscheduled: true,
+		Name:      "unreachable",
+		Reconcile: func(context.Context, reconcile.ID) error { return nil },
+		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour))},
 	}); err != nil {
 		t.Fatal(err)
 	}

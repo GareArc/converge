@@ -56,10 +56,12 @@ func TestListTriggerDrivesReconcileJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:             "member-sync",
-		Reconciler:       reconcile.Func(func(ctx context.Context, id reconcile.ID) error { return nil }),
-		Triggers:         []reconcile.Trigger{convredis.ListTrigger(client, "enterprise:member:sync", reconcile.IDFromJSONField("workspace_id"))},
-		AllowUnscheduled: true,
+		Name:      "member-sync",
+		Reconcile: func(ctx context.Context, id reconcile.ID) error { return nil },
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
+			convredis.ListTrigger(client, "enterprise:member:sync", reconcile.IDFromJSONField("workspace_id")),
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

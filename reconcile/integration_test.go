@@ -41,12 +41,12 @@ func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 	synced := map[reconcile.ID]int{}
 	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "workspace-credentials",
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
+		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
 			synced[id]++
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(
 				reconcile.StringIDs(func(context.Context) ([]string, error) {
@@ -122,14 +122,14 @@ func TestMalformedHintsCountedAndDropped(t *testing.T) {
 	var got []reconcile.ID
 	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "member-sync",
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
+		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
 			got = append(got, id)
 			return nil
-		}),
-		AllowUnscheduled: true,
+		},
 		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
 			reconcile.OnMessage("member-events", reconcile.IDFromJSONField("workspace_id"), reconcile.OnMessageOpts{}),
 		},
 	})

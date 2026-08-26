@@ -25,9 +25,9 @@ func TestReconcileRoundTrip(t *testing.T) {
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "workspace-credentials",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
 				return nil, nil
@@ -52,12 +52,12 @@ func TestScheduleBoundaryDrivesReconcile(t *testing.T) {
 	runs := 0
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "app-runner",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			mu.Lock()
 			runs++
 			mu.Unlock()
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
 				return []string{"app_13"}, nil
@@ -93,12 +93,12 @@ func TestRunPassImmediateWithoutClockMovement(t *testing.T) {
 	runs := 0
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "backfill",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			mu.Lock()
 			runs++
 			mu.Unlock()
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
 				return []string{"app_1"}, nil
@@ -259,9 +259,9 @@ func TestLargeClockAdvanceDoesNotDropLease(t *testing.T) {
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "steady-runner",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
 				return []string{"seed"}, nil
@@ -520,9 +520,9 @@ func TestEventsReadableAfterStop(t *testing.T) {
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "steady",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
 				return []string{"id"}, nil
@@ -682,9 +682,9 @@ func TestDrainWithCustomMQDegradesToHookQuietWithoutPanicking(t *testing.T) {
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "steady",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
 				return nil, nil

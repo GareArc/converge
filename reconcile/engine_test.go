@@ -29,7 +29,7 @@ type testEngine struct {
 	wg     *sync.WaitGroup
 }
 
-func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn Func) *testEngine {
+func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn func(ctx context.Context, id ID) error) *testEngine {
 	t.Helper()
 	clock := convergetest.NewClock(wqStart)
 	rec := &convergetest.Recorder{}
@@ -39,7 +39,7 @@ func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn Func) *testEngin
 	if cfg.concurrency == 0 {
 		cfg.concurrency = 1
 	}
-	cfg.rec = fn
+	cfg.fn = fn
 	e := &engine{cfg: cfg, ready: make(chan struct{})}
 	deps := converge.JobDeps{
 		KV:       kv,
@@ -60,7 +60,7 @@ func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn Func) *testEngin
 	return &testEngine{e: e, clock: clock, rec: rec, cancel: cancel, hctx: hctx, hstop: hstop, wg: &wg}
 }
 
-func startEngine(t *testing.T, cfg config, fn Func) *testEngine {
+func startEngine(t *testing.T, cfg config, fn func(ctx context.Context, id ID) error) *testEngine {
 	t.Helper()
 	return startEngineKV(t, cfg, inmem.NewKV(), fn)
 }
@@ -260,7 +260,7 @@ func TestMiddlewareWrapsEveryRunOutermostFirst(t *testing.T) {
 	}
 	clock := convergetest.NewClock(wqStart)
 	rec := &convergetest.Recorder{}
-	e := &engine{cfg: config{name: "job", concurrency: 1, middleware: []converge.Middleware{mkmw("local")}, rec: Func(func(ctx context.Context, id ID) error { return nil })}, ready: make(chan struct{})}
+	e := &engine{cfg: config{name: "job", concurrency: 1, middleware: []converge.Middleware{mkmw("local")}, fn: func(ctx context.Context, id ID) error { return nil }}, ready: make(chan struct{})}
 	deps := converge.JobDeps{
 		KV:         inmem.NewKVWithClock(clock),
 		Observer:   rec,
@@ -285,22 +285,6 @@ func TestMiddlewareWrapsEveryRunOutermostFirst(t *testing.T) {
 	if order[0] != "global:x" || order[1] != "local:x" {
 		t.Fatalf("middleware order = %v", order)
 	}
-}
-
-func TestRateLimitThrottlesRuns(t *testing.T) {
-	var mu sync.Mutex
-	calls := 0
-	te := startEngine(t, config{concurrency: 4, rateLimit: converge.Rate{Events: 1, Per: time.Hour}}, func(ctx context.Context, id ID) error {
-		mu.Lock()
-		defer mu.Unlock()
-		calls++
-		return nil
-	})
-	te.e.hint(context.Background(), "a")
-	te.e.hint(context.Background(), "b")
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
-	advanceUntil(t, te, 10*time.Minute, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 2 })
 }
 
 func TestEmptyIDHintRejectedUnlessSingle(t *testing.T) {
@@ -330,7 +314,7 @@ func TestHintWhenNotRunningIsDropped(t *testing.T) {
 func TestEmptyIDHintAfterTeardownStillReportsDiscard(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	rec := &convergetest.Recorder{}
-	e := &engine{cfg: config{name: "job", concurrency: 1, rec: Func(func(context.Context, ID) error { return nil })}, ready: make(chan struct{})}
+	e := &engine{cfg: config{name: "job", concurrency: 1, fn: func(context.Context, ID) error { return nil }}, ready: make(chan struct{})}
 	if err := e.bindCore(converge.JobDeps{KV: inmem.NewKVWithClock(clock), Observer: rec, Clock: clock}); err != nil {
 		t.Fatal(err)
 	}
@@ -433,8 +417,8 @@ func TestHintRespectsBackoff(t *testing.T) {
 
 func TestHintDoesNotPanicRacingShutdown(t *testing.T) {
 	spec := Spec{
-		Name:       "job",
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Name:      "job",
+		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers: []Trigger{Schedule(StringIDs(func(context.Context) ([]string, error) {
 			return []string{"x"}, nil
 		}), Every(time.Hour))},

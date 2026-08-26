@@ -13,9 +13,9 @@ import (
 
 func okSpec() Spec {
 	return Spec{
-		Name:       "job",
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Name:      "job",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}
 }
 
@@ -28,35 +28,23 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"valid", func(s *Spec) {}, ""},
 		{"empty name", func(s *Spec) { s.Name = "" }, "Name"},
 		{"slash in name", func(s *Spec) { s.Name = "a/b" }, "must not contain"},
-		{"nil reconciler", func(s *Spec) { s.Reconciler = nil }, "Reconciler"},
+		{"nil reconcile func", func(s *Spec) { s.Reconcile = nil }, "Reconcile"},
 		{"negative concurrency", func(s *Spec) { s.Concurrency = -1 }, "Concurrency"},
-		{"negative rate", func(s *Spec) { s.RateLimit = converge.Rate{Events: -1, Per: time.Second} }, "RateLimit"},
-		{"half rate", func(s *Spec) { s.RateLimit = converge.Rate{Events: 5} }, "RateLimit"},
-		{"all replicas with rate limit", func(s *Spec) {
-			s.RunMode = converge.OnAllReplicas
-			s.RateLimit = converge.Rate{Events: 1, Per: time.Second}
-		}, "RateLimit"},
 		{"nil trigger", func(s *Spec) { s.Triggers = append(s.Triggers, nil) }, "nil"},
 		{"zero id source", func(s *Spec) { s.Triggers = []Trigger{Schedule(IDSource{}, Every(time.Hour))} }, "IDSource"},
 		{"bad cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Every(-time.Second))} }, "positive"},
 		{"zero cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cadence{})} }, "Cadence"},
 		{"bad cron", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cron("@daily", CronOpts{}))} }, "descriptors"},
 		{"message trigger without queue", func(s *Spec) {
-			s.AllowUnscheduled = true
-			s.Triggers = []Trigger{OnMessage("", RawID(), OnMessageOpts{})}
+			s.Triggers = append(s.Triggers, OnMessage("", RawID(), OnMessageOpts{}))
 		}, "queue"},
 		{"message trigger without id func", func(s *Spec) {
-			s.AllowUnscheduled = true
-			s.Triggers = []Trigger{OnMessage("q", nil, OnMessageOpts{})}
+			s.Triggers = append(s.Triggers, OnMessage("q", nil, OnMessageOpts{}))
 		}, "IDFunc"},
 		{"no periodic trigger", func(s *Spec) {
 			s.Triggers = []Trigger{OnMessage("q", RawID(), OnMessageOpts{})}
-		}, "AllowUnscheduled"},
-		{"no periodic trigger allowed", func(s *Spec) {
-			s.AllowUnscheduled = true
-			s.Triggers = []Trigger{OnMessage("q", RawID(), OnMessageOpts{})}
-		}, ""},
-		{"no triggers at all", func(s *Spec) { s.Triggers = nil }, "AllowUnscheduled"},
+		}, "Schedule trigger"},
+		{"no triggers at all", func(s *Spec) { s.Triggers = nil }, "Schedule trigger"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -84,10 +72,10 @@ func TestCompetingIsRejectedOnReconcile(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	err := Register(rt, Spec{
-		Name:       "nope",
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(SingleID(), Every(time.Minute))},
-		RunMode:    converge.Competing,
+		Name:      "nope",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
+		RunMode:   converge.Competing,
 	})
 	if err == nil {
 		t.Fatal("Competing accepted on the reconcile surface")
@@ -101,8 +89,8 @@ func TestOnAllReplicasAcceptsVersionsAndPagedIDs(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	if err := Register(rt, Spec{
-		Name:       "broadcast-paged",
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
+		Name:      "broadcast-paged",
+		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers: []Trigger{Schedule(
 			IDsByPage(func(context.Context, string) ([]ID, string, error) { return nil, "", nil }),
 			Every(time.Minute))},
@@ -117,6 +105,19 @@ type fixedVersions struct{}
 
 func (fixedVersions) Latest(context.Context, ID) (Version, error) {
 	return 1, nil
+}
+
+func TestSpecRequiresASchedule(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	err := Register(rt, Spec{
+		Name:      "notifications-only",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{OnMessage("q", RawID(), OnMessageOpts{})},
+	})
+	if err == nil {
+		t.Fatal("a job with no Schedule trigger was accepted")
+	}
 }
 
 func TestNewEngineAppliesDefaults(t *testing.T) {
@@ -225,22 +226,14 @@ func TestEngineInfoRendersUnknownTriggerAsCustom(t *testing.T) {
 
 func TestEngineInfoRendersOptionalSettings(t *testing.T) {
 	s := okSpec()
-	s.RateLimit = converge.Rate{Events: 5, Per: time.Second}
 	s.Versions = fakeVersions{}
-	s.AllowUnscheduled = true
 	e, err := newEngine(s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	info := e.Info()
-	if got := info.Settings["rate-limit"]; got != "5/1s" {
-		t.Fatalf("rate-limit = %q, want 5/1s", got)
-	}
 	if got := info.Settings["versions"]; got != "custom" {
 		t.Fatalf("versions = %q, want custom", got)
-	}
-	if got := info.Settings["allow-unscheduled"]; got != "true" {
-		t.Fatalf("allow-unscheduled = %q, want true", got)
 	}
 }
 
@@ -250,10 +243,8 @@ func TestEngineInfoOmitsZeroSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	info := e.Info()
-	for _, key := range []string{"rate-limit", "versions", "allow-unscheduled"} {
-		if _, ok := info.Settings[key]; ok {
-			t.Fatalf("Settings[%q] must be omitted for zero values, got %+v", key, info.Settings)
-		}
+	if _, ok := info.Settings["versions"]; ok {
+		t.Fatalf(`Settings["versions"] must be omitted for zero values, got %+v`, info.Settings)
 	}
 }
 

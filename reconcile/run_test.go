@@ -86,9 +86,9 @@ func released(rec *convergetest.Recorder) int {
 
 func specWithSchedule() Spec {
 	return Spec{
-		Name:       "job",
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Name:      "job",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}
 }
 
@@ -113,10 +113,10 @@ func TestRunRejectsBadDeps(t *testing.T) {
 
 func TestVersionsRequireKV(t *testing.T) {
 	s := Spec{
-		Name:             "job",
-		Reconciler:       Func(func(context.Context, ID) error { return nil }),
-		AllowUnscheduled: true,
-		Versions:         fakeVersions{},
+		Name:      "job",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{customPeriodic{}},
+		Versions:  fakeVersions{},
 	}
 	e, err := newEngine(s)
 	if err != nil {
@@ -159,13 +159,13 @@ func TestLeaseLossStepsDownAndReelects(t *testing.T) {
 func TestLeaseLossCancelsInFlightNeutrally(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once
-	blocked := Func(func(ctx context.Context, id ID) error {
+	blocked := func(ctx context.Context, id ID) error {
 		once.Do(func() { close(started) })
 		<-ctx.Done()
 		return ctx.Err()
-	})
+	}
 	spec := specWithSchedule()
-	spec.Reconciler = blocked
+	spec.Reconcile = blocked
 	le, _ := startRun(t, spec, nil)
 	select {
 	case <-started:
@@ -186,11 +186,11 @@ func TestShutdownGivesDrainGraceThenReturnsNil(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once
 	spec := specWithSchedule()
-	spec.Reconciler = Func(func(ctx context.Context, id ID) error {
+	spec.Reconcile = func(ctx context.Context, id ID) error {
 		once.Do(func() { close(started) })
 		<-ctx.Done()
 		return ctx.Err()
-	})
+	}
 	le, cancel := startRun(t, spec, nil)
 	select {
 	case <-started:
@@ -239,10 +239,10 @@ func TestShutdownReleasesLease(t *testing.T) {
 
 func TestAllReplicasRunsWithoutLease(t *testing.T) {
 	spec := Spec{
-		Name:       "cache",
-		RunMode:    converge.OnAllReplicas,
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Name:      "cache",
+		RunMode:   converge.OnAllReplicas,
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}
 	e, err := newEngine(spec)
 	if err != nil {
@@ -339,12 +339,12 @@ func TestStandbyHintSurvivesIntoLeadership(t *testing.T) {
 	var got []ID
 	spec := Spec{
 		Name: "job",
-		Reconciler: Func(func(_ context.Context, id ID) error {
+		Reconcile: func(_ context.Context, id ID) error {
 			mu.Lock()
 			defer mu.Unlock()
 			got = append(got, id)
 			return nil
-		}),
+		},
 		Triggers: []Trigger{Schedule(IDs(func(context.Context) ([]ID, error) { return nil, nil }), Every(time.Hour))},
 	}
 	e, err := newEngine(spec)
@@ -566,11 +566,11 @@ func startDrainingLeader(t *testing.T) (*convergetest.Clock, *flakyLease, contex
 	started := make(chan struct{})
 	var once sync.Once
 	spec := specWithSchedule()
-	spec.Reconciler = Func(func(ctx context.Context, id ID) error {
+	spec.Reconcile = func(ctx context.Context, id ID) error {
 		once.Do(func() { close(started) })
 		<-ctx.Done()
 		return ctx.Err()
-	})
+	}
 	e, err := newEngine(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -644,9 +644,9 @@ func TestFailingIDKeepsRetryingForever(t *testing.T) {
 	rt := h.Build(t)
 	var calls atomic.Int64
 	if err := Register(rt, Spec{
-		Name:       "always-fails",
-		Reconciler: Func(func(context.Context, ID) error { calls.Add(1); return errors.New("boom") }),
-		Triggers:   []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Name:      "always-fails",
+		Reconcile: func(context.Context, ID) error { calls.Add(1); return errors.New("boom") },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,6 @@ import (
 	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/mw"
 	"github.com/GareArc/converge/internal/sig"
-	"github.com/GareArc/converge/internal/tokenbucket"
 )
 
 const (
@@ -24,22 +23,19 @@ const (
 )
 
 type config struct {
-	name             string
-	rec              Reconciler
-	triggers         []Trigger
-	concurrency      int
-	runMode          converge.RunMode
-	versions         VersionSource
-	rateLimit        converge.Rate
-	middleware       []converge.Middleware
-	allowUnscheduled bool
-	single           bool
+	name        string
+	fn          func(ctx context.Context, id ID) error
+	triggers    []Trigger
+	concurrency int
+	runMode     converge.RunMode
+	versions    VersionSource
+	middleware  []converge.Middleware
+	single      bool
 }
 
 type engine struct {
 	cfg       config
 	deps      converge.JobDeps
-	limit     *tokenbucket.Bucket
 	handler   converge.Handler
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -69,7 +65,6 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 		return e.invoke(ctx, ID(r.ID))
 	}
 	e.handler = mw.Chain(mws, final)
-	e.limit = tokenbucket.New(e.cfg.rateLimit, deps.Clock)
 	curve := backoff.Curve{Min: backoffMin, Max: backoffMax}
 	e.mu.Lock()
 	e.queue = newWakeQueue(deps.Clock, wakePolicy{
@@ -186,14 +181,8 @@ func (e *engine) Info() converge.JobInfo {
 	if trig := triggersSetting(e.cfg.triggers); trig != "" {
 		settings["triggers"] = trig
 	}
-	if !e.cfg.rateLimit.IsZero() {
-		settings["rate-limit"] = e.cfg.rateLimit.String()
-	}
 	if v := versionsSetting(e.cfg.versions); v != "" {
 		settings["versions"] = v
-	}
-	if e.cfg.allowUnscheduled {
-		settings["allow-unscheduled"] = "true"
 	}
 	return converge.JobInfo{
 		Job:      e.cfg.name,
@@ -275,10 +264,6 @@ func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.Wa
 		if !ok {
 			return
 		}
-		if err := e.limit.Wait(ctx); err != nil {
-			e.queue.finish(id, finishNeutral, 0)
-			return
-		}
 		wg.Add(1)
 		go func(id ID) {
 			defer wg.Done()
@@ -349,7 +334,7 @@ func (e *engine) invoke(ctx context.Context, id ID) (err error) {
 			err = panicErr(e.cfg.name, r)
 		}
 	}()
-	return e.cfg.rec.Reconcile(ctx, id)
+	return e.cfg.fn(ctx, id)
 }
 
 func (e *engine) settle(hctx context.Context, id ID, err error, took time.Duration, snap versionSnapshot) {

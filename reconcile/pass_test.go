@@ -67,10 +67,10 @@ func TestMissedTicksRunOnceOnReturn(t *testing.T) {
 	var sweeps atomic.Int64
 	if err := Register(rt, Spec{
 		Name: "hourly",
-		Reconciler: Func(func(context.Context, ID) error {
+		Reconcile: func(context.Context, ID) error {
 			sweeps.Add(1)
 			return nil
-		}),
+		},
 		Triggers: []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}); err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestAllReplicasScheduleIsReplicaLocal(t *testing.T) {
 			concurrency: 1,
 			single:      true,
 			runMode:     converge.OnAllReplicas,
-			rec:         Func(func(ctx context.Context, id ID) error { return nil }),
+			fn:          func(ctx context.Context, id ID) error { return nil },
 		}, ready: make(chan struct{})}
 		if err := e.bindCore(converge.JobDeps{KV: kv, Observer: &convergetest.Recorder{}, Clock: clock}); err != nil {
 			t.Fatal(err)
@@ -412,10 +412,10 @@ func TestRunPassNowInactiveErrors(t *testing.T) {
 
 func TestRunPassNowWithoutScheduleTriggerErrors(t *testing.T) {
 	spec := Spec{
-		Name:             "job",
-		Reconciler:       Func(func(context.Context, ID) error { return nil }),
-		AllowUnscheduled: true,
-		RunMode:          converge.OnAllReplicas,
+		Name:      "job",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{customPeriodic{}},
+		RunMode:   converge.OnAllReplicas,
 	}
 	e, err := newEngine(spec)
 	if err != nil {
@@ -445,12 +445,12 @@ func TestRunPassNowEnumeratesFullIDSource(t *testing.T) {
 	counts := map[ID]int{}
 	spec := Spec{
 		Name: "job",
-		Reconciler: Func(func(_ context.Context, id ID) error {
+		Reconcile: func(_ context.Context, id ID) error {
 			mu.Lock()
 			counts[id]++
 			mu.Unlock()
 			return nil
-		}),
+		},
 		Triggers: []Trigger{Schedule(StringIDs(func(context.Context) ([]string, error) {
 			return []string{"a", "b", "c"}, nil
 		}), Every(time.Hour))},
@@ -486,12 +486,12 @@ func TestRunPassNowDoesNotDisturbScheduledLastFireOrCursor(t *testing.T) {
 	scheduledRuns := 0
 	spec := Spec{
 		Name: "job",
-		Reconciler: Func(func(context.Context, ID) error {
+		Reconcile: func(context.Context, ID) error {
 			mu.Lock()
 			scheduledRuns++
 			mu.Unlock()
 			return nil
-		}),
+		},
 		Triggers: []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}
 	le, _ := startRun(t, spec, nil)
@@ -541,9 +541,9 @@ func TestRunPassNowCtxCancellationAbortsAndReturnsCtxErr(t *testing.T) {
 		return nil, errors.New("db hiccup")
 	})
 	spec := Spec{
-		Name:       "job",
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(src, Every(time.Hour))},
+		Name:      "job",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(src, Every(time.Hour))},
 	}
 	le, _ := startRun(t, spec, nil)
 	select {
@@ -590,9 +590,9 @@ func TestRunPassNowDoesNotPanicWhenQueueNilsMidPass(t *testing.T) {
 		return []ID{"a"}, nil
 	})
 	spec := Spec{
-		Name:       "job",
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(src, Every(time.Hour))},
+		Name:      "job",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(src, Every(time.Hour))},
 	}
 	e, err := newEngine(spec)
 	if err != nil {

@@ -11,24 +11,14 @@ import (
 	"github.com/GareArc/converge/internal/hook"
 )
 
-type Reconciler interface {
-	Reconcile(ctx context.Context, id ID) error
-}
-
-type Func func(ctx context.Context, id ID) error
-
-func (f Func) Reconcile(ctx context.Context, id ID) error { return f(ctx, id) }
-
 type Spec struct {
-	Name             string
-	Reconciler       Reconciler
-	Triggers         []Trigger
-	Concurrency      int
-	RunMode          converge.RunMode
-	Versions         VersionSource
-	RateLimit        converge.Rate
-	Middleware       []converge.Middleware
-	AllowUnscheduled bool
+	Name        string
+	Reconcile   func(ctx context.Context, id ID) error
+	Triggers    []Trigger
+	Concurrency int
+	RunMode     converge.RunMode
+	Versions    VersionSource
+	Middleware  []converge.Middleware
 }
 
 func newEngine(s Spec) (*engine, error) {
@@ -39,28 +29,20 @@ func newEngine(s Spec) (*engine, error) {
 	if strings.Contains(s.Name, "/") {
 		return nil, fail(`Name must not contain "/"`)
 	}
-	if s.Reconciler == nil {
-		return nil, fail("Spec.Reconciler is required")
+	if s.Reconcile == nil {
+		return nil, fail("Spec.Reconcile is required")
 	}
 	if s.Concurrency < 0 {
 		return nil, fail("Concurrency must not be negative")
 	}
-	if s.RateLimit.Events < 0 || s.RateLimit.Per < 0 {
-		return nil, fail("RateLimit must not be negative")
-	}
-	if !s.RateLimit.IsZero() && (s.RateLimit.Events == 0 || s.RateLimit.Per == 0) {
-		return nil, fail("RateLimit needs both Events and Per")
-	}
 	cfg := config{
-		name:             s.Name,
-		rec:              s.Reconciler,
-		triggers:         slices.Clone(s.Triggers),
-		concurrency:      s.Concurrency,
-		runMode:          s.RunMode,
-		versions:         s.Versions,
-		rateLimit:        s.RateLimit,
-		middleware:       slices.Clone(s.Middleware),
-		allowUnscheduled: s.AllowUnscheduled,
+		name:        s.Name,
+		fn:          s.Reconcile,
+		triggers:    slices.Clone(s.Triggers),
+		concurrency: s.Concurrency,
+		runMode:     s.RunMode,
+		versions:    s.Versions,
+		middleware:  slices.Clone(s.Middleware),
 	}
 	if cfg.concurrency == 0 {
 		cfg.concurrency = 1
@@ -70,9 +52,6 @@ func newEngine(s Spec) (*engine, error) {
 	}
 	if cfg.runMode == converge.Competing {
 		return nil, fail("Competing is a worker mode")
-	}
-	if cfg.runMode == converge.OnAllReplicas && !s.RateLimit.IsZero() {
-		return nil, fail("OnAllReplicas cannot use RateLimit")
 	}
 	periodic := false
 	for _, t := range cfg.triggers {
@@ -105,8 +84,8 @@ func newEngine(s Spec) (*engine, error) {
 			}
 		}
 	}
-	if !periodic && !cfg.allowUnscheduled {
-		return nil, fail("no periodic trigger; set AllowUnscheduled to opt out of the schedule guarantee")
+	if !periodic {
+		return nil, fail("no Schedule trigger; every reconcile job needs one")
 	}
 	return &engine{cfg: cfg, ready: make(chan struct{})}, nil
 }
