@@ -68,7 +68,10 @@ func registerJobs(rt *converge.Runtime, rdb *redis.Client, cfg Config) error {
 				return err
 			}
 			if inbound > 0 {
-				return rdb.Decr(ctx, "warehouse:"+string(id)+":inbound").Err()
+				if err := rdb.Decr(ctx, "warehouse:"+string(id)+":inbound").Err(); err != nil {
+					return err
+				}
+				return reconcile.CheckAgain{In: time.Second}
 			}
 			return nil
 		}),
@@ -90,7 +93,10 @@ func registerJobs(rt *converge.Runtime, rdb *redis.Client, cfg Config) error {
 }
 
 func main() {
-	cfg := configFromEnv()
+	cfg, err := configFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer rdb.Close()
@@ -120,7 +126,14 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/debug/jobs/", debughttp.ReadOnlyHandler(rt))
-	debug := &http.Server{Addr: cfg.DebugAddr, Handler: mux}
+	debug := &http.Server{
+		Addr:              cfg.DebugAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() {
 		if err := debug.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Println("debug server:", err)
