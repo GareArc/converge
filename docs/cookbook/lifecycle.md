@@ -42,34 +42,37 @@ and converge writes its own [tombstone](../glossary.md#tombstone) so the
 decision survives restarts. A cutover date is the case it was built for.
 
 **`StopKey(key)`** is for an end somebody has to *decide*. The job stops once
-that key exists in `KV`, and three things about it are easy to get wrong:
-
-- The string is used **exactly as given** — not namespaced, not prefixed. It
-  is a raw `KV` key. Pick one your `Options.Namespace` would never build.
-- **Presence is the signal**; the value is never read. Write anything.
-- That key *is* the tombstone. There is no second record.
-
-`StopKey` is the only lever an operator has over a job's life, and it is
-deliberately not an HTTP route: setting it means having access to the `KV`.
-That is the whole of the ops surface for ending a job.
-
-## Terminal means terminal
-
-Destruction latches. Once a replica has seen the tombstone it stops the job
-for good, and deleting the key afterwards does not bring it back on that
-replica. A *fresh* process, though, would not find the key and would start
-the job again — which is why "delete the key" is not an undo, and why the
-only real way to retire a job is to delete its code.
-
-How long "up to" is depends on the surface and the
-[run mode](../glossary.md#run-mode); the
+that key exists in `KV`: a raw key used exactly as you wrote it, whose
+presence is the whole signal, and which *is* the tombstone. The
 [operations reference](../reference/operations.md#destroying-a-job) has the
-table. One row is worth reading before you rely on a stop key: a
-[reconcile](../glossary.md#reconcile) job on `OnAllReplicas` checks only at
-the start of each [sweep](../glossary.md#sweep), because it has no
-[lease](../glossary.md#lease) heartbeat to piggyback on. Set a stop key on a
-broadcast job with an hourly [cadence](../glossary.md#cadence) and you may
-wait an hour.
+rules; two of their consequences are worth planning around.
+
+This is the only lever an operator has over a job's life, and it is
+deliberately not an HTTP route. Setting the key means having access to the
+`KV`, and that is the whole of the ops surface for ending a job.
+
+## One-way, and slow to be noticed
+
+It is also a lever that does not come back. Destruction latches in
+memory the moment a replica sees the tombstone, so deleting the key
+afterwards does not restore the job on any process that already stopped it —
+it only lets a *fresh* process start the job again, which is the worst of
+both. Retiring a job for real is a code change, and a separate deployment
+from the one that set the key. Which is why the question at the top of this
+page is worth answering honestly: a stop condition you did not need is a
+decision you cannot take back.
+
+Nothing pushes the decision, either. Every engine polls for the tombstone, so
+there is a gap between writing the key and the job stopping, and how long
+depends on the surface and the [run mode](../glossary.md#run-mode). Three of
+the four combinations check on a clock tick — the
+[lease](../glossary.md#lease) heartbeat at `LeaseTTL/3`, ten seconds at the
+default, or a worker consumer's own thirty seconds. The fourth is the one to
+plan around: a [reconcile](../glossary.md#reconcile) job on `OnAllReplicas`
+has no lease heartbeat to piggyback on and checks only at the start of each
+[sweep](../glossary.md#sweep), so its [cadence](../glossary.md#cadence) *is*
+its detection latency. Set a stop key on a broadcast job that sweeps hourly
+and you may wait an hour.
 
 ## What happens to work that keeps arriving
 

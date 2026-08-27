@@ -70,35 +70,33 @@ cust-c-5004 applies=1 ready=true rechecks-asked=0
 ## What a deferral costs, and what it does not
 
 Nothing, is the short answer, and that is the point of having a value
-separate from an error. A `CheckAgain` **clears** the ID's consecutive
-failure count and stamps its last success, so an ID that failed three times
-and then reported "not ready" has its backoff curve reset — the next real
-failure starts at one second again, not at eight. A deferred ID is not a
-[failing ID](../glossary.md#failing-id) and is not counted in
-`JobStats.Failing`.
+separate from an error. A deferred ID is not a
+[failing ID](../glossary.md#failing-id): it is not counted in
+`JobStats.Failing`, it does not appear in `failing_ids`, and it *clears*
+whatever consecutive-failure count the ID had built up.
 
-Four edges are worth knowing before you build a long poll out of this:
+The mechanics converge puts around a deferral — the floor under `In`, the
+substitution that keeps `In: 0` from spinning, and what a pending trigger
+does to an ID waiting one out — are in the
+[reconcile reference](../reference/reconcile.md#checkagain-and-erroutdated).
+Two of them decide the numbers on this page.
 
-- **`In: 0` is not "immediately".** Every deferral delay is floored at 250ms
-  and jittered a little above it, because a zero-delay deferral is a spin
-  loop.
-- **Your delay is honoured ten times out of every eleven.** On the eleventh
-  consecutive deferral converge substitutes a delay from its own 1s-to-15m
-  curve, then starts the count of ten over, stepping one place further along
-  that curve each time it substitutes. The curve starts at one second, so
-  against a fifteen-second `In` the first few substitutions are *shorter*
-  than the delay you asked for, not longer. This is a bound against
-  `In: 0` spinning; a namespace that will never be ready only starts costing
-  less once the curve has climbed past your own delay.
-- **A deferred ID is not protected from being pulled forward.** Any trigger
-  moves it to the front — a sweep as much as a notification. This is the
-  opposite of failure backoff, which only a notification bypasses. If your
-  schedule is short and your `In` is long, the schedule wins.
-- **A worker outcome returned here is a plain failure.** Returning
-  `worker.Snooze` from a reconcile function is not reinterpreted as a
-  deferral: the ID goes into failure backoff with your value as the error.
-  The mirror case is worse, and it is in
-  [durable work](durable-work.md#the-two-surfaces-do-not-share-outcomes).
+**A sweep pulls a deferred ID forward exactly as hard as a notification
+does.** Against the thirty-minute schedule above that never shows. Shorten
+the schedule to a minute and the schedule, not your `In`, becomes the poll
+interval — so if you are tuning `In` and seeing no change, that is where it
+went. (Failure backoff is the opposite: only a notification bypasses that.)
+
+**The substitution is a bound on spinning, not a way to give up.** It never
+stops visiting the ID and never sets it aside; it only stretches the delays
+it substitutes for yours, up to a fifteen-minute ceiling. Nothing in converge
+escalates a `CheckAgain` loop with no end, so noticing one is your own code's
+job.
+
+And the value from the other surface is not a synonym for this one.
+`worker.Snooze` returned from a reconcile function is a plain failure rather
+than a deferral; the mirror case is worse, and it is in
+[durable work](durable-work.md#the-two-surfaces-do-not-share-outcomes).
 
 ## Reading it in production
 
@@ -115,7 +113,6 @@ Alert on the outcome attribute, or on `JobStats.Failing`, and not on the log
 level.
 
 If you want to know how long an ID has been stuck in this loop, converge does
-not count that for you. A deferral is not an attempt, `JobStats` has no field
-for it, and a deferred ID is not in `failing_ids` either — it is not failing.
-Keep the count in your own row, next to whatever `apply` wrote, and treat it
-as your data rather than the library's.
+not count that for you: a deferral is not an attempt, and nothing in `Stats`
+has a field for it. Keep the count in your own row, next to whatever `apply`
+wrote, and treat it as your data rather than the library's.

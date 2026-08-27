@@ -240,7 +240,7 @@ names — `worker.Snooze{In: d}`, never `worker.Snooze{d}`.
 
 | Return | Outcome | What happens |
 | --- | --- | --- |
-| `Snooze{In: d}` | `Deferred` | The delivery is acknowledged and the message republished after `d`, with the logical attempt folded forward so it does not move. Costs no retries. |
+| `Snooze{In: d}` | `Deferred` | The delivery is acknowledged and the message republished after `d`, with the logical attempt folded back so it does not move. Costs no retries. |
 | `Discard{Reason: s}` | `Discarded` | Acknowledged and forgotten, deliberately. Nothing is kept. |
 | `Shelve{Reason: s}` | `Shelved` | Stopped now and written to the shelf under your own reason string. |
 

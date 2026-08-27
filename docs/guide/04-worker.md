@@ -263,7 +263,7 @@ in-flight message out. The two disagree on purpose. When converge
 republishes a message as a fresh one, the transport's count starts over at
 one; the logical attempt carries on from where it was, because it is written
 into the message's **envelope**, the `converge.*` headers converge attaches
-at enqueue and folds forward on every republish. You never write those
+at enqueue and folds back on every republish. You never write those
 headers and you should never need to read them. When the two numbers
 disagree, the logical attempt is the one that means anything.
 

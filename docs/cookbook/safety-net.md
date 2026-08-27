@@ -76,9 +76,10 @@ and the [sweep](../glossary.md#sweep) at 03:00 tomorrow is not what saved
 it.
 
 The same thing read from the other end: a safety net that is failing costs
-you about four calls an hour, forever, per failing ID. That is the price of
-never benching anything, and it is why the ceiling is fifteen minutes rather
-than an hour.
+you between four and eight calls an hour, forever, per failing ID — every
+delay is jittered into the half-interval below the ceiling, so the fifteen
+minutes is a maximum and not a period. That is the price of never benching
+anything, and it is why the ceiling is fifteen minutes rather than an hour.
 
 ## Picking the period
 
@@ -123,8 +124,10 @@ a-1003 seats=2 tier=starter runs=1
 Two things in that output are worth reading twice. `a-1001` ran twice, and
 **both runs report `succeeded`** — the function did succeed; the re-run is
 not a retry and not a failure, and nothing in the log distinguishes it from
-an ordinary second visit. The second is that `attempt` stayed at 1, because a
-version re-run does not touch the failure count.
+an ordinary second visit. The second is that `attempt` stayed at 1, because
+this ID had never failed — and a version re-run *clears* the failure count
+rather than adding to it, so one that follows three failures reports
+`attempt=4` and leaves the ID back at zero.
 
 The re-run is throttled the same way a `CheckAgain` is: ten in a row at the
 250ms floor, then a delay from converge's own 1s-to-15m curve, stepping one

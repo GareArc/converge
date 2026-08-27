@@ -140,8 +140,14 @@ Two things a custom trigger does **not** get. Its IDs are classed as swept
 rather than notified, so they do not reset a failing ID's backoff the way
 `Notifications` and `NotificationsFrom` do — converge cannot tell whether your
 trigger is reporting fresh news or re-listing what it already knew, and takes
-the conservative reading. And a custom trigger has no `NextAfter`, so it is
-not a schedule: implement `PeriodicTrigger`, declared above, if you want one.
+the conservative reading. And a custom trigger is never swept on a cadence,
+whatever it implements. `NextAfter` is only the marker the registration gate
+looks for; the engine dispatches by concrete type, so `Schedule` is swept and
+anything else is simply run. Implementing `PeriodicTrigger` therefore
+satisfies the "every reconcile job needs a `Schedule`" check while leaving the
+job with no sweep at all — which removes the floor the rest of this library
+leans on. Do your own timing inside `Run`, and keep a real `Schedule` for the
+guarantee.
 
 ```go
 type NotificationsOpts struct {
@@ -354,10 +360,12 @@ Two things surprise people:
   eleven.** On the eleventh, converge substitutes a delay from its own
   1s-to-15m curve and starts the ten over; each substitution steps one place
   further along that curve. This is a bound on spinning, not a slow-down: the
-  substituted delay begins at 1s regardless of what you asked for, so an ID
-  deferring by an hour comes back **sooner** on its eleventh deferral, and
-  only overtakes the hour after several more substitutions. A success or a
-  failure resets both counters.
+  substituted delay begins at 1s whatever you asked for, and the curve is
+  fixed — 1s to 15m, with no option to widen it — so it can only ever restore
+  a delay up to that ceiling. An ID deferring by a minute is briefly sped up
+  and overtaken by the seventh substitution; an ID deferring by an hour is
+  shortened to at most 15m and stays there. A success or a failure resets both
+  counters.
 - **A deferred ID is not protected from being pulled forward.** Any trigger
   — a sweep as much as a notification — moves an ID that is waiting out a
   `CheckAgain` to the front of the queue. Failure backoff is the one that

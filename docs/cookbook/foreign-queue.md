@@ -80,11 +80,14 @@ actually sent, converge is not going to keep it for you, and
 [the outbox pattern's mirror image](outbox-inbox.md#the-inbox-table) is the
 shape that will.
 
-Two more drops share the same treatment and the same log line, with a
-different error: an ID that decodes to the empty string on a job whose source
-is not `SingleID` (`converge: notification: empty id`), and a notification
-naming an ID converge has never seen when the job is already tracking 65536
-of them (`converge: notification: inbox overflow`).
+Two more drops get the same treatment, with a different error: an ID that
+decodes to the empty string on a job whose source is not `SingleID`
+(`converge: notification: empty id`), and a notification naming an ID
+converge has never seen when the job is already tracking 65536 of them
+(`converge: notification: inbox overflow`). The second of those is the only
+drop that can tell you *which* ID it lost — the overflow line carries it,
+where the other two report `id=""` because there is no decoded ID to
+report.
 
 None of the three is an incident, and that is the point of having chosen this
 surface. The cost of any dropped message is bounded by the

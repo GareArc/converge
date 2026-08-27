@@ -32,7 +32,7 @@ meant for things that are actually broken.
 
 A [snooze](../glossary.md#snooze) costs nothing instead. The delivery is
 acknowledged, the message is republished after your delay, and the
-[logical attempt](../glossary.md#logical-attempt) is folded forward in the
+[logical attempt](../glossary.md#logical-attempt) is folded back into the
 message's [envelope](../glossary.md#envelope) so it does not move. That is
 also why the bound on a snooze is `Retry.MaxAge` and never `MaxAttempts`: on
 a job of this shape, `MaxAge` is the setting that means something. Ask how
@@ -40,27 +40,25 @@ long you are willing to wait for the upload, and set that; the rest of
 `RetryPolicy` is in the
 [worker reference](../reference/worker.md#retrypolicy).
 
-Four things about snoozing are easy to get wrong:
+The exact bounds — how `MaxAge` clips the delay you asked for, and what
+converge substitutes once a message has snoozed ten times — are in
+[that page's outcomes section](../reference/worker.md#outcomes-snooze-discard-shelve).
+Two things about them shape a job like this one.
 
-- **The bound is real, and it does not reset.** converge honours your delay
-  for the first ten snoozes of a message. After that it stops using your
-  number and takes one from its own `MinBackoff`–`MaxBackoff` curve, stepping
-  one place further along that curve with every further snooze. Note the
-  direction: the curve starts at `MinBackoff`, one second by default, so the
-  eleventh snooze of a message that was asking for thirty seconds comes back
-  *sooner* than the tenth did, and it takes another handful of snoozes for
-  the curve to climb past thirty seconds. The bound exists to stop
-  `Snooze{In: 0}` spinning, not to slow a patient message down. The count
-  lives in the envelope and travels with the message, so it never resets: a
-  message that has snoozed two hundred times stays at the far end of the
-  curve. (The [reconcile](../glossary.md#reconcile) surface's equivalent
-  bound *does* reset —
-  [ten out of every eleven](event-driven.md#what-a-deferral-costs-and-what-it-does-not).
-  They are different shapes; do not carry one over.)
-- **`MaxAge` clips the delay.** If less time remains than you asked for, the
-  delay is shortened to what is left. If the age is already spent, the snooze
-  does not happen at all: the message goes to the
-  [shelf](../glossary.md#shelf) with reason `max age`.
+**The snooze count belongs to the message, not to the replica.** It rides in
+the envelope, so it survives redelivery, a restart and a move to another
+replica: a message that has snoozed two hundred times is still at the far end
+of the curve wherever it lands next. Exactly one thing clears it, and that is
+a requeue off the [shelf](../glossary.md#shelf) — which starts the message
+over in every other respect too.
+
+**The [reconcile](../glossary.md#reconcile) surface's equivalent bound is a
+different shape.** Its counter resets — ten deferrals at your delay out of
+every eleven, indefinitely — where this one only ever climbs. Do not carry
+one over.
+
+Two more, about wiring rather than tuning:
+
 - **It needs a transport that can publish with a delay.** Redis Streams and
   `inmem` both can. Every durable worker job is checked for that capability
   at `Run` whether or not it ever snoozes, and refused by name if the
@@ -91,11 +89,16 @@ cancelled. A thirty-minute transcode gets thirty seconds. You can raise
 `DrainTimeout` past your longest `Timeout`, but read what you are asking for:
 every deploy now takes up to half an hour.
 
-The better answer is to make the work survivable instead. A run whose context
-was cancelled by the engine and which then returns an error is settled
-**neutrally**: the message is republished with its logical attempt folded
-back, so it has not spent an attempt, and the next replica picks it up as if
-nothing had happened. Nothing is reported, because nothing went wrong. Write
+The better answer is to make the work survivable instead. A run the engine
+took the context away from — a shutdown, a lost [lease](../glossary.md#lease),
+a [stop condition](../glossary.md#stop-condition) firing — and which then
+returns an error is settled **neutrally**: the
+message is republished with its logical attempt folded back, so it has not
+spent an attempt, and the next replica picks it up as if nothing had
+happened. Nothing is reported, because nothing went wrong. Note the
+boundary: your own `Timeout` is not one of those three. It cancels a context
+derived from the run's, not the run's, so blowing the thirty minutes is an
+ordinary failure that spends an attempt and backs off like any other. Write
 the handler so that starting again is cheap — checkpoint progress in your own
 store, skip what is already done — and a deploy in the middle of a transcode
 costs you the unfinished part and nothing else.
