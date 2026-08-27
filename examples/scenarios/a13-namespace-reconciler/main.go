@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	demoWindow        = 2 * time.Second
-	namespace         = "infra"
-	customerPageSize  = 2
-	readyAfterApplies = 3
+	demoWindow       = 2 * time.Second
+	pollStep         = 5 * time.Millisecond
+	namespace        = "infra"
+	customerPageSize = 2
+	newCustomer      = reconcile.ID("c-5004")
 )
 
 type namespaceSpec struct {
@@ -33,7 +34,15 @@ func (t *namespaceTemplate) of(id reconcile.ID) namespaceSpec {
 	return namespaceSpec{Name: "cust-" + string(id), Replicas: t.replicas}
 }
 
-type customerList struct{ ids []reconcile.ID }
+type customerList struct {
+	mu     sync.Mutex
+	ids    []reconcile.ID
+	listed bool
+}
+
+func newCustomerList(ids ...string) *customerList {
+	return &customerList{ids: reconcile.ToIDs(ids...)}
+}
 
 func (l *customerList) page(_ context.Context, cursor string) ([]reconcile.ID, string, error) {
 	start := 0
@@ -44,31 +53,54 @@ func (l *customerList) page(_ context.Context, cursor string) ([]reconcile.ID, s
 		}
 		start = at
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	end := min(start+customerPageSize, len(l.ids))
 	next := ""
 	if end < len(l.ids) {
 		next = strconv.Itoa(end)
+	} else {
+		l.listed = true
 	}
-	return l.ids[start:end], next, nil
+	return slices.Clone(l.ids[start:end]), next, nil
+}
+
+func (l *customerList) add(id reconcile.ID) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.ids = append(l.ids, id)
+}
+
+func (l *customerList) fullyListed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.listed
 }
 
 type cluster struct {
-	slow map[string]bool
+	converging map[string]bool
 
-	mu      sync.Mutex
-	applies map[string]int
-	ready   map[string]bool
+	mu       sync.Mutex
+	applies  map[string]int
+	rechecks map[string]int
+	ready    map[string]bool
 }
 
-func newCluster(slow map[string]bool) *cluster {
-	return &cluster{slow: slow, applies: map[string]int{}, ready: map[string]bool{}}
+func newCluster(converging map[string]bool) *cluster {
+	return &cluster{
+		converging: converging,
+		applies:    map[string]int{},
+		rechecks:   map[string]int{},
+		ready:      map[string]bool{},
+	}
 }
 
 func (c *cluster) apply(_ context.Context, want namespaceSpec) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.applies[want.Name]++
-	if c.slow[want.Name] && c.applies[want.Name] < readyAfterApplies {
+	if c.converging[want.Name] {
+		c.rechecks[want.Name]++
 		return false, nil
 	}
 	c.ready[want.Name] = true
@@ -80,10 +112,26 @@ func (c *cluster) report() []string {
 	defer c.mu.Unlock()
 	lines := make([]string, 0, len(c.applies))
 	for name, n := range c.applies {
-		lines = append(lines, fmt.Sprintf("%s applies=%d ready=%t", name, n, c.ready[name]))
+		lines = append(lines, fmt.Sprintf("%s applies=%d ready=%t rechecks-asked=%d", name, n, c.ready[name], c.rechecks[name]))
 	}
 	slices.Sort(lines)
 	return lines
+}
+
+func awaitFirstSweep(ctx context.Context, rt *converge.Runtime, customers *customerList) error {
+	select {
+	case <-rt.Ready():
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	for !customers.fullyListed() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollStep):
+		}
+	}
+	return nil
 }
 
 func main() {
@@ -109,7 +157,7 @@ func run() error {
 
 	desired := &namespaceTemplate{replicas: 2}
 	k8s := newCluster(map[string]bool{"cust-c-5002": true})
-	customers := &customerList{ids: reconcile.ToIDs("c-5001", "c-5002", "c-5003")}
+	customers := newCustomerList("c-5001", "c-5002", "c-5003")
 
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "customer-namespace",
@@ -139,21 +187,27 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), demoWindow)
 	defer cancel()
 
-	notified := make(chan error, 1)
+	onboarded := make(chan error, 1)
 	go func() {
-		<-rt.Ready()
-		notified <- p.Notify(ctx, "customer-namespace", "c-5004")
+		if err := awaitFirstSweep(ctx, rt, customers); err != nil {
+			onboarded <- err
+			return
+		}
+		customers.add(newCustomer)
+		onboarded <- p.Notify(ctx, "customer-namespace", string(newCustomer))
 	}()
 
 	if err := rt.Run(ctx); err != nil {
 		return err
 	}
-	if err := <-notified; err != nil {
+	if err := <-onboarded; err != nil {
 		return err
 	}
 
 	for _, line := range k8s.report() {
 		fmt.Println(line)
 	}
+	fmt.Println("rechecks-asked counts runs that returned reconcile.CheckAgain rather than failing")
+	fmt.Printf("%s was added after the sweep had listed the customers, so its run came from Notify\n", newCustomer)
 	return nil
 }

@@ -19,18 +19,20 @@ import (
 
 const (
 	demoWindow        = 3 * time.Second
+	pollStep          = 5 * time.Millisecond
 	pingTimeout       = time.Second
 	redisAddrEnv      = "REDIS_ADDR"
 	defaultRedisAddr  = "127.0.0.1:6379"
 	namespace         = "enterprise"
 	foreignQueue      = "enterprise:workspace:sync:queue"
 	workspacePageSize = 2
+	newWorkspace      = reconcile.ID("ws-9004")
 )
 
 type workspaceRegistry struct {
-	ids []reconcile.ID
-
 	mu     sync.Mutex
+	ids    []reconcile.ID
+	listed bool
 	synced map[reconcile.ID]int
 }
 
@@ -47,12 +49,28 @@ func (r *workspaceRegistry) page(_ context.Context, cursor string) ([]reconcile.
 		}
 		start = at
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	end := min(start+workspacePageSize, len(r.ids))
 	next := ""
 	if end < len(r.ids) {
 		next = strconv.Itoa(end)
+	} else {
+		r.listed = true
 	}
-	return r.ids[start:end], next, nil
+	return slices.Clone(r.ids[start:end]), next, nil
+}
+
+func (r *workspaceRegistry) add(id reconcile.ID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ids = append(r.ids, id)
+}
+
+func (r *workspaceRegistry) fullyListed() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.listed
 }
 
 func (r *workspaceRegistry) syncCredentials(_ context.Context, id reconcile.ID) error {
@@ -97,6 +115,22 @@ func clearNamespace(ctx context.Context, kv converge.KV, prefix string) error {
 		}
 		cursor = next
 	}
+}
+
+func awaitFirstSweep(ctx context.Context, rt *converge.Runtime, workspaces *workspaceRegistry) error {
+	select {
+	case <-rt.Ready():
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	for !workspaces.fullyListed() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollStep):
+		}
+	}
+	return nil
 }
 
 func main() {
@@ -159,26 +193,31 @@ func run() error {
 		return err
 	}
 
-	pushed, err := json.Marshal(map[string]string{"workspace_id": "ws-9004", "reason": "rotated"})
+	pushed, err := json.Marshal(map[string]string{"workspace_id": string(newWorkspace), "reason": "rotated"})
 	if err != nil {
 		return err
 	}
 
-	published := make(chan error, 1)
+	provisioned := make(chan error, 1)
 	go func() {
-		<-rt.Ready()
-		published <- rdb.LPush(ctx, foreignQueue, pushed).Err()
+		if err := awaitFirstSweep(ctx, rt, workspaces); err != nil {
+			provisioned <- err
+			return
+		}
+		workspaces.add(newWorkspace)
+		provisioned <- rdb.LPush(ctx, foreignQueue, pushed).Err()
 	}()
 
 	if err := rt.Run(ctx); err != nil {
 		return err
 	}
-	if err := <-published; err != nil {
+	if err := <-provisioned; err != nil {
 		return err
 	}
 
 	for _, line := range workspaces.report() {
 		fmt.Println(line)
 	}
+	fmt.Printf("%s was added after the sweep had listed the registry, so its run came from the foreign queue\n", newWorkspace)
 	return nil
 }

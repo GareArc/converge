@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/GareArc/converge"
-	"github.com/GareArc/converge/convergetest/versions"
 	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/reconcile"
 )
@@ -33,14 +32,14 @@ func tierFor(seats int) string {
 }
 
 type accountBook struct {
-	ids        []reconcile.ID
-	generation *versions.Source
+	ids []reconcile.ID
 
-	mu       sync.Mutex
-	seats    map[reconcile.ID]int
-	upgrades map[reconcile.ID]int
-	tier     map[reconcile.ID]string
-	runs     map[reconcile.ID]int
+	mu         sync.Mutex
+	generation map[reconcile.ID]reconcile.Version
+	seats      map[reconcile.ID]int
+	upgrades   map[reconcile.ID]int
+	tier       map[reconcile.ID]string
+	runs       map[reconcile.ID]int
 }
 
 func newAccountBook(seats, upgrades map[reconcile.ID]int) *accountBook {
@@ -49,18 +48,28 @@ func newAccountBook(seats, upgrades map[reconcile.ID]int) *accountBook {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
-	start := make(map[string]reconcile.Version, len(ids))
+	generation := make(map[reconcile.ID]reconcile.Version, len(ids))
 	for _, id := range ids {
-		start[string(id)] = 1
+		generation[id] = 1
 	}
 	return &accountBook{
 		ids:        ids,
-		generation: versions.Fixed(start),
+		generation: generation,
 		seats:      seats,
 		upgrades:   upgrades,
 		tier:       map[reconcile.ID]string{},
 		runs:       map[reconcile.ID]int{},
 	}
+}
+
+func (b *accountBook) Latest(_ context.Context, id reconcile.ID) (reconcile.Version, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	version, ok := b.generation[id]
+	if !ok {
+		return 0, fmt.Errorf("account %q has no recorded generation", id)
+	}
+	return version, nil
 }
 
 func (b *accountBook) page(_ context.Context, cursor string) ([]reconcile.ID, string, error) {
@@ -96,15 +105,13 @@ func (b *accountBook) readSeats(id reconcile.ID) int {
 
 func (b *accountBook) applyPendingUpgrade(id reconcile.ID) {
 	b.mu.Lock()
-	pending := b.upgrades[id]
-	if pending > 0 {
-		b.upgrades[id] = pending - 1
-		b.seats[id] += seatsPerUpgrade
+	defer b.mu.Unlock()
+	if b.upgrades[id] == 0 {
+		return
 	}
-	b.mu.Unlock()
-	if pending > 0 {
-		b.generation.Bump(string(id))
-	}
+	b.upgrades[id]--
+	b.seats[id] += seatsPerUpgrade
+	b.generation[id]++
 }
 
 func (b *accountBook) recordTier(id reconcile.ID, tier string) {
@@ -151,7 +158,7 @@ func run() error {
 		Name:      "account-plan-tier",
 		Reconcile: accounts.computePlanTier,
 		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.IDsByPage(accounts.page), reconcile.Every(time.Hour))},
-		Versions:  accounts.generation,
+		Versions:  accounts,
 	})
 	if err != nil {
 		return err

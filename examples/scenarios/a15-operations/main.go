@@ -147,10 +147,11 @@ func run() error {
 	hooks := &merchantEndpoint{broken: true}
 
 	err = worker.Handle(rt, deliverWebhook, func(ctx context.Context, w Webhook) error {
-		if err := hooks.post(ctx, w); errors.Is(err, errEndpointRejected) {
+		err := hooks.post(ctx, w)
+		if errors.Is(err, errEndpointRejected) {
 			return worker.Shelve{Reason: "endpoint rejected the payload"}
 		}
-		return nil
+		return err
 	}, worker.HandleOpts{Retry: worker.RetryPolicy{MaxAttempts: 3}})
 	if err != nil {
 		return err

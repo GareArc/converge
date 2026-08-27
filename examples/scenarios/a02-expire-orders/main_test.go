@@ -17,8 +17,12 @@ func TestUnpaidOrdersAreCancelled(t *testing.T) {
 	}
 	store.create("o-1")
 	h.Clock().Advance(31 * time.Minute)
+	store.create("o-2")
 	h.Drain(t)
 	if got := store.status("o-1"); got != statusCancelled {
-		t.Fatalf("order status = %q, want %q", got, statusCancelled)
+		t.Fatalf("order o-1 status = %q, want %q", got, statusCancelled)
+	}
+	if got := store.status("o-2"); got != statusPending {
+		t.Fatalf("order o-2 status = %q, want %q", got, statusPending)
 	}
 }

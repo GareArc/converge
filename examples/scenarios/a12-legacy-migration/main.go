@@ -112,6 +112,9 @@ func run() error {
 	for _, line := range creds.report() {
 		fmt.Println(line)
 	}
-	fmt.Printf("job stopped at the cutover: %s\n", cutover.Format(time.RFC3339))
+	for _, s := range rt.Stats() {
+		fmt.Printf("%s state=%s\n", s.Job, s.State)
+	}
+	fmt.Printf("cutover: %s\n", cutover.Format(time.RFC3339))
 	return nil
 }

@@ -17,11 +17,17 @@ import (
 
 const (
 	demoWindow       = 2 * time.Second
+	pollStep         = 5 * time.Millisecond
 	namespace        = "payments"
 	merchantPageSize = 2
+	newMerchant      = reconcile.ID("m-1004")
 )
 
-type merchantDirectory struct{ ids []reconcile.ID }
+type merchantDirectory struct {
+	mu     sync.Mutex
+	ids    []reconcile.ID
+	listed bool
+}
 
 func newMerchantDirectory(ids ...string) *merchantDirectory {
 	return &merchantDirectory{ids: reconcile.ToIDs(ids...)}
@@ -36,12 +42,28 @@ func (d *merchantDirectory) page(_ context.Context, cursor string) ([]reconcile.
 		}
 		start = at
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	end := min(start+merchantPageSize, len(d.ids))
 	next := ""
 	if end < len(d.ids) {
 		next = strconv.Itoa(end)
+	} else {
+		d.listed = true
 	}
-	return d.ids[start:end], next, nil
+	return slices.Clone(d.ids[start:end]), next, nil
+}
+
+func (d *merchantDirectory) add(id reconcile.ID) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ids = append(d.ids, id)
+}
+
+func (d *merchantDirectory) fullyListed() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.listed
 }
 
 type stripeSync struct {
@@ -67,6 +89,22 @@ func (s *stripeSync) report() []string {
 	}
 	slices.Sort(lines)
 	return lines
+}
+
+func awaitFirstSweep(ctx context.Context, rt *converge.Runtime, merchants *merchantDirectory) error {
+	select {
+	case <-rt.Ready():
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	for !merchants.fullyListed() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollStep):
+		}
+	}
+	return nil
 }
 
 func main() {
@@ -115,21 +153,26 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), demoWindow)
 	defer cancel()
 
-	notified := make(chan error, 1)
+	onboarded := make(chan error, 1)
 	go func() {
-		<-rt.Ready()
-		notified <- p.Notify(ctx, "merchant-stripe", "m-1004")
+		if err := awaitFirstSweep(ctx, rt, merchants); err != nil {
+			onboarded <- err
+			return
+		}
+		merchants.add(newMerchant)
+		onboarded <- p.Notify(ctx, "merchant-stripe", string(newMerchant))
 	}()
 
 	if err := rt.Run(ctx); err != nil {
 		return err
 	}
-	if err := <-notified; err != nil {
+	if err := <-onboarded; err != nil {
 		return err
 	}
 
 	for _, line := range stripe.report() {
 		fmt.Println(line)
 	}
+	fmt.Printf("%s was added after the sweep had listed the directory, so its run came from Notify\n", newMerchant)
 	return nil
 }
