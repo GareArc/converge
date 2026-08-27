@@ -100,7 +100,7 @@ func TestFailureBacksOffThenRecovers(t *testing.T) {
 		return nil
 	})
 	te.e.notify(context.Background(), "a")
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.Await(t, func() bool { return te.e.Stats().ConsecutiveFails == 1 })
 	if s := te.e.Stats(); s.ConsecutiveFails != 1 {
 		t.Fatalf("ConsecutiveFails = %d", s.ConsecutiveFails)
 	}
@@ -121,7 +121,7 @@ func TestCheckAgainSchedulesRevisitWithoutFailure(t *testing.T) {
 		return nil
 	})
 	te.e.notify(context.Background(), "a")
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.Await(t, func() bool { return !te.e.Stats().LastSuccess.IsZero() })
 	if s := te.e.Stats(); s.ConsecutiveFails != 0 || s.LastSuccess.IsZero() {
 		t.Fatalf("CheckAgain must not count as failure: %+v", s)
 	}
@@ -491,7 +491,7 @@ func TestStatsReportsLastErrorAndPersistsThroughRecovery(t *testing.T) {
 		return nil
 	})
 	te.e.notify(context.Background(), "a")
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return calls == 1 })
+	convergetest.Await(t, func() bool { return te.e.Stats().Failing == 1 })
 	s := te.e.Stats()
 	if s.LastError == nil || s.LastError.Error() != "boom" {
 		t.Fatalf("LastError = %v, want boom", s.LastError)
