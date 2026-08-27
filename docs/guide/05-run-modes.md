@@ -39,13 +39,16 @@ three of them.
 | `converge.Competing` | every replica, sharing out the messages | no |
 
 **One rule governs all three: `Competing` is a worker mode.** Setting it on
-a reconcile job is refused at registration, with the reason in the error. It
-is the only illegal combination there is, and it is illegal for a reason
-that is not arbitrary: `Competing` means the replicas split a stream of
-messages between them, and on the reconcile surface a message is only a
-[notification](../glossary.md#notification). Splitting notifications is
-meaningless — the schedule already covers every ID on whichever replica
-holds the job.
+a reconcile job is refused when you register it, with the reason in the
+error. It is illegal for a reason that is not arbitrary: `Competing` means
+the replicas split a stream of messages between them, and on the reconcile
+surface a message is only a [notification](../glossary.md#notification).
+Splitting notifications is meaningless — the schedule already covers every
+ID on whichever replica holds the job.
+
+That is the only rule about which value goes with which kind of job. It is
+not converge's only registration-time refusal, though: there is a second one
+and it belongs to `OnAllReplicas`, below.
 
 The defaults follow from the same idea. Reconcile jobs default to
 `OnOneReplica`, because a reconcile job's work is defined by your store and
@@ -81,12 +84,15 @@ That is
 which runs two replicas inside one process so you can watch both of them
 reload.
 
-`OnAllReplicas` takes no lease, keeps no shared record of when it last ran,
-and on the worker surface it is deliberately narrow: a broadcast worker job
-cannot set a `Retry` policy, and converge refuses the registration if you
-try. Every replica gets its own copy of the message, so there is no single
-place a retry could belong and nothing durable to set aside. Use it for
-cache warming and local state, not for work that must not be lost.
+`OnAllReplicas` takes no lease and keeps no shared record of when it last
+ran. On the worker surface it is deliberately narrow, and here is the second
+refusal: **a broadcast worker job cannot set a `Retry` policy**, and
+converge rejects that registration rather than accepting a promise it could
+not keep. A failed run on a broadcast job is discarded — every replica had
+its own copy and acknowledged it for itself, so there is no redelivery to
+wait for and nothing durable to set aside. A retry budget would have nowhere
+to land. Use `OnAllReplicas` for cache warming and local state, not for work
+that must not be lost.
 
 ## Competing, the worker default
 
@@ -116,7 +122,13 @@ job starts rather than when the first message arrives:
 - `OnAllReplicas` needs the backend to support broadcast.
 - `OnOneReplica` needs `Options.Lease`.
 
-Redis Streams and the `inmem` backend support all three. If a backend does
+A worker job that is *not* broadcast asks for two more, whichever value it
+uses: `Options.KV`, because that is where its [shelf](../glossary.md#shelf)
+lives, and an MQ that can publish a message with a delay, because that is
+how `Snooze` republishes one. (Ordinary retries do not need it — those go
+back through the transport as a negative acknowledgement.)
+
+Redis Streams and the `inmem` backend satisfy all of it. If a backend does
 not, `rt.Run` fails at startup with a message naming the job and the missing
 capability — not quietly, and not at 3am when the first message lands.
 

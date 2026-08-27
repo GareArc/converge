@@ -94,9 +94,13 @@ form reaches the single-job route.
 
 `/debug/jobs` answers with a `jobs` array, one object each: everything
 `rt.Stats()` carries, plus the queue the job reads and the settings it was
-registered with. `/debug/jobs/{job}` answers with that one object plus two
-things the list leaves out — its failing IDs with their last errors, and its
-shelved messages. That second route is usually the one you came for.
+registered with. `/debug/jobs/{job}` answers with that one object plus one
+thing the list leaves out — and which one depends on the kind of job. A
+reconcile job gets `failing_ids`: the IDs currently in backoff, each with
+its last error. A worker job gets `shelved_messages` instead. Neither route
+returns both, because neither kind of job has both: a reconcile job has no
+[shelf](../glossary.md#shelf), and the worker engine keeps a count of the
+messages it is retrying but not a list of them.
 
 ## The numbers, and when converge refuses to give you one
 
@@ -121,6 +125,12 @@ meaningless. Not zero: *unknown*. converge does not invent the number, the
 metrics do not publish it, and a dashboard that shows a gap there is telling
 you the truth.
 
+One case is unknown on every backend, no matter how capable: **a job running
+on all replicas has no backlog.** Both engines decline to read one for that
+[run mode](../glossary.md#run-mode), and they are right to — every replica reads every message, so
+there is no shared depth that would mean anything. Expect a blank there on
+the newest Redis as surely as on the in-memory backend.
+
 On Redis Streams specifically: **backlog needs Redis 7.0 or newer.** converge
 reads it from the `lag` field of `XINFO GROUPS`, which 7.0 added. Against
 Redis 6.2 the field is absent, converge reports the backlog as not known
@@ -129,19 +139,26 @@ number and got a blank, check the server version before you check anything
 else.
 
 **`Shelved` travels with `ShelvedKnown`, and it is a depth.** It is how many
-messages are on that job's [shelf](../glossary.md#shelf) *right now*, not
-how many runs have ever been shelved. It falls when somebody requeues or
+messages are on that job's shelf *right now*, not how many runs have ever
+been shelved. It falls when somebody requeues or
 purges, which is exactly what you want from something you are going to
-alert on. It is known only for a worker job with a `KV` and a
-[run mode](../glossary.md#run-mode) that can shelve at all — a reconcile job
-never reports it, and neither does a broadcast worker job, because neither
-has a shelf.
+alert on. It is known only for a worker job with a `KV` and a run mode that
+can shelve at all — a reconcile job never reports it, and neither does a
+broadcast worker job, because neither has a shelf.
 
 `Failing` is the third number and it always has a value: how many
 [IDs](../glossary.md#id) or messages on *this replica* are currently waiting
 out a backoff. A **failing ID** is not a lost one — it keeps being retried
 at a floor rate — but a `Failing` count that grows and never falls is worth
-a look, and `/debug/jobs/{job}` will tell you which IDs and why.
+a look.
+
+Where you look depends on the kind of job, for the reason above. On a
+reconcile job, `/debug/jobs/{job}` names the failing IDs and gives you the
+last error for each. On a worker job it will not: converge counts the
+messages it is retrying and does not keep them, so what you have is
+`last_error`, `last_error_at` and `consecutive_fails` in the same response,
+and the warn-level `RunCompleted` log lines — each one carries the message
+ID of the message being retried, which is the thread to pull.
 
 Run
 [`examples/scenarios/a15-operations/main.go`](../../examples/scenarios/a15-operations/main.go)
@@ -326,15 +343,25 @@ cd examples
 go run ./scenarios/a12-legacy-migration
 ```
 
+Timestamps and run durations are trimmed from the log lines below; nothing
+else is.
+
 ```text
+INFO converge: lease changed job=legacy-credential-migration held=true
 INFO converge: run completed job=legacy-credential-migration id=cred-3001 attempt=1 outcome=succeeded
 INFO converge: run completed job=legacy-credential-migration id=cred-3002 attempt=1 outcome=succeeded
 INFO converge: run completed job=legacy-credential-migration id=cred-3003 attempt=1 outcome=succeeded
-INFO converge: job destroyed job=legacy-credential-migration cause="deadline 2026-08-27T05:14:07-07:00"
+INFO converge: job destroyed job=legacy-credential-migration cause="deadline 2026-08-27T05:47:31-07:00"
+INFO converge: lease changed job=legacy-credential-migration held=false
 migrated: [cred-3001 sha1->argon2id cred-3002 sha1->argon2id cred-3003 md5->argon2id]
 still legacy: 0
 legacy-credential-migration state=destroyed
+cutover: 2026-08-27T05:47:31-07:00
 ```
+
+The job kept the lease while it worked, was destroyed the moment the cutover
+passed, and gave the lease back — after which nothing runs it again, on this
+replica or any other.
 
 A **stop condition** comes in two forms:
 
@@ -344,9 +371,12 @@ A **stop condition** comes in two forms:
   that key in `KV`. That somebody is a person with the `KV`, not an API
   converge exposes.
 
-A job has three cluster-wide states and no others: not started, active,
-destroyed. Destruction is terminal and needs no cooperation from your
-function — it just stops being called. There is no pausing a job and no
+A job has three states and no others: not started, active, destroyed. Only
+the last of them is cluster-wide, and the
+[tombstone](../glossary.md#tombstone) below is what makes it
+so; the first two are what one replica reports about itself in `Stats()`.
+Destruction is terminal and needs no cooperation from your function — it
+just stops being called. There is no pausing a job and no
 resuming one; if a job is ever going to finish, you say so where you
 register it.
 

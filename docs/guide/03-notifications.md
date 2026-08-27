@@ -323,6 +323,7 @@ is not one.
 
 ## Next
 
-Everything so far has been level-triggered: messages only ever pointed at
-something, and your store was the truth. [Chapter 4](04-worker.md) is the
-other kind of job, where the message is the only copy of the work.
+Everything so far has been *level-triggered*: converge told your function
+which thing to look at, and your function worked out what to do from the
+state it found there. [Chapter 4](04-worker.md) is the *edge-triggered*
+other half, where the message does not point at the work — it is the work.

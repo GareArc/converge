@@ -55,8 +55,8 @@ cd examples
 go run ./scenarios/a01-nightly-invoices
 ```
 
-- None of the programs shown in full need Redis, a database, or a container:
-  the `inmem` package supplies everything converge needs in process, so they
-  run and their tests pass with no services at all. The one exception is
-  `a14-foreign-queue` in chapter 3, which reads a real Redis list and tells
-  you so if there is not one.
+- Almost nothing here needs Redis, a database, or a container: the `inmem`
+  package supplies everything converge needs in process, so the programs run
+  and their tests pass with no services at all. Exactly one scenario is the
+  exception — `a14-foreign-queue`, which chapter 3 links to rather than
+  shows, reads a real Redis list and tells you so if there is not one.

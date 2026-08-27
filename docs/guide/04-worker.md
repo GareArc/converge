@@ -37,6 +37,16 @@ change the struct and the compiler finds every side that has to change with
 it. Nothing else has to be agreed between the two: no queue name, no route,
 no serialisation format. Payloads are JSON unless you set `TaskOpts.Codec`.
 
+The sending side has exactly two knobs of its own, both on
+`worker.EnqueueOpts`. `Delay` holds the message back before anyone can pick
+it up — minutes, not days; a due date belongs in a column of yours, swept by
+a [reconcile](../glossary.md#reconcile) job, and a delay needs an MQ that
+can publish one. `Headers` are yours to attach, and they reach your handler
+through `worker.MetaFromContext(ctx)`; converge owns every name beginning
+`converge.`, and `Enqueue` returns an error on a header that trespasses
+there rather than quietly overwriting it. That is the entire producer-side
+surface: everything else about the job is declared where the job runs.
+
 `TaskOpts.Version` is how you handle a payload shape that has to change
 while messages of the old shape are still in flight. A message whose version
 does not match the handler's is not decoded and not guessed at — it is set

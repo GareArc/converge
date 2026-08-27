@@ -57,8 +57,10 @@ minutes old and the other is brand new. `h.Drain(t)` then waits for converge
 to notice, run its [sweep](../glossary.md#sweep), and settle, and the
 assertions say what should have happened to each order.
 
-There is no sleeping, no polling loop, and no retry-until-it-passes. Run it
-a thousand times and it gives the same answer.
+You never write a sleep and you never write a retry loop. Time moves only
+when you move it, and the one wait in the test is `h.Drain(t)`, which polls
+for quiet on your behalf against a deadline it fails on rather than a
+duration it hopes for.
 
 ## What the harness gives you
 
