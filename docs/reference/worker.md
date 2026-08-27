@@ -256,10 +256,13 @@ alert on `ConsecutiveFails`.
   age is shorter than the delay you asked for, the delay is shortened to it.
 - Your delay is floored at 250ms, jittered up to about 375ms, so
   `Snooze{In: 0}` is not a spin loop.
-- After the tenth snooze of a message, converge substitutes its own backoff
-  from the `MinBackoff`–`MaxBackoff` curve, stepping further along it with
-  each further snooze, so a handler that snoozes forever slows down rather
-  than spinning.
+- After the tenth snooze of a message, converge stops honouring your delay
+  and substitutes its own, from the `MinBackoff`–`MaxBackoff` curve, stepping
+  further along it with each further snooze. The substitution starts at
+  `MinBackoff` — 1s by default — whatever you asked for, so this caps a
+  handler that snoozes forever but does **not** always slow one down: a
+  message asking for 30s comes back sooner on its eleventh snooze, and takes
+  about six more before the curve overtakes it.
 - If the delayed republish fails, the engine falls back to
   `Delivery.Nack(ctx, delay)` and still reports `Deferred`.
 

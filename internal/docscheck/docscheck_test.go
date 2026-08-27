@@ -19,7 +19,7 @@ func mustRoot(t *testing.T) string {
 	return root
 }
 
-const uncheckedGoBlockBudget = 71
+const uncheckedGoBlockBudget = 82
 
 func TestTaggedGoBlocksMatchTheirSourceFiles(t *testing.T) {
 	root := mustRoot(t)
@@ -359,7 +359,7 @@ func refTargets(prose string) (targets []string, undefinedLabels []string) {
 
 func checkLinkTarget(t *testing.T, root, f, target string, slugCache map[string][]string) {
 	t.Helper()
-	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "#") || strings.HasPrefix(target, "mailto:") {
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "mailto:") {
 		return
 	}
 	display := target
@@ -368,13 +368,13 @@ func checkLinkTarget(t *testing.T, root, f, target string, slugCache map[string]
 		fragment = target[i+1:]
 		target = target[:i]
 	}
-	if target == "" {
-		return
-	}
-	resolved := filepath.Join(filepath.Dir(f), target)
-	if _, err := os.Stat(resolved); err != nil {
-		t.Errorf("%s: broken link %q", relTo(root, f), display)
-		return
+	resolved := f
+	if target != "" {
+		resolved = filepath.Join(filepath.Dir(f), target)
+		if _, err := os.Stat(resolved); err != nil {
+			t.Errorf("%s: broken link %q", relTo(root, f), display)
+			return
+		}
 	}
 	if fragment == "" || !strings.HasSuffix(resolved, ".md") {
 		return

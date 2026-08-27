@@ -132,7 +132,16 @@ implements it.
 You can implement `Trigger` yourself: return when `ctx` is done, and call
 `notify(id)` for every ID you learn about. A custom trigger that returns before
 its context is done is restarted under a bounded backoff (1s to 1m), so a
-transient failure does not need handling inside it.
+transient failure does not need handling inside it — but the error it returns
+is discarded: nothing logs it, counts it, or reports the restart. If you want
+to know your trigger is failing, observe it yourself before returning.
+
+Two things a custom trigger does **not** get. Its IDs are classed as swept
+rather than notified, so they do not reset a failing ID's backoff the way
+`Notifications` and `NotificationsFrom` do — converge cannot tell whether your
+trigger is reporting fresh news or re-listing what it already knew, and takes
+the conservative reading. And a custom trigger has no `NextAfter`, so it is
+not a schedule: implement `PeriodicTrigger`, declared above, if you want one.
 
 ```go
 type NotificationsOpts struct {
@@ -344,9 +353,11 @@ Two things surprise people:
 - **Your delay is honoured on ten consecutive deferrals out of every
   eleven.** On the eleventh, converge substitutes a delay from its own
   1s-to-15m curve and starts the ten over; each substitution steps one place
-  further along that curve, so a thing that will never be ready costs less
-  and less rather than the same forever. A success or a failure resets both
-  counters.
+  further along that curve. This is a bound on spinning, not a slow-down: the
+  substituted delay begins at 1s regardless of what you asked for, so an ID
+  deferring by an hour comes back **sooner** on its eleventh deferral, and
+  only overtakes the hour after several more substitutions. A success or a
+  failure resets both counters.
 - **A deferred ID is not protected from being pulled forward.** Any trigger
   — a sweep as much as a notification — moves an ID that is waiting out a
   `CheckAgain` to the front of the queue. Failure backoff is the one that
