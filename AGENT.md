@@ -149,8 +149,8 @@ adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
 adapters/otel (convotel)     Observer over OpenTelemetry metrics; observable
                              gauges read from `Runtime.Stats()` on collection
                              — separate module
-examples/                    runnable programs (guide, cookbook, worker, otel)
-                             — separate module
+examples/                    runnable programs (scenarios/a01..a15, the fifteen
+                             acceptance scenarios) — separate module
 bridges/kratos (convkratos)  Runtime as a kratos transport.Server — separate module
 website/                     VitePress site built from docs/ — holds no content
 docs/superpowers/            local-only working docs — gitignored, never commit
