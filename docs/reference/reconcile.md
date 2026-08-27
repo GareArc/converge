@@ -130,7 +130,7 @@ schedule; a job is refused at registration unless one of its triggers
 implements it.
 
 You can implement `Trigger` yourself: return when `ctx` is done, and call
-`wake(id)` for every ID you learn about. A custom trigger that returns before
+`notify(id)` for every ID you learn about. A custom trigger that returns before
 its context is done is restarted under a bounded backoff (1s to 1m), so a
 transient failure does not need handling inside it.
 
@@ -315,6 +315,7 @@ Two edges worth knowing:
 
 ```go
 type CheckAgain struct {
+    _  struct{}
     In time.Duration
 }
 

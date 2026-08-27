@@ -95,7 +95,7 @@ is why the guide's programs need no services.
   depth of a named one. Both count pending plus in-flight messages.
 - Consumers poll every 2ms rather than blocking, so an idle `inmem` job is
   busy in a small, bounded way.
-- Two extra methods exist for tests: `Idle` reports that nothing is pending or
+- One extra method exists for tests: `Idle` reports that nothing is pending or
   in flight, which is what `convergetest.Harness.Drain` waits on.
 
 **`inmem.KV`** stores byte slices with optional TTLs, expiring lazily on
@@ -172,7 +172,7 @@ Other behaviour worth knowing:
   is published after it attaches. Its deliveries report `Attempt() == 1`
   always, and `Ack`, `Nack` and `Extend` are no-ops — there is nothing
   per-subscriber to settle.
-- `PublishDelayed` parks the message in a sorted set and moves it into the
+- `PublishDelayed` holds the message in a sorted set and moves it into the
   stream when it comes due — which happens on the next poll by a **group**
   consumer of that queue (`Consume` or `ConsumeGroup`). `ConsumeBroadcast`
   does not release delayed messages, so a delayed enqueue aimed at an
@@ -193,8 +193,10 @@ else:
 
 - **`Publish` writes the payload only.** `Message.Kind` and `Message.Headers`
   are dropped, so it cannot carry a worker envelope.
-- `Ack` and `Extend` are no-ops; `Nack` pushes the payload back to the head
-  regardless of the delay you asked for. `Attempt()` is always 1.
+- `Ack` and `Extend` are no-ops; `Nack` returns the payload to the queue
+  regardless of the delay you asked for, and because this list is written at
+  one end and read from the other, it lands behind everything already
+  waiting rather than at the front. `Attempt()` is always 1.
 - `EnqueuedAt()` is the wall-clock time the payload was popped, not when it
   was written.
 - It satisfies `BacklogReporter` via `LLEN`, and nothing else — no groups, no

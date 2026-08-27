@@ -149,9 +149,11 @@ And at `Run`, once the runtime's wiring is visible:
 - `worker: job %q: Snooze needs the DelayedPublisher capability`
 - `worker: job %q: Until needs Options.KV`
 
-The last two are asked of every job that is **not** `OnAllReplicas`, whether
-or not it ever snoozes or shelves, because both are part of what makes a
-durable worker job durable.
+The third and fourth are asked of every job that is **not** `OnAllReplicas`,
+whether or not it ever snoozes or shelves, because both are part of what
+makes a durable worker job durable. The fifth is asked of any job that sets
+`Until`, broadcast included — a self-destruct needs somewhere to record that
+it fired.
 
 **`Timeout` does two jobs here.** It is the time limit for one run, as on
 every surface — and it is also what the engine derives the transport's

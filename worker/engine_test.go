@@ -1885,6 +1885,41 @@ func TestShelveStopsAfterOneAttempt(t *testing.T) {
 	}
 }
 
+func TestDeliberateShelveDoesNotStampAnErrorItDoesNotHave(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	task := NewTask[string]("charge", TaskOpts{})
+	if err := Handle(rt, task, func(_ context.Context, id string) error {
+		if id == "o-1" {
+			return errors.New("gateway timeout")
+		}
+		return Shelve{Reason: "card revoked"}
+	}, HandleOpts{Retry: RetryPolicy{MaxAttempts: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	if err := task.Enqueue(context.Background(), p, "o-1", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	first := jobStats(t, rt, "charge")
+	if first.LastError == nil || first.LastError.Error() != "gateway timeout" {
+		t.Fatalf("LastError = %v, want gateway timeout", first.LastError)
+	}
+	if err := task.Enqueue(context.Background(), p, "o-2", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return jobStats(t, rt, "charge").ConsecutiveFails > first.ConsecutiveFails })
+	after := jobStats(t, rt, "charge")
+	if after.LastError == nil || after.LastError.Error() != "gateway timeout" {
+		t.Fatalf("LastError = %v, want the real error to survive a deliberate shelving", after.LastError)
+	}
+	if !after.LastErrorAt.Equal(first.LastErrorAt) {
+		t.Fatalf("LastErrorAt moved to %v from %v; a Shelve carries no error to timestamp", after.LastErrorAt, first.LastErrorAt)
+	}
+}
+
 func TestShelveOnBroadcastWithoutKVDropsInsteadOfPanicking(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{
 		Namespace: wns,

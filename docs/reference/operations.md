@@ -141,9 +141,10 @@ Three things about the last-outcome fields will otherwise surprise you:
 - A worker `Discard` counts as a **success**: it stamps `LastSuccess` and
   clears `ConsecutiveFails`. A message that never needed doing is not a fault.
 - A handler-requested `Shelve` counts as a **failure** for
-  `ConsecutiveFails` and `LastErrorAt` — but it carries no error, so it also
-  sets `LastError` to nil. A non-zero `LastErrorAt` with a nil `LastError` is
-  that case, not a bug.
+  `ConsecutiveFails` only. It carries no error, so `LastError` and
+  `LastErrorAt` are left holding the last real one. A `ConsecutiveFails` that
+  climbs while `LastErrorAt` stays put is deliberate shelving, not a stalled
+  clock.
 - A reconcile `CheckAgain` or `ErrOutdated` counts as neither: it stamps
   `LastSuccess` and clears `ConsecutiveFails`, because the run did not fail.
 
