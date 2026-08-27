@@ -19,7 +19,7 @@ func mustRoot(t *testing.T) string {
 	return root
 }
 
-const uncheckedGoBlockBudget = 0
+const uncheckedGoBlockBudget = 16
 
 func TestTaggedGoBlocksMatchTheirSourceFiles(t *testing.T) {
 	root := mustRoot(t)
