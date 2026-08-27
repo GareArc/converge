@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"slices"
+	"strings"
+
 	"github.com/GareArc/converge"
 	convredis "github.com/GareArc/converge/adapters/redis"
 	"github.com/GareArc/converge/convergetest"
@@ -52,17 +55,44 @@ func TestMQPortMiniredis(t *testing.T) {
 		return convredis.NewStreamsMQ(e.client, convredis.StreamsOpts{Clock: e.clock, Visibility: time.Minute, Retention: retention})
 	}
 	portcheck.MQ(t, open, portcheck.MQOptions{
-		Advance:            func(d time.Duration) { advance(d) },
-		Visibility:         time.Minute,
-		Retention:          retention,
-		TracksGroupBacklog: !miniredisStubsGroupLag,
+		Advance:           func(d time.Duration) { advance(d) },
+		Visibility:        time.Minute,
+		Retention:         retention,
+		GroupLagIsStubbed: miniredisStubsGroupLag,
+	})
+}
+
+func TestMQPortMiniredisWithoutGroupLag(t *testing.T) {
+	const retention = time.Hour
+	var (
+		mu   sync.Mutex
+		envs = map[string]*miniEnv{}
+	)
+	var advance func(d time.Duration)
+	open := func(t *testing.T) converge.MQ {
+		mu.Lock()
+		e, ok := envs[t.Name()]
+		if !ok {
+			mr, client, clock, adv := openMiniServer(t)
+			stubRedis62GroupInfo(t, mr)
+			e = &miniEnv{client: client, clock: clock, advance: adv}
+			envs[t.Name()] = e
+		}
+		mu.Unlock()
+		advance = e.advance
+		return convredis.NewStreamsMQ(e.client, convredis.StreamsOpts{Clock: e.clock, Visibility: time.Minute, Retention: retention})
+	}
+	portcheck.MQ(t, open, portcheck.MQOptions{
+		Advance:    func(d time.Duration) { advance(d) },
+		Visibility: time.Minute,
+		Retention:  retention,
 	})
 }
 
 func TestMQPortRealRedis(t *testing.T) {
 	portcheck.MQ(t, func(t *testing.T) converge.MQ {
 		return convredis.NewStreamsMQ(openReal(t), convredis.StreamsOpts{})
-	}, portcheck.MQOptions{TracksGroupBacklog: true})
+	}, portcheck.MQOptions{})
 }
 
 func TestStreamsMQWithoutRetentionKeepsEntriesUntilConsumed(t *testing.T) {
@@ -87,7 +117,7 @@ func TestStreamsMQWithoutRetentionKeepsEntriesUntilConsumed(t *testing.T) {
 func TestStreamsMQBacklogForGroupSumsUndeliveredAndUnacked(t *testing.T) {
 	f := newStreamsMQ(t)
 	f.publish(t, converge.Message{Payload: []byte("a")})
-	stubGroupInfo(t, f.mr, groupInfo{name: testGroup, pending: 2, lag: 5, lagKnown: true})
+	stubGroupInfo(t, f.mr, groupInfo{name: testGroup, pending: 2, lag: 5, shape: lagReported})
 
 	n, err := backlogReporter(t, f.mq).Backlog(f.ctx, "q")
 	if err != nil {
@@ -98,10 +128,24 @@ func TestStreamsMQBacklogForGroupSumsUndeliveredAndUnacked(t *testing.T) {
 	}
 }
 
+func TestStreamsMQBacklogForGroupWithoutALagFieldIsUnknown(t *testing.T) {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	stubGroupInfo(t, f.mr, groupInfo{name: testGroup, pending: 2, shape: lagAbsent})
+
+	n, err := backlogReporter(t, f.mq).Backlog(f.ctx, "q")
+	if !errors.Is(err, converge.ErrBacklogUnknown) {
+		t.Fatalf("Backlog = (%d, %v), want converge.ErrBacklogUnknown: Redis 6.2 sends no lag field", n, err)
+	}
+	if n != 0 {
+		t.Fatalf("Backlog = %d alongside ErrBacklogUnknown, want 0", n)
+	}
+}
+
 func TestStreamsMQBacklogForGroupReportsUnknownLagAsUnknown(t *testing.T) {
 	f := newStreamsMQ(t)
 	f.publish(t, converge.Message{Payload: []byte("a")})
-	stubGroupInfo(t, f.mr, groupInfo{name: testGroup, pending: 2})
+	stubGroupInfo(t, f.mr, groupInfo{name: testGroup, pending: 2, shape: lagNull})
 
 	n, err := backlogReporter(t, f.mq).Backlog(f.ctx, "q")
 	if err == nil {
@@ -115,7 +159,7 @@ func TestStreamsMQBacklogForGroupReportsUnknownLagAsUnknown(t *testing.T) {
 func TestStreamsMQBacklogAsksAboutTheGivenGroup(t *testing.T) {
 	f := newStreamsMQ(t)
 	f.publish(t, converge.Message{Payload: []byte("a")})
-	stubGroupInfo(t, f.mr, groupInfo{name: "other", pending: 4, lag: 4, lagKnown: true})
+	stubGroupInfo(t, f.mr, groupInfo{name: "other", pending: 4, lag: 4, shape: lagReported})
 
 	gbr, ok := f.mq.(converge.GroupBacklogReporter)
 	if !ok {
@@ -139,11 +183,26 @@ func backlogReporter(t *testing.T, mq converge.MQ) converge.BacklogReporter {
 	return br
 }
 
+type lagShape int
+
+const (
+	lagAbsent lagShape = iota
+	lagNull
+	lagReported
+)
+
+func (s lagShape) fieldCount() int {
+	if s == lagAbsent {
+		return 4
+	}
+	return 6
+}
+
 type groupInfo struct {
-	name     string
-	pending  int
-	lag      int
-	lagKnown bool
+	name    string
+	pending int
+	lag     int
+	shape   lagShape
 }
 
 func stubGroupInfo(t *testing.T, mr *miniredis.Miniredis, g groupInfo) {
@@ -153,24 +212,80 @@ func stubGroupInfo(t *testing.T, mr *miniredis.Miniredis, g groupInfo) {
 			return false
 		}
 		c.WriteLen(1)
-		c.WriteMapLen(6)
-		c.WriteBulk("name")
-		c.WriteBulk(g.name)
-		c.WriteBulk("consumers")
-		c.WriteInt(1)
-		c.WriteBulk("pending")
-		c.WriteInt(g.pending)
-		c.WriteBulk("last-delivered-id")
-		c.WriteBulk("0-0")
+		writeGroupInfo(c, g)
+		return true
+	})
+	t.Cleanup(func() { mr.Server().SetPreHook(nil) })
+}
+
+func writeGroupInfo(c *server.Peer, g groupInfo) {
+	c.WriteMapLen(g.shape.fieldCount())
+	c.WriteBulk("name")
+	c.WriteBulk(g.name)
+	c.WriteBulk("consumers")
+	c.WriteInt(1)
+	c.WriteBulk("pending")
+	c.WriteInt(g.pending)
+	c.WriteBulk("last-delivered-id")
+	c.WriteBulk("0-0")
+	switch g.shape {
+	case lagNull:
 		c.WriteBulk("entries-read")
 		c.WriteNull()
 		c.WriteBulk("lag")
-		if g.lagKnown {
-			c.WriteInt(g.lag)
+		c.WriteNull()
+	case lagReported:
+		c.WriteBulk("entries-read")
+		c.WriteNull()
+		c.WriteBulk("lag")
+		c.WriteInt(g.lag)
+	}
+}
+
+type groupTracker struct {
+	mu     sync.Mutex
+	groups map[string][]string
+}
+
+func (tr *groupTracker) created(args []string) {
+	if len(args) < 3 || !strings.EqualFold(args[0], "CREATE") {
+		return
+	}
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	key, group := args[1], args[2]
+	if slices.Contains(tr.groups[key], group) {
+		return
+	}
+	tr.groups[key] = append(tr.groups[key], group)
+}
+
+func (tr *groupTracker) namesFor(key string) []string {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return slices.Clone(tr.groups[key])
+}
+
+func stubRedis62GroupInfo(t *testing.T, mr *miniredis.Miniredis) {
+	t.Helper()
+	tr := &groupTracker{groups: map[string][]string{}}
+	mr.Server().SetPreHook(func(c *server.Peer, cmd string, args ...string) bool {
+		switch cmd {
+		case "XGROUP":
+			tr.created(args)
+			return false
+		case "XINFO":
+			if len(args) < 2 || !strings.EqualFold(args[0], "GROUPS") {
+				return false
+			}
+			names := tr.namesFor(args[1])
+			c.WriteLen(len(names))
+			for _, name := range names {
+				writeGroupInfo(c, groupInfo{name: name, shape: lagAbsent})
+			}
 			return true
 		}
-		c.WriteNull()
-		return true
+		return false
 	})
 	t.Cleanup(func() { mr.Server().SetPreHook(nil) })
 }

@@ -45,8 +45,6 @@ const (
 	groupFieldLag     = "lag"
 )
 
-var errLagUnknown = errors.New("convredis: consumer group lag is unknown")
-
 type StreamsOpts struct {
 	Clock      converge.Clock
 	Retention  time.Duration
@@ -135,7 +133,7 @@ func (m *streamsMQ) BacklogForGroup(ctx context.Context, queue, group string) (i
 		return int(entries), nil
 	}
 	if !g.lagKnown {
-		return 0, errLagUnknown
+		return 0, converge.ErrBacklogUnknown
 	}
 	return int(g.lag + g.pending), nil
 }

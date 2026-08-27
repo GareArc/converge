@@ -12,10 +12,10 @@ import (
 )
 
 type MQOptions struct {
-	Advance            func(d time.Duration)
-	Visibility         time.Duration
-	Retention          time.Duration
-	TracksGroupBacklog bool
+	Advance           func(d time.Duration)
+	Visibility        time.Duration
+	Retention         time.Duration
+	GroupLagIsStubbed bool
 }
 
 func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
@@ -318,8 +318,8 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 	})
 
 	t.Run("BacklogFallsAsMessagesAreAcknowledged", func(t *testing.T) {
-		if !o.TracksGroupBacklog {
-			t.Skip("backend does not track backlog per consumer group")
+		if o.GroupLagIsStubbed {
+			t.Skip("backend stubs consumer-group lag, so its backlog numbers are not the backend's own")
 		}
 		mq := open(t)
 		br, ok := mq.(converge.BacklogReporter)
@@ -346,8 +346,8 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 	})
 
 	t.Run("GroupBacklogCountsOnlyItsOwnGroup", func(t *testing.T) {
-		if !o.TracksGroupBacklog {
-			t.Skip("backend does not track backlog per consumer group")
+		if o.GroupLagIsStubbed {
+			t.Skip("backend stubs consumer-group lag, so its backlog numbers are not the backend's own")
 		}
 		base := open(t)
 		gbr, ok := base.(converge.GroupBacklogReporter)
@@ -386,13 +386,8 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		for i := 0; i < 3; i++ {
 			mustPublish(t, mq, queue, converge.Message{Kind: probeKind, Payload: []byte{byte(i)}})
 		}
-		n, err := br.Backlog(context.Background(), queue)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n != 3 {
-			t.Fatalf("backlog = %d, want 3", n)
-		}
+		awaitBacklog(t, func(ctx context.Context) (int, error) { return br.Backlog(ctx, queue) },
+			3, "nothing has consumed the queue")
 	})
 }
 
@@ -401,6 +396,9 @@ func awaitBacklog(t *testing.T, read func(context.Context) (int, error), want in
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		got, err := read(context.Background())
+		if errors.Is(err, converge.ErrBacklogUnknown) {
+			t.Skip("adapter cannot determine the backlog of this queue and group")
+		}
 		if err != nil {
 			t.Fatalf("backlog: %v", err)
 		}

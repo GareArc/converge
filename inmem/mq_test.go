@@ -34,7 +34,7 @@ func TestMQContract(t *testing.T) {
 		stores[t.Name()] = mq
 		return mq
 	}
-	portcheck.MQ(t, open, portcheck.MQOptions{Advance: clock.Advance, Visibility: inmem.DefaultVisibility, Retention: retention, TracksGroupBacklog: true})
+	portcheck.MQ(t, open, portcheck.MQOptions{Advance: clock.Advance, Visibility: inmem.DefaultVisibility, Retention: retention})
 }
 
 func TestStaleDeliveryCannotDisturbSuccessor(t *testing.T) {

@@ -2,6 +2,7 @@ package converge
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -38,3 +39,5 @@ type BacklogReporter interface {
 type GroupBacklogReporter interface {
 	BacklogForGroup(ctx context.Context, queue, group string) (int, error)
 }
+
+var ErrBacklogUnknown = errors.New("converge: backlog: unknown")

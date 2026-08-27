@@ -63,6 +63,7 @@ type engine struct {
 	inFlight     int
 	shelved      int
 	shelvedKnown bool
+	shelvedAt    time.Time
 	retrying     map[string]time.Time
 	leaseHeld    bool
 	backlog      int
@@ -125,6 +126,7 @@ func (e *engine) Stats() converge.JobStats {
 		Failing:          failing,
 		Shelved:          e.shelved,
 		ShelvedKnown:     e.shelvedKnown,
+		ShelvedAt:        e.shelvedAt,
 		LastSuccess:      e.lastSuccess,
 		LastError:        e.lastErr,
 		LastErrorAt:      e.lastErrAt,
@@ -505,7 +507,8 @@ func (e *engine) process(hctx context.Context, d converge.Delivery, m converge.M
 	meta, guard := e.classify(d, m)
 	sctx := context.WithoutCancel(hctx)
 	if guard != "" {
-		e.observeReason(meta, 0, e.shelve(sctx, d, meta, m, guard, nil), guard)
+		outcome, failed := e.shelve(sctx, d, meta, m, guard, nil)
+		e.observeShelving(meta, 0, outcome, guard, failed)
 		return
 	}
 	stopHB := make(chan struct{})
@@ -551,7 +554,8 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 	}
 	var dec decodeError
 	if errors.As(err, &dec) {
-		e.observeRun(meta, took, e.shelveOrDrop(sctx, d, meta, m, reasonUndecodable, err), err)
+		outcome, failed := e.shelveOrDrop(sctx, d, meta, m, reasonUndecodable, err)
+		e.observeRun(meta, took, outcome, shelvingError(err, failed))
 		return
 	}
 	if s, ok := sig.FromError(err); ok {
@@ -564,14 +568,16 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		return
 	}
 	e.recordFailure(err)
-	if e.durable() && meta.Attempt >= e.cfg.retry.MaxAttempts {
-		e.observeRun(meta, took, e.shelve(sctx, d, meta, m, reasonMaxAttempts, err), err)
+	if !e.durable() {
+		e.observeRun(meta, took, converge.Discarded, err)
+		return
+	}
+	if meta.Attempt >= e.cfg.retry.MaxAttempts {
+		outcome, failed := e.shelve(sctx, d, meta, m, reasonMaxAttempts, err)
+		e.observeRun(meta, took, outcome, shelvingError(err, failed))
 		return
 	}
 	e.observeRun(meta, took, converge.Retrying, err)
-	if !e.durable() {
-		return
-	}
 	delay := e.retryCurve().Delay(meta.Attempt)
 	e.markRetrying(meta.MessageID, delay)
 	d.Nack(sctx, delay)
@@ -602,6 +608,21 @@ func (e *engine) observeReason(meta Meta, took time.Duration, outcome converge.O
 	e.observeRun(meta, took, outcome, reasonError(outcome, reason))
 }
 
+func (e *engine) observeShelving(meta Meta, took time.Duration, outcome converge.Outcome, reason string, failed error) {
+	if failed != nil {
+		e.observeRun(meta, took, outcome, failed)
+		return
+	}
+	e.observeReason(meta, took, outcome, reason)
+}
+
+func shelvingError(cause, failed error) error {
+	if failed == nil {
+		return cause
+	}
+	return errors.Join(cause, failed)
+}
+
 func reasonError(outcome converge.Outcome, reason string) error {
 	if reason == "" {
 		return nil
@@ -622,7 +643,8 @@ func (e *engine) observeRun(meta Meta, took time.Duration, outcome converge.Outc
 
 func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, s sig.Signal, err error, took time.Duration) bool {
 	if s.ControlSurface() != converge.SurfaceWorker {
-		e.observeRun(meta, took, e.shelveOrDrop(sctx, d, meta, m, reasonWrongSurface, err), err)
+		outcome, failed := e.shelveOrDrop(sctx, d, meta, m, reasonWrongSurface, err)
+		e.observeRun(meta, took, outcome, shelvingError(err, failed))
 		return true
 	}
 	switch v := s.(type) {
@@ -639,10 +661,12 @@ func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m conve
 		e.snooze(sctx, d, m, meta, v.In, err, took)
 		return true
 	case Shelve:
-		e.observeRun(meta, took, e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil), err)
+		outcome, failed := e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil)
+		e.observeRun(meta, took, outcome, shelvingError(err, failed))
 		return true
 	case *Shelve:
-		e.observeRun(meta, took, e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil), err)
+		outcome, failed := e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil)
+		e.observeRun(meta, took, outcome, shelvingError(err, failed))
 		return true
 	}
 	return false
@@ -662,7 +686,8 @@ func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Me
 	}
 	remaining := e.cfg.retry.MaxAge - e.deps.Clock.Now().Sub(meta.EnqueuedAt)
 	if remaining <= 0 {
-		e.observeReason(meta, took, e.shelve(sctx, d, meta, m, reasonMaxAge, nil), reasonMaxAge)
+		outcome, failed := e.shelve(sctx, d, meta, m, reasonMaxAge, nil)
+		e.observeShelving(meta, took, outcome, reasonMaxAge, failed)
 		return
 	}
 	env := newEnvelope(d, m)
@@ -769,9 +794,11 @@ func (e *engine) refreshStats(ctx context.Context, backlog func(context.Context)
 	if err != nil {
 		return
 	}
+	scanned := e.deps.Clock.Now()
 	e.mu.Lock()
 	e.shelved = n
 	e.shelvedKnown = true
+	e.shelvedAt = scanned
 	e.mu.Unlock()
 }
 
@@ -801,6 +828,7 @@ func (e *engine) forgetPolledStats() {
 	e.backlogKnown = false
 	e.backlogAt = time.Time{}
 	e.shelvedKnown = false
+	e.shelvedAt = time.Time{}
 	e.mu.Unlock()
 }
 
@@ -841,15 +869,15 @@ func (e *engine) extendLoop(ctx context.Context, d converge.Delivery, stop <-cha
 	}
 }
 
-func (e *engine) shelveOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) converge.Outcome {
+func (e *engine) shelveOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) (converge.Outcome, error) {
 	e.recordFailure(cause)
 	if !e.durable() {
-		return converge.Discarded
+		return converge.Discarded, nil
 	}
 	return e.shelve(ctx, d, meta, m, reason, cause)
 }
 
-func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) converge.Outcome {
+func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) (converge.Outcome, error) {
 	rec := ShelvedMessage{
 		Task:       e.cfg.info.name,
 		Queue:      e.cfg.info.queue,
@@ -872,10 +900,10 @@ func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m c
 		delay := e.retryCurve().Delay(meta.Attempt)
 		e.markRetrying(meta.MessageID, delay)
 		d.Nack(ctx, delay)
-		return converge.Retrying
+		return converge.Retrying, err
 	}
 	d.Ack(ctx)
-	return converge.Shelved
+	return converge.Shelved, nil
 }
 
 func (e *engine) neutral(ctx context.Context, d converge.Delivery, m converge.Message) {

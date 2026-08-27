@@ -15,6 +15,7 @@ type JobStats struct {
 	Failing          int
 	Shelved          int
 	ShelvedKnown     bool
+	ShelvedAt        time.Time
 	LastSuccess      time.Time
 	LastError        error
 	LastErrorAt      time.Time

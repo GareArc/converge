@@ -302,6 +302,50 @@ func TestDecodeFailureShelvesImmediately(t *testing.T) {
 	}
 }
 
+type failingSetKV struct {
+	converge.KV
+	err error
+}
+
+func (kv failingSetKV) Set(context.Context, string, []byte, time.Duration) error { return kv.err }
+
+func TestShelfWriteFailureIsReportedWithItsOwnCause(t *testing.T) {
+	shelfDown := errors.New("kv unavailable")
+	w := convergetest.NewWith(t, convergetest.Options{
+		Namespace: "wt",
+		KV: func(c *convergetest.Clock) converge.KV {
+			return failingSetKV{KV: inmem.NewKVWithClock(c), err: shelfDown}
+		},
+	})
+	rt := w.Build(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	if err := Handle(rt, tk, func(context.Context, string) error { return nil }, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	headers := map[string]string{
+		converge.HeaderMessageID:     "msg-1",
+		converge.HeaderSchemaVersion: "2",
+		converge.HeaderEnqueuedAt:    w.Clock().Now().UTC().Format(time.RFC3339Nano),
+		converge.HeaderAttempt:       "0",
+	}
+	if err := w.MQ.Publish(context.Background(), wInbox("job"), converge.Message{Kind: tk.Name(), Headers: headers, Payload: []byte(`"x"`)}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool {
+		return eventCount(w.Events(), func(e converge.Event) bool {
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Retrying && errors.Is(rc.Err, shelfDown)
+		}) >= 1
+	})
+	if n := eventCount(w.Events(), func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Err != nil && strings.Contains(rc.Err.Error(), reasonSchemaVersion)
+	}); n != 0 {
+		t.Fatalf("%d events blamed %q for a retry caused by a failed shelf write", n, reasonSchemaVersion)
+	}
+}
+
 func TestReceiptGuardsShelving(t *testing.T) {
 	type tc struct {
 		name       string
@@ -1440,13 +1484,14 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&failA) == 1 && atomic.LoadInt32(&failB) == 1 })
 	failRunCompleted := func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Job == "broadcast-fail" && rc.Outcome == converge.Retrying
+		return ok && rc.Job == "broadcast-fail" && rc.Outcome == converge.Discarded &&
+			rc.Err != nil && strings.Contains(rc.Err.Error(), "boom")
 	}
 	if n := eventCount(wa.Events(), failRunCompleted); n != 1 {
-		t.Fatalf("worldA RunCompleted{Outcome: Retrying} count = %d, want 1", n)
+		t.Fatalf("worldA failed RunCompleted{Outcome: Discarded} count = %d, want 1: nothing redelivers a failed broadcast", n)
 	}
 	if n := eventCount(wb.Events(), failRunCompleted); n != 1 {
-		t.Fatalf("worldB RunCompleted{Outcome: Retrying} count = %d, want 1", n)
+		t.Fatalf("worldB failed RunCompleted{Outcome: Discarded} count = %d, want 1: nothing redelivers a failed broadcast", n)
 	}
 
 	if err := snoozeTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
@@ -1902,6 +1947,9 @@ func TestShelvedReportsTheCurrentShelfDepth(t *testing.T) {
 		s := jobStats(t, rt, "job")
 		return s.ShelvedKnown && s.Shelved == 2
 	})
+	if s := jobStats(t, rt, "job"); s.ShelvedAt.IsZero() {
+		t.Fatalf("Stats = %+v, want the shelf depth dated by the scan that read it", s)
+	}
 
 	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
@@ -1936,7 +1984,7 @@ func TestDestroyedJobStopsReportingABacklog(t *testing.T) {
 	convergetest.Await(t, func() bool { return jobStats(t, rt, "migration").State == converge.Destroyed })
 	convergetest.Await(t, func() bool {
 		s := jobStats(t, rt, "migration")
-		return !s.BacklogKnown && s.BacklogAt.IsZero() && !s.ShelvedKnown
+		return !s.BacklogKnown && s.BacklogAt.IsZero() && !s.ShelvedKnown && s.ShelvedAt.IsZero()
 	})
 }
 

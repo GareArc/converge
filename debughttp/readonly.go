@@ -29,6 +29,7 @@ type jobView struct {
 	Failing          int               `json:"failing"`
 	Shelved          int               `json:"shelved"`
 	ShelvedKnown     bool              `json:"shelved_known"`
+	ShelvedAt        string            `json:"shelved_at"`
 	LastSuccess      string            `json:"last_success"`
 	LastError        string            `json:"last_error"`
 	LastErrorAt      string            `json:"last_error_at"`
@@ -149,6 +150,7 @@ func mergeJobView(info converge.JobInfo, stats converge.JobStats) jobView {
 		Failing:          stats.Failing,
 		Shelved:          stats.Shelved,
 		ShelvedKnown:     stats.ShelvedKnown,
+		ShelvedAt:        formatTime(stats.ShelvedAt),
 		LastSuccess:      formatTime(stats.LastSuccess),
 		LastError:        errString(stats.LastError),
 		LastErrorAt:      formatTime(stats.LastErrorAt),
