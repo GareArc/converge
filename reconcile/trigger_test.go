@@ -16,10 +16,10 @@ import (
 )
 
 type funcTrigger struct {
-	run func(ctx context.Context, wake func(ID)) error
+	run func(ctx context.Context, notify func(ID)) error
 }
 
-func (t funcTrigger) Run(ctx context.Context, wake func(ID)) error { return t.run(ctx, wake) }
+func (t funcTrigger) Run(ctx context.Context, notify func(ID)) error { return t.run(ctx, notify) }
 
 func TestCustomTriggerWakesIDs(t *testing.T) {
 	var mu sync.Mutex
@@ -33,8 +33,8 @@ func TestCustomTriggerWakesIDs(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	fired := make(chan struct{})
-	trig := funcTrigger{run: func(ctx context.Context, wake func(ID)) error {
-		wake("ws_1")
+	trig := funcTrigger{run: func(ctx context.Context, notify func(ID)) error {
+		notify("ws_1")
 		close(fired)
 		<-ctx.Done()
 		return ctx.Err()
@@ -54,7 +54,7 @@ func TestCustomTriggerIsRestartedAfterFailure(t *testing.T) {
 	t.Cleanup(cancel)
 	var mu sync.Mutex
 	starts := 0
-	trig := funcTrigger{run: func(ctx context.Context, wake func(ID)) error {
+	trig := funcTrigger{run: func(ctx context.Context, notify func(ID)) error {
 		mu.Lock()
 		starts++
 		mu.Unlock()
@@ -79,7 +79,7 @@ func TestCustomTriggerRestartBackoffResetsAfterHealthyRun(t *testing.T) {
 	t.Cleanup(cancel)
 	var mu sync.Mutex
 	starts := 0
-	trig := funcTrigger{run: func(ctx context.Context, wake func(ID)) error {
+	trig := funcTrigger{run: func(ctx context.Context, notify func(ID)) error {
 		mu.Lock()
 		starts++
 		n := starts
@@ -117,7 +117,7 @@ func TestCustomTriggerStopsOnCancel(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	ctx, cancel := context.WithCancel(context.Background())
 	returned := make(chan struct{})
-	trig := funcTrigger{run: func(ctx context.Context, wake func(ID)) error {
+	trig := funcTrigger{run: func(ctx context.Context, notify func(ID)) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}}

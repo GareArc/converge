@@ -599,8 +599,10 @@ func (e *engine) recordFailure(err error) {
 	now := e.deps.Clock.Now()
 	e.mu.Lock()
 	e.consecFails++
-	e.lastErr = err
-	e.lastErrAt = now
+	if err != nil {
+		e.lastErr = err
+		e.lastErrAt = now
+	}
 	e.mu.Unlock()
 }
 

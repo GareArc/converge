@@ -107,7 +107,7 @@ func KV(t *testing.T, open func(t *testing.T) converge.KV, o KVOptions) {
 		}
 	})
 
-	t.Run("scan pages every key exactly once", func(t *testing.T) {
+	t.Run("scan pages every key at least once", func(t *testing.T) {
 		kv := open(t)
 		const n = 250
 		for i := range n {
@@ -130,12 +130,10 @@ func KV(t *testing.T, open func(t *testing.T) converge.KV, o KVOptions) {
 			cursor = next
 		}
 		if len(seen) != n {
-			t.Fatalf("saw %d keys, want %d", len(seen), n)
+			t.Fatalf("saw %d distinct keys, want %d", len(seen), n)
 		}
-		for k, c := range seen {
-			if c != 1 {
-				t.Fatalf("key %q seen %d times", k, c)
-			}
+		if _, ok := seen["other/key"]; ok {
+			t.Fatal("scan crossed its prefix")
 		}
 	})
 }

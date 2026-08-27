@@ -148,7 +148,7 @@ func TestNewEngineAppliesDefaults(t *testing.T) {
 
 type customPeriodic struct{}
 
-func (customPeriodic) Run(ctx context.Context, wake func(ID)) error { <-ctx.Done(); return ctx.Err() }
+func (customPeriodic) Run(ctx context.Context, notify func(ID)) error { <-ctx.Done(); return ctx.Err() }
 
 func (customPeriodic) NextAfter(t time.Time) time.Time { return t.Add(time.Hour) }
 

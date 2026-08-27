@@ -76,7 +76,7 @@ func Schedule(ids IDSource, c Cadence) PeriodicTrigger {
 	return &scheduleTrigger{source: ids, cad: c}
 }
 
-func (s *scheduleTrigger) Run(ctx context.Context, wake func(ID)) error {
+func (s *scheduleTrigger) Run(ctx context.Context, notify func(ID)) error {
 	<-ctx.Done()
 	return ctx.Err()
 }

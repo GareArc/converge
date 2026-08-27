@@ -12,7 +12,7 @@ import (
 )
 
 type Trigger interface {
-	Run(ctx context.Context, wake func(ID)) error
+	Run(ctx context.Context, notify func(ID)) error
 }
 
 type PeriodicTrigger interface {
@@ -49,7 +49,7 @@ func NotificationsFrom(queue string, o NotificationsOpts) Trigger {
 	return &notificationTrigger{queue: queue, foreign: true, opts: o}
 }
 
-func (t *notificationTrigger) Run(ctx context.Context, wake func(ID)) error {
+func (t *notificationTrigger) Run(ctx context.Context, notify func(ID)) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
