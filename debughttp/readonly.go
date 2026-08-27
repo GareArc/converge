@@ -25,8 +25,10 @@ type jobView struct {
 	InFlight         int               `json:"in_flight"`
 	Backlog          int               `json:"backlog"`
 	BacklogKnown     bool              `json:"backlog_known"`
+	BacklogAt        string            `json:"backlog_at"`
 	Failing          int               `json:"failing"`
 	Shelved          int               `json:"shelved"`
+	ShelvedKnown     bool              `json:"shelved_known"`
 	LastSuccess      string            `json:"last_success"`
 	LastError        string            `json:"last_error"`
 	LastErrorAt      string            `json:"last_error_at"`
@@ -143,8 +145,10 @@ func mergeJobView(info converge.JobInfo, stats converge.JobStats) jobView {
 		InFlight:         stats.InFlight,
 		Backlog:          stats.Backlog,
 		BacklogKnown:     stats.BacklogKnown,
+		BacklogAt:        formatTime(stats.BacklogAt),
 		Failing:          stats.Failing,
 		Shelved:          stats.Shelved,
+		ShelvedKnown:     stats.ShelvedKnown,
 		LastSuccess:      formatTime(stats.LastSuccess),
 		LastError:        errString(stats.LastError),
 		LastErrorAt:      formatTime(stats.LastErrorAt),

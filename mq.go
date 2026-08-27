@@ -34,3 +34,7 @@ type DelayedPublisher interface {
 type BacklogReporter interface {
 	Backlog(ctx context.Context, queue string) (int, error)
 }
+
+type GroupBacklogReporter interface {
+	BacklogForGroup(ctx context.Context, queue, group string) (int, error)
+}

@@ -11,8 +11,10 @@ type JobStats struct {
 	InFlight         int
 	Backlog          int
 	BacklogKnown     bool
+	BacklogAt        time.Time
 	Failing          int
 	Shelved          int
+	ShelvedKnown     bool
 	LastSuccess      time.Time
 	LastError        error
 	LastErrorAt      time.Time

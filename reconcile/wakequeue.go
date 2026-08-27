@@ -30,6 +30,13 @@ const (
 	phaseDelayed
 )
 
+type backoffCause int
+
+const (
+	backoffFromFailure backoffCause = iota + 1
+	backoffFromThrottle
+)
+
 type wakeResult int
 
 const (
@@ -59,6 +66,7 @@ type wakePolicy struct {
 
 type idState struct {
 	phase      idPhase
+	cause      backoffCause
 	due        time.Time
 	hasPending bool
 	pending    wakeClass
@@ -66,6 +74,10 @@ type idState struct {
 	noBackoff  int
 	fallbacks  int
 	lastErr    error
+}
+
+func (st *idState) failing() bool {
+	return st.phase == phaseBackoff && st.cause == backoffFromFailure
 }
 
 type finishResult struct {
@@ -242,6 +254,7 @@ func (q *wakeQueue) applyBackoffOrBypass(id ID, st *idState, now time.Time, atte
 }
 
 func (q *wakeQueue) applyFailure(id ID, st *idState, now time.Time, err error) finishResult {
+	st.cause = backoffFromFailure
 	st.fails++
 	st.noBackoff = 0
 	st.fallbacks = 0
@@ -250,6 +263,7 @@ func (q *wakeQueue) applyFailure(id ID, st *idState, now time.Time, err error) f
 }
 
 func (q *wakeQueue) applyFallback(id ID, st *idState, now time.Time) finishResult {
+	st.cause = backoffFromThrottle
 	return q.applyBackoffOrBypass(id, st, now, st.fallbacks, q.policy.backoff(st.fallbacks))
 }
 
@@ -332,10 +346,10 @@ func (q *wakeQueue) counts() queueCounts {
 	defer q.mu.Unlock()
 	var c queueCounts
 	for _, st := range q.ids {
-		switch st.phase {
-		case phaseRunning:
+		if st.phase == phaseRunning {
 			c.inFlight++
-		case phaseBackoff:
+		}
+		if st.failing() {
 			c.failing++
 		}
 	}
@@ -347,7 +361,7 @@ func (q *wakeQueue) failing() []converge.FailingID {
 	defer q.mu.Unlock()
 	ids := make([]ID, 0)
 	for id, st := range q.ids {
-		if st.phase == phaseBackoff {
+		if st.failing() {
 			ids = append(ids, id)
 		}
 	}

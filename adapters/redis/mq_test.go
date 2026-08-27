@@ -13,8 +13,11 @@ import (
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/convergetest/portcheck"
 	"github.com/alicebob/miniredis/v2"
+	"github.com/alicebob/miniredis/v2/server"
 	"github.com/redis/go-redis/v9"
 )
+
+const miniredisStubsGroupLag = true
 
 const (
 	testGroup      = "converge"
@@ -48,13 +51,128 @@ func TestMQPortMiniredis(t *testing.T) {
 		advance = e.advance
 		return convredis.NewStreamsMQ(e.client, convredis.StreamsOpts{Clock: e.clock, Visibility: time.Minute, Retention: retention})
 	}
-	portcheck.MQ(t, open, portcheck.MQOptions{Advance: func(d time.Duration) { advance(d) }, Visibility: time.Minute, Retention: retention})
+	portcheck.MQ(t, open, portcheck.MQOptions{
+		Advance:            func(d time.Duration) { advance(d) },
+		Visibility:         time.Minute,
+		Retention:          retention,
+		TracksGroupBacklog: !miniredisStubsGroupLag,
+	})
 }
 
 func TestMQPortRealRedis(t *testing.T) {
 	portcheck.MQ(t, func(t *testing.T) converge.MQ {
 		return convredis.NewStreamsMQ(openReal(t), convredis.StreamsOpts{})
-	}, portcheck.MQOptions{})
+	}, portcheck.MQOptions{TracksGroupBacklog: true})
+}
+
+func TestStreamsMQWithoutRetentionKeepsEntriesUntilConsumed(t *testing.T) {
+	_, client, clock, advance := openMiniServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	mq := convredis.NewStreamsMQ(client, convredis.StreamsOpts{Clock: clock, Visibility: time.Minute})
+
+	if err := mq.Publish(ctx, "q", converge.Message{Payload: []byte("old")}); err != nil {
+		t.Fatal(err)
+	}
+	advance(90 * 24 * time.Hour)
+
+	got := make(chan converge.Delivery, 1)
+	go mq.Consume(ctx, "q", func(d converge.Delivery) { got <- d })
+	d := recvDelivery(t, got)
+	if string(d.Message().Payload) != "old" {
+		t.Fatalf("payload = %q, want %q: an unset Retention must not trim anything", d.Message().Payload, "old")
+	}
+}
+
+func TestStreamsMQBacklogForGroupSumsUndeliveredAndUnacked(t *testing.T) {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	stubGroupInfo(t, f.mr, groupInfo{name: testGroup, pending: 2, lag: 5, lagKnown: true})
+
+	n, err := backlogReporter(t, f.mq).Backlog(f.ctx, "q")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 7 {
+		t.Fatalf("Backlog = %d, want 7: 5 entries never delivered to the group plus 2 delivered and unacked", n)
+	}
+}
+
+func TestStreamsMQBacklogForGroupReportsUnknownLagAsUnknown(t *testing.T) {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	stubGroupInfo(t, f.mr, groupInfo{name: testGroup, pending: 2})
+
+	n, err := backlogReporter(t, f.mq).Backlog(f.ctx, "q")
+	if err == nil {
+		t.Fatalf("Backlog = %d with a nil lag, want an error: a guessed depth is worse than none", n)
+	}
+	if n != 0 {
+		t.Fatalf("Backlog = %d alongside an error, want 0", n)
+	}
+}
+
+func TestStreamsMQBacklogAsksAboutTheGivenGroup(t *testing.T) {
+	f := newStreamsMQ(t)
+	f.publish(t, converge.Message{Payload: []byte("a")})
+	stubGroupInfo(t, f.mr, groupInfo{name: "other", pending: 4, lag: 4, lagKnown: true})
+
+	gbr, ok := f.mq.(converge.GroupBacklogReporter)
+	if !ok {
+		t.Fatal("streams MQ must implement converge.GroupBacklogReporter")
+	}
+	n, err := gbr.BacklogForGroup(f.ctx, "q", testGroup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("BacklogForGroup(%q) = %d, want 1: a group that has read nothing is owed every entry", testGroup, n)
+	}
+}
+
+func backlogReporter(t *testing.T, mq converge.MQ) converge.BacklogReporter {
+	t.Helper()
+	br, ok := mq.(converge.BacklogReporter)
+	if !ok {
+		t.Fatal("streams MQ must implement converge.BacklogReporter")
+	}
+	return br
+}
+
+type groupInfo struct {
+	name     string
+	pending  int
+	lag      int
+	lagKnown bool
+}
+
+func stubGroupInfo(t *testing.T, mr *miniredis.Miniredis, g groupInfo) {
+	t.Helper()
+	mr.Server().SetPreHook(func(c *server.Peer, cmd string, args ...string) bool {
+		if cmd != "XINFO" {
+			return false
+		}
+		c.WriteLen(1)
+		c.WriteMapLen(6)
+		c.WriteBulk("name")
+		c.WriteBulk(g.name)
+		c.WriteBulk("consumers")
+		c.WriteInt(1)
+		c.WriteBulk("pending")
+		c.WriteInt(g.pending)
+		c.WriteBulk("last-delivered-id")
+		c.WriteBulk("0-0")
+		c.WriteBulk("entries-read")
+		c.WriteNull()
+		c.WriteBulk("lag")
+		if g.lagKnown {
+			c.WriteInt(g.lag)
+			return true
+		}
+		c.WriteNull()
+		return true
+	})
+	t.Cleanup(func() { mr.Server().SetPreHook(nil) })
 }
 
 func TestStreamsMQNegativeVisibilityDefaults(t *testing.T) {

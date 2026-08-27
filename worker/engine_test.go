@@ -203,8 +203,14 @@ func TestErrorRetriesWithBackoffThenShelves(t *testing.T) {
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Outcome == converge.Retrying
-	}); n != 3 {
-		t.Fatalf("RunCompleted{Outcome: Retrying} count = %d, want 3", n)
+	}); n != 2 {
+		t.Fatalf("RunCompleted{Outcome: Retrying} count = %d, want 2", n)
+	}
+	if n := eventCount(w.Events(), func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Outcome == converge.Shelved
+	}); n != 1 {
+		t.Fatalf("RunCompleted{Outcome: Shelved} count = %d, want 1", n)
 	}
 	stats := jobStats(t, rt, "job")
 	if stats.ConsecutiveFails != 3 {
@@ -528,9 +534,9 @@ func TestDiscardAcksWithEvent(t *testing.T) {
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
 	if n := eventCount(w.Events(), func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Outcome == converge.Discarded && rc.Err == nil
+		return ok && rc.Outcome == converge.Discarded && rc.Err != nil && strings.Contains(rc.Err.Error(), "gone")
 	}); n != 1 {
-		t.Fatalf("RunCompleted{Outcome: Discarded} count = %d, want 1", n)
+		t.Fatalf("RunCompleted{Outcome: Discarded} carrying the discard reason: count = %d, want 1; a discard writes no record anywhere else", n)
 	}
 	stats := jobStats(t, rt, "job")
 	if stats.ConsecutiveFails != 0 {
@@ -769,7 +775,7 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
-			return ok && rc.Outcome == converge.Retrying
+			return ok && rc.Outcome == converge.Shelved
 		}) == 1
 	})
 	if err := w.MQ.Publish(context.Background(), wInbox("job"), anonMsg()); err != nil {
@@ -778,7 +784,7 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	convergetest.Await(t, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
 			rc, ok := e.(converge.RunCompleted)
-			return ok && rc.Outcome == converge.Retrying
+			return ok && rc.Outcome == converge.Shelved
 		}) == 2
 	})
 
@@ -788,12 +794,12 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 	}
 	var ids []string
 	for _, e := range w.Events() {
-		if rc, ok := e.(converge.RunCompleted); ok && rc.Outcome == converge.Retrying {
+		if rc, ok := e.(converge.RunCompleted); ok && rc.Outcome == converge.Shelved {
 			ids = append(ids, rc.ID)
 		}
 	}
 	if len(ids) != 2 || ids[0] != ids[1] {
-		t.Fatalf("RunCompleted{Outcome: Retrying} IDs = %v, want two identical values", ids)
+		t.Fatalf("RunCompleted{Outcome: Shelved} IDs = %v, want two identical values", ids)
 	}
 	if !strings.HasPrefix(ids[0], "anon-") {
 		t.Fatalf("MessageID = %q, want prefix %q", ids[0], "anon-")
@@ -1450,13 +1456,13 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&snoozeA) == 1 && atomic.LoadInt32(&snoozeB) == 1 })
 	snoozeRunCompleted := func(e converge.Event) bool {
 		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Job == "broadcast-snooze" && rc.Outcome == converge.Deferred
+		return ok && rc.Job == "broadcast-snooze" && rc.Outcome == converge.Discarded
 	}
 	if n := eventCount(wa.Events(), snoozeRunCompleted); n != 1 {
-		t.Fatalf("worldA snoozed RunCompleted{Outcome: Deferred} count = %d, want 1", n)
+		t.Fatalf("worldA snoozed RunCompleted{Outcome: Discarded} count = %d, want 1: nothing redelivers a broadcast snooze", n)
 	}
 	if n := eventCount(wb.Events(), snoozeRunCompleted); n != 1 {
-		t.Fatalf("worldB snoozed RunCompleted{Outcome: Deferred} count = %d, want 1", n)
+		t.Fatalf("worldB snoozed RunCompleted{Outcome: Discarded} count = %d, want 1: nothing redelivers a broadcast snooze", n)
 	}
 }
 
@@ -1752,10 +1758,53 @@ func TestBacklogKnownAfterPollingInbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	convergetest.AdvanceUntil(t, h.Clock(), 5*time.Second, func() bool { return jobStats(t, rt, "job").Backlog >= 1 })
-	if s := jobStats(t, rt, "job"); !s.BacklogKnown || s.Backlog < 1 {
-		t.Fatalf("Stats = %+v, want BacklogKnown with a nonzero backlog", s)
+	s := awaitFreshBacklog(t, h, rt, "job")
+	if !s.BacklogKnown || s.Backlog != 0 {
+		t.Fatalf("Stats = %+v, want a known backlog of 0: a message that was consumed and acked is not backlog", s)
 	}
+}
+
+func TestBacklogCountsADeliveredButUnackedMessage(t *testing.T) {
+	h := convergetest.NewWith(t, convergetest.Options{LeaseTTL: 30 * time.Second})
+	rt := h.Build(t)
+	task := NewTask[string]("job", TaskOpts{})
+	release := make(chan struct{})
+	running := make(chan struct{}, 1)
+	if err := Handle(rt, task, func(ctx context.Context, _ string) error {
+		running <- struct{}{}
+		<-release
+		return nil
+	}, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	if err := task.Enqueue(context.Background(), p, "x", EnqueueOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-running:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never ran")
+	}
+	if s := awaitFreshBacklog(t, h, rt, "job"); !s.BacklogKnown || s.Backlog != 1 {
+		t.Fatalf("Stats = %+v, want a known backlog of 1: a message delivered and not yet acked is still outstanding work", s)
+	}
+	close(release)
+	h.Drain(t)
+	if s := awaitFreshBacklog(t, h, rt, "job"); !s.BacklogKnown || s.Backlog != 0 {
+		t.Fatalf("Stats = %+v, want a known backlog of 0 once the message is acked", s)
+	}
+}
+
+func awaitFreshBacklog(t *testing.T, h *convergetest.Harness, rt *converge.Runtime, job string) converge.JobStats {
+	t.Helper()
+	before := jobStats(t, rt, job).BacklogAt
+	convergetest.AdvanceUntil(t, h.Clock(), 5*time.Second, func() bool {
+		s := jobStats(t, rt, job)
+		return s.BacklogKnown && s.BacklogAt.After(before)
+	})
+	return jobStats(t, rt, job)
 }
 
 func TestShelveStopsAfterOneAttempt(t *testing.T) {
@@ -1827,9 +1876,68 @@ func TestShelveOnBroadcastWithoutKVDropsInsteadOfPanicking(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool { return shelves.Load() == 1 })
 	convergetest.AssertStable(t, func() bool { return shelves.Load() == 1 })
-	if got := jobStats(t, rt, "broadcast-shelve").Shelved; got != 0 {
-		t.Fatalf("Shelved = %d, want 0 when there is no shelf to write to", got)
+	if s := jobStats(t, rt, "broadcast-shelve"); s.ShelvedKnown || s.Shelved != 0 {
+		t.Fatalf("Stats = %+v, want an unknown shelf depth when there is no shelf to read", s)
 	}
+}
+
+func TestShelvedReportsTheCurrentShelfDepth(t *testing.T) {
+	h := convergetest.NewWith(t, convergetest.Options{Namespace: "wt", LeaseTTL: 30 * time.Second})
+	rt := h.Build(t)
+	task := NewTask[string]("job", TaskOpts{})
+	if err := Handle(rt, task, func(context.Context, string) error {
+		return Shelve{Reason: "card revoked"}
+	}, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "wt"})
+	for _, id := range []string{"o-1", "o-2"} {
+		if err := task.Enqueue(context.Background(), p, id, EnqueueOpts{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.Drain(t)
+	convergetest.AdvanceUntil(t, h.Clock(), 5*time.Second, func() bool {
+		s := jobStats(t, rt, "job")
+		return s.ShelvedKnown && s.Shelved == 2
+	})
+
+	shelf, err := ShelfFrom(rt, "job")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := shelf.PurgeAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.AdvanceUntil(t, h.Clock(), 5*time.Second, func() bool {
+		s := jobStats(t, rt, "job")
+		return s.ShelvedKnown && s.Shelved == 0
+	})
+	if s := jobStats(t, rt, "job"); s.Shelved != 0 {
+		t.Fatalf("Shelved = %d after the shelf was purged, want 0: Shelved is a depth, not a run count", s.Shelved)
+	}
+}
+
+func TestDestroyedJobStopsReportingABacklog(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt", LeaseTTL: 30 * time.Second})
+	rt := w.Build(t)
+	tk := NewTask[string]("migration", TaskOpts{})
+	cutover := w.Clock().Now().Add(time.Hour)
+	err := Handle(rt, tk, func(context.Context, string) error { return nil },
+		HandleOpts{RunMode: converge.OnOneReplica, Until: converge.Deadline(cutover)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	convergetest.Await(t, func() bool { return jobStats(t, rt, "migration").BacklogKnown })
+
+	w.Clock().Advance(2 * time.Hour)
+	convergetest.Await(t, func() bool { return jobStats(t, rt, "migration").State == converge.Destroyed })
+	convergetest.Await(t, func() bool {
+		s := jobStats(t, rt, "migration")
+		return !s.BacklogKnown && s.BacklogAt.IsZero() && !s.ShelvedKnown
+	})
 }
 
 func TestDeadlineDestroysTheJob(t *testing.T) {

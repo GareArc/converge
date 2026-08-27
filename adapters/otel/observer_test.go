@@ -10,6 +10,7 @@ import (
 	convotel "github.com/GareArc/converge/adapters/otel"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/reconcile"
+	"github.com/GareArc/converge/worker"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -308,19 +309,68 @@ func TestBacklogGaugeSkipsUnknownBacklog(t *testing.T) {
 		t.Fatalf("RegisterGauges: %v", err)
 	}
 
-	rm := collect(t, r)
+	assertNoGaugePoint(t, collect(t, r), "converge.backlog", "job",
+		"converge.backlog emitted a point for a job with BacklogKnown=false; a missing series is honest, a zero is not")
+}
+
+func TestShelvedGaugeSkipsAJobWithNoShelf(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	if err := reconcile.Periodic(rt, "job", reconcile.Every(time.Hour), func(context.Context) error { return nil }, reconcile.PeriodicOpts{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+	h.Runtime(t)
+
+	convergetest.Await(t, func() bool { return len(rt.Stats()) == 1 })
+
+	r := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+	if err := convotel.RegisterGauges(mp.Meter("converge"), rt); err != nil {
+		t.Fatalf("RegisterGauges: %v", err)
+	}
+
+	assertNoGaugePoint(t, collect(t, r), "converge.shelved.current", "job",
+		"converge.shelved.current emitted a point for a reconcile job, which has no shelf at all")
+}
+
+func TestLeaseHeldGaugeSkipsAJobThatTakesNoLease(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	task := worker.NewTask[string]("competing", worker.TaskOpts{})
+	if err := worker.Handle(rt, task, func(context.Context, string) error { return nil }, worker.HandleOpts{}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	h.Runtime(t)
+
+	convergetest.Await(t, func() bool { return len(rt.Stats()) == 1 })
+	if js := rt.Stats()[0]; js.RunMode != converge.Competing {
+		t.Fatalf("run mode = %v, want Competing", js.RunMode)
+	}
+
+	r := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+	if err := convotel.RegisterGauges(mp.Meter("converge"), rt); err != nil {
+		t.Fatalf("RegisterGauges: %v", err)
+	}
+
+	assertNoGaugePoint(t, collect(t, r), "converge.lease_held", "competing",
+		"converge.lease_held emitted a point for a Competing job, which never takes a lease; a constant 0 reads as losing the lease")
+}
+
+func assertNoGaugePoint(t *testing.T, rm metricdata.ResourceMetrics, metric, job, msg string) {
+	t.Helper()
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != "converge.backlog" {
+			if m.Name != metric {
 				continue
 			}
 			g, ok := m.Data.(metricdata.Gauge[int64])
 			if !ok {
-				t.Fatal("converge.backlog is not an int64 gauge")
+				t.Fatalf("%s is not an int64 gauge", metric)
 			}
 			for _, dp := range g.DataPoints {
-				if attrValue(t, dp.Attributes, "converge.job") == "job" {
-					t.Fatal("converge.backlog emitted a point for a job with BacklogKnown=false; a missing series is honest, a zero is not")
+				if attrValue(t, dp.Attributes, "converge.job") == job {
+					t.Fatal(msg)
 				}
 			}
 		}

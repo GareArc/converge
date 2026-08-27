@@ -299,6 +299,11 @@ func (k *blockOnSetKV) Set(ctx context.Context, key string, val []byte, ttl time
 	return k.KV.Set(ctx, key, val, ttl)
 }
 
+func awaitScheduleArmed(t *testing.T, te *testEngine, cadence time.Duration) {
+	t.Helper()
+	convergetest.Await(t, func() bool { return te.clock.Waiting(cadence) == 1 })
+}
+
 func isScheduleOverrunEvent(e converge.Event) bool {
 	_, ok := e.(converge.ScheduleOverrun)
 	return ok
@@ -322,6 +327,7 @@ func TestFirstPassHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T) 
 
 	kv.releaseBlock()
 	convergetest.Await(t, te.e.Quiet)
+	awaitScheduleArmed(t, te, time.Hour)
 
 	te.clock.Advance(time.Hour)
 	convergetest.Await(t, func() bool { return runCount(te) == 2 })
@@ -336,6 +342,7 @@ func TestSteadyStateHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T
 	startSchedule(t, te, SingleID(), Every(time.Hour))
 	convergetest.Await(t, func() bool { return runCount(te) == 1 })
 	convergetest.Await(t, te.e.Quiet)
+	awaitScheduleArmed(t, te, time.Hour)
 
 	lastKey := te.e.key("sched", "0", "last")
 	kv.armFor(lastKey)
@@ -352,6 +359,7 @@ func TestSteadyStateHousekeepingStaysBusyUntilCheckOverrunCompletes(t *testing.T
 
 	kv.releaseBlock()
 	convergetest.Await(t, te.e.Quiet)
+	awaitScheduleArmed(t, te, time.Hour)
 
 	te.clock.Advance(time.Hour)
 	convergetest.Await(t, func() bool { return runCount(te) == 3 })

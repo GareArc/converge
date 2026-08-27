@@ -62,10 +62,12 @@ type engine struct {
 	mu           sync.Mutex
 	inFlight     int
 	shelved      int
+	shelvedKnown bool
 	retrying     map[string]time.Time
 	leaseHeld    bool
 	backlog      int
 	backlogKnown bool
+	backlogAt    time.Time
 	lastSuccess  time.Time
 	lastErr      error
 	lastErrAt    time.Time
@@ -119,8 +121,10 @@ func (e *engine) Stats() converge.JobStats {
 		InFlight:         e.inFlight,
 		Backlog:          e.backlog,
 		BacklogKnown:     e.backlogKnown,
+		BacklogAt:        e.backlogAt,
 		Failing:          failing,
 		Shelved:          e.shelved,
+		ShelvedKnown:     e.shelvedKnown,
 		LastSuccess:      e.lastSuccess,
 		LastError:        e.lastErr,
 		LastErrorAt:      e.lastErrAt,
@@ -373,9 +377,9 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 		}
 	}()
 
-	stopBacklog := make(chan struct{})
-	defer close(stopBacklog)
-	go e.pollBacklog(ctx, e.cfg.info.queue, stopBacklog)
+	stopPolling := make(chan struct{})
+	defer close(stopPolling)
+	go e.pollStats(ctx, stopPolling)
 
 	var wg sync.WaitGroup
 	intakeDone := make(chan struct{})
@@ -501,8 +505,7 @@ func (e *engine) process(hctx context.Context, d converge.Delivery, m converge.M
 	meta, guard := e.classify(d, m)
 	sctx := context.WithoutCancel(hctx)
 	if guard != "" {
-		e.observeRun(meta, 0, converge.Shelved, nil)
-		e.shelve(sctx, d, meta, m, guard, nil)
+		e.observeReason(meta, 0, e.shelve(sctx, d, meta, m, guard, nil), guard)
 		return
 	}
 	stopHB := make(chan struct{})
@@ -548,8 +551,7 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 	}
 	var dec decodeError
 	if errors.As(err, &dec) {
-		e.observeRun(meta, took, converge.Shelved, err)
-		e.shelveOrDrop(sctx, d, meta, m, reasonUndecodable, err)
+		e.observeRun(meta, took, e.shelveOrDrop(sctx, d, meta, m, reasonUndecodable, err), err)
 		return
 	}
 	if s, ok := sig.FromError(err); ok {
@@ -562,12 +564,12 @@ func (e *engine) settle(hctx context.Context, d converge.Delivery, m converge.Me
 		return
 	}
 	e.recordFailure(err)
-	e.observeRun(meta, took, converge.Retrying, err)
-	if !e.durable() {
+	if e.durable() && meta.Attempt >= e.cfg.retry.MaxAttempts {
+		e.observeRun(meta, took, e.shelve(sctx, d, meta, m, reasonMaxAttempts, err), err)
 		return
 	}
-	if meta.Attempt >= e.cfg.retry.MaxAttempts {
-		e.shelve(sctx, d, meta, m, reasonMaxAttempts, err)
+	e.observeRun(meta, took, converge.Retrying, err)
+	if !e.durable() {
 		return
 	}
 	delay := e.retryCurve().Delay(meta.Attempt)
@@ -596,6 +598,17 @@ func (e *engine) recordFailure(err error) {
 	e.mu.Unlock()
 }
 
+func (e *engine) observeReason(meta Meta, took time.Duration, outcome converge.Outcome, reason string) {
+	e.observeRun(meta, took, outcome, reasonError(outcome, reason))
+}
+
+func reasonError(outcome converge.Outcome, reason string) error {
+	if reason == "" {
+		return nil
+	}
+	return fmt.Errorf("worker: %s: %s", outcome, reason)
+}
+
 func (e *engine) observeRun(meta Meta, took time.Duration, outcome converge.Outcome, err error) {
 	e.deps.Observer.Observe(converge.RunCompleted{
 		Job:      e.cfg.info.name,
@@ -609,8 +622,7 @@ func (e *engine) observeRun(meta Meta, took time.Duration, outcome converge.Outc
 
 func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, s sig.Signal, err error, took time.Duration) bool {
 	if s.ControlSurface() != converge.SurfaceWorker {
-		e.observeRun(meta, took, converge.Shelved, err)
-		e.shelveOrDrop(sctx, d, meta, m, reasonWrongSurface, err)
+		e.observeRun(meta, took, e.shelveOrDrop(sctx, d, meta, m, reasonWrongSurface, err), err)
 		return true
 	}
 	switch v := s.(type) {
@@ -627,12 +639,10 @@ func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m conve
 		e.snooze(sctx, d, m, meta, v.In, err, took)
 		return true
 	case Shelve:
-		e.observeRun(meta, took, converge.Shelved, err)
-		e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil)
+		e.observeRun(meta, took, e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil), err)
 		return true
 	case *Shelve:
-		e.observeRun(meta, took, converge.Shelved, err)
-		e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil)
+		e.observeRun(meta, took, e.shelveOrDrop(sctx, d, meta, m, v.Reason, nil), err)
 		return true
 	}
 	return false
@@ -641,19 +651,18 @@ func (e *engine) settleSignal(sctx context.Context, d converge.Delivery, m conve
 func (e *engine) discard(sctx context.Context, d converge.Delivery, meta Meta, v Discard, took time.Duration) {
 	d.Ack(sctx)
 	e.recordSuccess()
-	e.observeRun(meta, took, converge.Discarded, nil)
+	e.observeReason(meta, took, converge.Discarded, v.Reason)
 }
 
 func (e *engine) snooze(sctx context.Context, d converge.Delivery, m converge.Message, meta Meta, in time.Duration, err error, took time.Duration) {
 	if !e.durable() {
 		e.recordFailure(err)
-		e.observeRun(meta, took, converge.Deferred, nil)
+		e.observeRun(meta, took, converge.Discarded, err)
 		return
 	}
 	remaining := e.cfg.retry.MaxAge - e.deps.Clock.Now().Sub(meta.EnqueuedAt)
 	if remaining <= 0 {
-		e.observeRun(meta, took, converge.Shelved, nil)
-		e.shelve(sctx, d, meta, m, reasonMaxAge, nil)
+		e.observeReason(meta, took, e.shelve(sctx, d, meta, m, reasonMaxAge, nil), reasonMaxAge)
 		return
 	}
 	env := newEnvelope(d, m)
@@ -702,33 +711,96 @@ func (e *engine) leaseLoop(ctx context.Context) {
 	}
 }
 
-func (e *engine) pollBacklog(ctx context.Context, queue string, stop <-chan struct{}) {
-	br, ok := e.deps.MQ.(converge.BacklogReporter)
-	if !ok {
+func (e *engine) backlogReader() func(context.Context) (int, error) {
+	switch e.cfg.runMode {
+	case converge.OnAllReplicas:
+		return nil
+	case converge.Competing:
+		gr, ok := e.deps.MQ.(converge.GroupBacklogReporter)
+		if !ok {
+			return nil
+		}
+		group := e.key("group")
+		return func(ctx context.Context) (int, error) { return gr.BacklogForGroup(ctx, e.cfg.info.queue, group) }
+	default:
+		br, ok := e.deps.MQ.(converge.BacklogReporter)
+		if !ok {
+			return nil
+		}
+		return func(ctx context.Context) (int, error) { return br.Backlog(ctx, e.cfg.info.queue) }
+	}
+}
+
+func (e *engine) pollStats(ctx context.Context, stop <-chan struct{}) {
+	defer e.forgetPolledStats()
+	backlog := e.backlogReader()
+	if backlog == nil && !e.shelfReadable() {
 		return
 	}
 	interval := e.deps.LeaseTTL / 3
-	e.refreshBacklog(ctx, br, queue, interval)
+	e.refreshStats(ctx, backlog, interval)
 	for {
 		select {
 		case <-stop:
 			return
 		case <-e.deps.Clock.After(interval):
-			e.refreshBacklog(ctx, br, queue, interval)
+			e.refreshStats(ctx, backlog, interval)
 		}
 	}
 }
 
-func (e *engine) refreshBacklog(ctx context.Context, br converge.BacklogReporter, queue string, timeout time.Duration) {
-	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+func (e *engine) refreshStats(ctx context.Context, backlog func(context.Context) (int, error), timeout time.Duration) {
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	n, err := br.Backlog(bctx, queue)
+	if backlog != nil {
+		if n, err := backlog(sctx); err == nil {
+			now := e.deps.Clock.Now()
+			e.mu.Lock()
+			e.backlog = n
+			e.backlogKnown = true
+			e.backlogAt = now
+			e.mu.Unlock()
+		}
+	}
+	if !e.shelfReadable() {
+		return
+	}
+	n, err := e.shelfDepth(sctx)
 	if err != nil {
 		return
 	}
 	e.mu.Lock()
-	e.backlog = n
-	e.backlogKnown = true
+	e.shelved = n
+	e.shelvedKnown = true
+	e.mu.Unlock()
+}
+
+func (e *engine) shelfReadable() bool { return e.durable() && e.deps.KV != nil }
+
+func (e *engine) shelfDepth(ctx context.Context) (int, error) {
+	prefix := keys.WorkerShelfPrefix(e.deps.Namespace, e.cfg.info.name)
+	seen := map[string]struct{}{}
+	cursor := ""
+	for {
+		found, next, err := e.deps.KV.Scan(ctx, prefix, cursor)
+		if err != nil {
+			return 0, err
+		}
+		for _, key := range found {
+			seen[key] = struct{}{}
+		}
+		if next == "" {
+			return len(seen), nil
+		}
+		cursor = next
+	}
+}
+
+func (e *engine) forgetPolledStats() {
+	e.mu.Lock()
+	e.backlogKnown = false
+	e.backlogAt = time.Time{}
+	e.shelvedKnown = false
 	e.mu.Unlock()
 }
 
@@ -769,15 +841,15 @@ func (e *engine) extendLoop(ctx context.Context, d converge.Delivery, stop <-cha
 	}
 }
 
-func (e *engine) shelveOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) {
+func (e *engine) shelveOrDrop(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) converge.Outcome {
 	e.recordFailure(cause)
 	if !e.durable() {
-		return
+		return converge.Discarded
 	}
-	e.shelve(ctx, d, meta, m, reason, cause)
+	return e.shelve(ctx, d, meta, m, reason, cause)
 }
 
-func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) {
+func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m converge.Message, reason string, cause error) converge.Outcome {
 	rec := ShelvedMessage{
 		Task:       e.cfg.info.name,
 		Queue:      e.cfg.info.queue,
@@ -800,12 +872,10 @@ func (e *engine) shelve(ctx context.Context, d converge.Delivery, meta Meta, m c
 		delay := e.retryCurve().Delay(meta.Attempt)
 		e.markRetrying(meta.MessageID, delay)
 		d.Nack(ctx, delay)
-		return
+		return converge.Retrying
 	}
 	d.Ack(ctx)
-	e.mu.Lock()
-	e.shelved++
-	e.mu.Unlock()
+	return converge.Shelved
 }
 
 func (e *engine) neutral(ctx context.Context, d converge.Delivery, m converge.Message) {

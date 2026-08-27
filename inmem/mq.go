@@ -22,6 +22,8 @@ const DefaultVisibility = 30 * time.Second
 
 const pollInterval = 2 * time.Millisecond
 
+const defaultGroup = "default"
+
 type MQ struct {
 	mu        sync.Mutex
 	clock     converge.Clock
@@ -95,7 +97,7 @@ func (q *MQ) publish(queue string, m converge.Message, delay time.Duration) erro
 }
 
 func (q *MQ) Consume(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
-	return q.consumeGroup(ctx, queue, "default", deliver)
+	return q.consumeGroup(ctx, queue, defaultGroup, deliver)
 }
 
 func (q *MQ) consumeGroup(ctx context.Context, queue, group string, deliver func(converge.Delivery)) error {
@@ -165,7 +167,11 @@ func (q *MQ) pruneBacklog(qu *mqQueue, now time.Time) {
 	qu.backlog = kept
 }
 
-func (q *MQ) Backlog(_ context.Context, queue string) (int, error) {
+func (q *MQ) Backlog(ctx context.Context, queue string) (int, error) {
+	return q.BacklogForGroup(ctx, queue, defaultGroup)
+}
+
+func (q *MQ) BacklogForGroup(_ context.Context, queue, group string) (int, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	qu, ok := q.queues[queue]
@@ -173,7 +179,11 @@ func (q *MQ) Backlog(_ context.Context, queue string) (int, error) {
 		return 0, nil
 	}
 	q.pruneBacklog(qu, q.clock.Now())
-	return len(qu.backlog), nil
+	g, ok := qu.groups[group]
+	if !ok {
+		return len(qu.backlog), nil
+	}
+	return len(g.pending) + len(g.inflight), nil
 }
 
 func (g *mqGroup) next(now time.Time) *mqMsg {

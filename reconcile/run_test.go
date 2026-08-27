@@ -12,6 +12,7 @@ import (
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/internal/keys"
+	"github.com/GareArc/converge/internal/notice"
 )
 
 type liveEngine struct {
@@ -837,13 +838,18 @@ func TestScheduleOnlyJobNeverReportsBacklogKnown(t *testing.T) {
 	convergetest.AssertStable(t, func() bool { return !le.e.Stats().BacklogKnown })
 }
 
-func TestBacklogKnownAfterPollingNotificationInbox(t *testing.T) {
+func TestBacklogIsZeroOnceNotificationsAreConsumed(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	rec := &convergetest.Recorder{}
 	lease := inmem.NewLeaseWithClock(clock)
 	kv := inmem.NewKVWithClock(clock)
 	mq := convergetest.WrapMQ(inmem.NewMQWithClock(clock))
+	reconciled := make(chan ID, 4)
 	spec := specWithSchedule()
+	spec.Reconcile = func(_ context.Context, id ID) error {
+		reconciled <- id
+		return nil
+	}
 	spec.Triggers = append(spec.Triggers, Notifications(NotificationsOpts{}))
 	e, err := newEngine(spec)
 	if err != nil {
@@ -867,13 +873,95 @@ func TestBacklogKnownAfterPollingNotificationInbox(t *testing.T) {
 		t.Fatal("never ready")
 	}
 	convergetest.Await(t, func() bool { return e.Stats().LeaseHeld })
-	if err := mq.Publish(context.Background(), keys.Inbox("", "job"), converge.Message{Payload: []byte("x")}); err != nil {
+	payload, err := notice.Encode("id-1")
+	if err != nil {
 		t.Fatal(err)
 	}
-	convergetest.AdvanceUntil(t, clock, 5*time.Second, func() bool { return e.Stats().Backlog >= 1 })
-	if s := e.Stats(); !s.BacklogKnown || s.Backlog < 1 {
-		t.Fatalf("Stats = %+v, want BacklogKnown with a nonzero backlog", s)
+	if err := mq.Publish(context.Background(), keys.Inbox("", "job"), converge.Message{Payload: payload}); err != nil {
+		t.Fatal(err)
 	}
+	select {
+	case <-reconciled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification never reached the handler")
+	}
+	before := e.Stats().BacklogAt
+	convergetest.AdvanceUntil(t, clock, 5*time.Second, func() bool {
+		s := e.Stats()
+		return s.BacklogKnown && s.BacklogAt.After(before) && s.Backlog == 0
+	})
+	if s := e.Stats(); !s.BacklogKnown || s.Backlog != 0 {
+		t.Fatalf("Stats = %+v, want a known backlog of 0: a notification that was consumed and acked is not backlog", s)
+	}
+}
+
+func TestBacklogSumsEveryNotificationTrigger(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	rec := &convergetest.Recorder{}
+	lease := inmem.NewLeaseWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	first := convergetest.WrapMQ(inmem.NewMQWithClock(clock))
+	second := convergetest.WrapMQ(inmem.NewMQWithClock(clock))
+	spec := specWithSchedule()
+	spec.Triggers = append(spec.Triggers,
+		NotificationsFrom("first", NotificationsOpts{MQ: first, ID: func([]byte) (ID, error) { return "a", nil }}),
+		NotificationsFrom("second", NotificationsOpts{MQ: second, ID: func([]byte) (ID, error) { return "b", nil }}),
+	)
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.bind(converge.JobDeps{MQ: first, Lease: lease, KV: kv, Observer: rec, Clock: clock, LeaseTTL: 30 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if err := first.Publish(ctx, "first", converge.Message{Payload: []byte("x")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := second.Publish(ctx, "second", converge.Message{Payload: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	readers := e.backlogReaders()
+	if len(readers) != 2 {
+		t.Fatalf("backlogReaders = %d, want one per notification trigger", len(readers))
+	}
+	e.refreshBacklog(ctx, readers, time.Second)
+	if s := e.Stats(); !s.BacklogKnown || s.Backlog != 3 {
+		t.Fatalf("Stats = %+v, want the sum of both notification inboxes (3)", s)
+	}
+}
+
+func TestBacklogUnknownWhenOneNotificationTriggerCannotReport(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	lease := inmem.NewLeaseWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	reporting := convergetest.WrapMQ(inmem.NewMQWithClock(clock))
+	spec := specWithSchedule()
+	spec.Triggers = append(spec.Triggers,
+		NotificationsFrom("first", NotificationsOpts{MQ: reporting, ID: func([]byte) (ID, error) { return "a", nil }}),
+		NotificationsFrom("second", NotificationsOpts{MQ: silentMQ{}, ID: func([]byte) (ID, error) { return "b", nil }}),
+	)
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.bind(converge.JobDeps{MQ: reporting, Lease: lease, KV: kv, Observer: &convergetest.Recorder{}, Clock: clock, LeaseTTL: 30 * time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if readers := e.backlogReaders(); readers != nil {
+		t.Fatalf("backlogReaders = %d readers, want none: a partial sum is not a total", len(readers))
+	}
+}
+
+type silentMQ struct{}
+
+func (silentMQ) Publish(context.Context, string, converge.Message) error { return nil }
+
+func (silentMQ) Consume(ctx context.Context, _ string, _ func(converge.Delivery)) error {
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func TestHeartbeatSurvivesTransientExtendFailureDuringDrain(t *testing.T) {

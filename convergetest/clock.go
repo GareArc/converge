@@ -13,6 +13,7 @@ type Clock struct {
 
 type clockWaiter struct {
 	at time.Time
+	d  time.Duration
 	ch chan time.Time
 }
 
@@ -32,8 +33,20 @@ func (c *Clock) After(d time.Duration) <-chan time.Time {
 		ch <- c.now
 		return ch
 	}
-	c.waiters = append(c.waiters, clockWaiter{at: c.now.Add(d), ch: ch})
+	c.waiters = append(c.waiters, clockWaiter{at: c.now.Add(d), d: d, ch: ch})
 	return ch
+}
+
+func (c *Clock) Waiting(d time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, w := range c.waiters {
+		if w.d == d {
+			n++
+		}
+	}
+	return n
 }
 
 func (c *Clock) Advance(d time.Duration) {

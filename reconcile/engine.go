@@ -55,6 +55,7 @@ type engine struct {
 	leaseHeld    bool
 	backlog      int
 	backlogKnown bool
+	backlogAt    time.Time
 	state        converge.State
 	opsInFlight  sync.WaitGroup
 
@@ -176,6 +177,7 @@ func (e *engine) Stats() converge.JobStats {
 		LeaseHeld:        e.leaseHeld,
 		Backlog:          e.backlog,
 		BacklogKnown:     e.backlogKnown,
+		BacklogAt:        e.backlogAt,
 		LastSuccess:      e.lastSuccess,
 		LastError:        e.lastErr,
 		LastErrorAt:      e.lastErrAt,
@@ -639,9 +641,7 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 
 	backlogStop := make(chan struct{})
 	defer close(backlogStop)
-	if mq, queue, ok := e.backlogSource(); ok {
-		go e.pollBacklog(ctx, mq, queue, backlogStop)
-	}
+	go e.pollBacklog(ctx, backlogStop)
 
 	var aux sync.WaitGroup
 	for i, t := range e.cfg.triggers {
@@ -688,42 +688,86 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 	}
 }
 
-func (e *engine) backlogSource() (converge.MQ, string, bool) {
+func (e *engine) backlogReaders() []func(context.Context) (int, error) {
+	var out []func(context.Context) (int, error)
 	for _, t := range e.cfg.triggers {
-		if tr, ok := t.(*notificationTrigger); ok && tr.mq != nil {
-			return tr.mq, tr.queue, true
+		tr, ok := t.(*notificationTrigger)
+		if !ok {
+			continue
 		}
+		read := e.triggerBacklogReader(tr)
+		if read == nil {
+			return nil
+		}
+		out = append(out, read)
 	}
-	return nil, "", false
+	return out
 }
 
-func (e *engine) pollBacklog(ctx context.Context, mq converge.MQ, queue string, stop <-chan struct{}) {
-	br, ok := mq.(converge.BacklogReporter)
-	if !ok {
+func (e *engine) triggerBacklogReader(t *notificationTrigger) func(context.Context) (int, error) {
+	if t.mq == nil {
+		return nil
+	}
+	switch e.cfg.runMode {
+	case converge.OnAllReplicas:
+		return nil
+	case converge.OnOneReplica:
+		br, ok := t.mq.(converge.BacklogReporter)
+		if !ok {
+			return nil
+		}
+		return func(ctx context.Context) (int, error) { return br.Backlog(ctx, t.queue) }
+	default:
+		gr, ok := t.mq.(converge.GroupBacklogReporter)
+		if !ok {
+			return nil
+		}
+		group := e.key("notifications")
+		return func(ctx context.Context) (int, error) { return gr.BacklogForGroup(ctx, t.queue, group) }
+	}
+}
+
+func (e *engine) pollBacklog(ctx context.Context, stop <-chan struct{}) {
+	defer e.forgetBacklog()
+	readers := e.backlogReaders()
+	if len(readers) == 0 {
 		return
 	}
 	interval := e.leaseInterval()
-	e.refreshBacklog(ctx, br, queue, interval)
+	e.refreshBacklog(ctx, readers, interval)
 	for {
 		select {
 		case <-stop:
 			return
 		case <-e.deps.Clock.After(interval):
-			e.refreshBacklog(ctx, br, queue, interval)
+			e.refreshBacklog(ctx, readers, interval)
 		}
 	}
 }
 
-func (e *engine) refreshBacklog(ctx context.Context, br converge.BacklogReporter, queue string, timeout time.Duration) {
+func (e *engine) refreshBacklog(ctx context.Context, readers []func(context.Context) (int, error), timeout time.Duration) {
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	n, err := br.Backlog(bctx, queue)
-	if err != nil {
-		return
+	total := 0
+	for _, read := range readers {
+		n, err := read(bctx)
+		if err != nil {
+			return
+		}
+		total += n
 	}
+	now := e.deps.Clock.Now()
 	e.mu.Lock()
-	e.backlog = n
+	e.backlog = total
 	e.backlogKnown = true
+	e.backlogAt = now
+	e.mu.Unlock()
+}
+
+func (e *engine) forgetBacklog() {
+	e.mu.Lock()
+	e.backlogKnown = false
+	e.backlogAt = time.Time{}
 	e.mu.Unlock()
 }
 

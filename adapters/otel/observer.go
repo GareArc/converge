@@ -107,12 +107,12 @@ func RegisterGauges(meter metric.Meter, rt *converge.Runtime) error {
 		return err
 	}
 	shelvedCurrent, err := meter.Int64ObservableGauge("converge.shelved.current",
-		metric.WithDescription("Messages currently held in this replica's shelf."))
+		metric.WithDescription("Messages currently on the job's shelf as of this replica's last periodic poll; omitted when not known."))
 	if err != nil {
 		return err
 	}
 	leaseHeld, err := meter.Int64ObservableGauge("converge.lease_held",
-		metric.WithDescription("1 if this replica currently holds the job's lease, 0 otherwise."))
+		metric.WithDescription("1 if this replica currently holds the job's lease, 0 otherwise; omitted for jobs whose run mode takes no lease."))
 	if err != nil {
 		return err
 	}
@@ -128,8 +128,12 @@ func RegisterGauges(meter metric.Meter, rt *converge.Runtime) error {
 				o.ObserveInt64(backlog, int64(js.Backlog), attrs)
 			}
 			o.ObserveInt64(failing, int64(js.Failing), attrs)
-			o.ObserveInt64(shelvedCurrent, int64(js.Shelved), attrs)
-			o.ObserveInt64(leaseHeld, boolToInt64(js.LeaseHeld), attrs)
+			if js.ShelvedKnown {
+				o.ObserveInt64(shelvedCurrent, int64(js.Shelved), attrs)
+			}
+			if js.RunMode == converge.OnOneReplica {
+				o.ObserveInt64(leaseHeld, boolToInt64(js.LeaseHeld), attrs)
+			}
 			o.ObserveInt64(inFlight, int64(js.InFlight), attrs)
 		}
 		return nil

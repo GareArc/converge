@@ -191,6 +191,9 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	if wk["consecutive_fails"] != float64(0) {
 		t.Fatalf("consecutive_fails = %v, want 0", wk["consecutive_fails"])
 	}
+	if wk["backlog_known"] == true && wk["backlog_at"] == "" {
+		t.Fatal("backlog_known is true but backlog_at is empty: a backlog reading must carry its own age")
+	}
 }
 
 func TestReadOnlyJobRowJSONKeysPinned(t *testing.T) {
@@ -209,8 +212,8 @@ func TestReadOnlyJobRowJSONKeysPinned(t *testing.T) {
 	row := jobs[0].(map[string]any)
 	assertExactKeys(t, row, []string{
 		"job", "surface", "run_mode", "state", "queue", "settings",
-		"lease_held", "in_flight", "backlog", "backlog_known",
-		"failing", "shelved", "last_success", "last_error", "last_error_at",
+		"lease_held", "in_flight", "backlog", "backlog_known", "backlog_at",
+		"failing", "shelved", "shelved_known", "last_success", "last_error", "last_error_at",
 		"consecutive_fails",
 	})
 }

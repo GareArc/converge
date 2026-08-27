@@ -172,6 +172,41 @@ func TestDelayFloorsAndFallsBackAfterLimit(t *testing.T) {
 	}
 }
 
+func TestThrottledDeferralIsNotCountedAsFailing(t *testing.T) {
+	q, clock := newTestQueue()
+	q.wake("x", wakeSweep)
+	for i := 0; i < backoff.NoBackoffCap; i++ {
+		mustPop(t, q, clock, "x")
+		q.finish("x", finishDelay, 0, nil)
+		clock.Advance(250 * time.Millisecond)
+	}
+	mustPop(t, q, clock, "x")
+	if res := q.finish("x", finishDelay, 0, nil); !res.fallback {
+		t.Fatal("the deferral past the cap must trip the anti-spin fallback")
+	}
+	if c := q.counts(); c.failing != 0 {
+		t.Fatalf("failing = %d, want 0: an ID throttled for deferring too often is healthy", c.failing)
+	}
+	if got := q.failing(); len(got) != 0 {
+		t.Fatalf("failing() = %+v, want none: a throttled ID has no error to show", got)
+	}
+}
+
+func TestFailureAfterThrottlingIsCountedAsFailing(t *testing.T) {
+	q, clock := newTestQueue()
+	q.wake("x", wakeSweep)
+	for i := 0; i <= backoff.NoBackoffCap; i++ {
+		mustPop(t, q, clock, "x")
+		q.finish("x", finishDelay, 0, nil)
+		clock.Advance(time.Minute)
+	}
+	mustPop(t, q, clock, "x")
+	q.finish("x", finishFailure, 0, errors.New("boom"))
+	if c := q.counts(); c.failing != 1 {
+		t.Fatalf("failing = %d, want 1 once the ID actually fails", c.failing)
+	}
+}
+
 func TestSuccessResetsNoBackoffStreak(t *testing.T) {
 	q, clock := newTestQueue()
 	q.wake("x", wakeSweep)

@@ -12,9 +12,10 @@ import (
 )
 
 type MQOptions struct {
-	Advance    func(d time.Duration)
-	Visibility time.Duration
-	Retention  time.Duration
+	Advance            func(d time.Duration)
+	Visibility         time.Duration
+	Retention          time.Duration
+	TracksGroupBacklog bool
 }
 
 func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
@@ -316,6 +317,66 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		assertNoDelivery(t, ch)
 	})
 
+	t.Run("BacklogFallsAsMessagesAreAcknowledged", func(t *testing.T) {
+		if !o.TracksGroupBacklog {
+			t.Skip("backend does not track backlog per consumer group")
+		}
+		mq := open(t)
+		br, ok := mq.(converge.BacklogReporter)
+		if !ok {
+			t.Skip("adapter does not report backlog")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		got := make(chan converge.Delivery, 16)
+		go mq.Consume(ctx, queue, func(d converge.Delivery) { got <- d })
+		mustPublish(t, mq, queue, converge.Message{Kind: probeKind, Payload: []byte("a")})
+		mustPublish(t, mq, queue, converge.Message{Kind: probeKind, Payload: []byte("b")})
+		first, second := recvDelivery(t, got), recvDelivery(t, got)
+		read := func(ctx context.Context) (int, error) { return br.Backlog(ctx, queue) }
+		awaitBacklog(t, read, 2, "a message delivered and not yet acknowledged is still outstanding work")
+		if err := first.Ack(ctx); err != nil {
+			t.Fatal(err)
+		}
+		awaitBacklog(t, read, 1, "an acknowledged message is not backlog")
+		if err := second.Ack(ctx); err != nil {
+			t.Fatal(err)
+		}
+		awaitBacklog(t, read, 0, "a queue whose messages were all acknowledged has no backlog")
+	})
+
+	t.Run("GroupBacklogCountsOnlyItsOwnGroup", func(t *testing.T) {
+		if !o.TracksGroupBacklog {
+			t.Skip("backend does not track backlog per consumer group")
+		}
+		base := open(t)
+		gbr, ok := base.(converge.GroupBacklogReporter)
+		if !ok {
+			t.Skip("adapter does not report backlog per group")
+		}
+		gc, ok := base.(converge.GroupConsumer)
+		if !ok {
+			t.Skip("no GroupConsumer capability")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		got := make(chan converge.Delivery, 16)
+		go gc.ConsumeGroup(ctx, queue, "reader", func(d converge.Delivery) { got <- d })
+		mustPublish(t, base, queue, converge.Message{Kind: probeKind, Payload: []byte("a")})
+		mustPublish(t, base, queue, converge.Message{Kind: probeKind, Payload: []byte("b")})
+		first, second := recvDelivery(t, got), recvDelivery(t, got)
+		if err := first.Ack(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := second.Ack(ctx); err != nil {
+			t.Fatal(err)
+		}
+		awaitBacklog(t, func(ctx context.Context) (int, error) { return gbr.BacklogForGroup(ctx, queue, "reader") },
+			0, "the consuming group acknowledged everything")
+		awaitBacklog(t, func(ctx context.Context) (int, error) { return gbr.BacklogForGroup(ctx, queue, "bystander") },
+			2, "one group's acknowledgements are not another group's progress")
+	})
+
 	t.Run("BacklogCountsUnconsumed", func(t *testing.T) {
 		mq := open(t)
 		br, ok := mq.(converge.BacklogReporter)
@@ -333,6 +394,24 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 			t.Fatalf("backlog = %d, want 3", n)
 		}
 	})
+}
+
+func awaitBacklog(t *testing.T, read func(context.Context) (int, error), want int, why string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got, err := read(context.Background())
+		if err != nil {
+			t.Fatalf("backlog: %v", err)
+		}
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backlog = %d, want %d: %s", got, want, why)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 func assertConsumeStopsOnCancel(t *testing.T, queue string, run func(ctx context.Context, deliver func(converge.Delivery)) error, publish func(converge.Message)) {
