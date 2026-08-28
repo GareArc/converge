@@ -294,7 +294,7 @@ err = worker.Handle(rt, deliverWebhook, func(ctx context.Context, w Webhook) err
 
 `RateLimit` is a job-wide ceiling on how often the handler is entered — 50
 per second across this job, not per merchant. The whole program is
-[`examples/scenarios/a07-webhook-delivery/main.go`](../../examples/scenarios/a07-webhook-delivery/main.go).
+[`examples/scenarios/a07-webhook-delivery/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a07-webhook-delivery/main.go).
 
 `Timeout` on a worker job is the same **time limit** as everywhere else —
 how long one run may take before its context is cancelled — and it does one

@@ -1,8 +1,8 @@
 # The safety net
 
 > Assumes [chapter 2, one job, many things](../guide/02-ids.md). The programs
-> are [`a11-purge-pii`](../../examples/scenarios/a11-purge-pii/main.go) and
-> [`a05-plan-tier-backfill`](../../examples/scenarios/a05-plan-tier-backfill/main.go).
+> are [`a11-purge-pii`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a11-purge-pii/main.go) and
+> [`a05-plan-tier-backfill`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a05-plan-tier-backfill/main.go).
 
 Most jobs exist to make something happen. This page is about the other kind:
 the job that exists so that nothing is ever *permanently* wrong. Deleted

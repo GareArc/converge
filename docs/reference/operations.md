@@ -8,14 +8,14 @@ a job for good.
 This page is the routes, the JSON, the exact staleness of every number, and
 the failure modes.
 
-- [debughttp.ReadOnlyHandler](#debughttp-readonlyhandler)
+- [debughttp.ReadOnlyHandler](#readonlyhandler)
 - [Readiness](#readiness)
 - [Reading JobStats](#reading-jobstats)
 - [How stale a number can be](#how-stale-a-number-can-be)
 - [Requeueing a shelved message](#requeueing-a-shelved-message)
 - [Destroying a job](#destroying-a-job)
 
-## debughttp.ReadOnlyHandler
+## ReadOnlyHandler
 
 ```go
 func ReadOnlyHandler(rt *converge.Runtime) http.Handler

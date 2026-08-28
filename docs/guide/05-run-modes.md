@@ -80,7 +80,7 @@ err = reconcile.Periodic(rt, "flag-cache", reconcile.Every(10*time.Second), flag
 ```
 
 That is
-[`examples/scenarios/a10-flag-cache/main.go`](../../examples/scenarios/a10-flag-cache/main.go),
+[`examples/scenarios/a10-flag-cache/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a10-flag-cache/main.go),
 which runs two replicas inside one process so you can watch both of them
 reload.
 
@@ -105,7 +105,7 @@ No `RunMode` here, so this is `Competing`: every replica reads the same
 [inbox](../glossary.md#inbox), each message goes to exactly one of them, and
 adding replicas adds throughput. `Concurrency` is per replica on top of that
 — 32 in flight each, times however many replicas you run. That is
-[`examples/scenarios/a09-tracking-events/main.go`](../../examples/scenarios/a09-tracking-events/main.go).
+[`examples/scenarios/a09-tracking-events/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a09-tracking-events/main.go).
 
 Nothing about ordering is promised, by converge or by this run mode. Two
 messages for the same shipment can be handled at the same time, on different

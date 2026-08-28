@@ -119,7 +119,7 @@ func (e *engine) markBusy() func() {
 	}
 }
 
-func (e *engine) runPass(ctx context.Context, q *wakeQueue, st *scheduleTrigger, cursorKey string) bool {
+func (e *engine) runPass(ctx context.Context, q *idQueue, st *scheduleTrigger, cursorKey string) bool {
 	defer e.markBusy()()
 	if e.checkDestroy(ctx) {
 		return false
@@ -142,7 +142,7 @@ func (e *engine) runPass(ctx context.Context, q *wakeQueue, st *scheduleTrigger,
 		}
 		attempt = 0
 		for _, id := range ids {
-			e.notifyVia(ctx, q, id, wakeSweep)
+			e.notifyVia(ctx, q, id, causeSweep)
 		}
 		if next == "" {
 			e.deleteKey(ctx, cursorKey)

@@ -1,8 +1,8 @@
 # Warm page
 
-A **parked** ID is one converge has stopped retrying until something changes.
-The handler parks the ID when it fails twice.
+A **shelved** message is one converge has set aside rather than retried again.
+The handler shelves the message when it fails twice.
 
 ```go
-parked := true
+shelved := true
 ```

@@ -7,7 +7,7 @@ import (
 	"github.com/GareArc/converge/internal/hook"
 )
 
-type Ops struct {
+type Deps struct {
 	KV        converge.KV
 	MQ        converge.MQ
 	Clock     converge.Clock
@@ -15,12 +15,12 @@ type Ops struct {
 	Replica   string
 }
 
-func OpsFor(rt *converge.Runtime) (Ops, error) {
-	w, err := hook.OpsDeps(rt)
+func DepsFor(rt *converge.Runtime) (Deps, error) {
+	w, err := hook.RuntimeDepsOf(rt)
 	if err != nil {
-		return Ops{}, err
+		return Deps{}, err
 	}
-	return Ops{
+	return Deps{
 		KV:        asKV(w.KV),
 		MQ:        asMQ(w.MQ),
 		Clock:     asClock(w.Clock),

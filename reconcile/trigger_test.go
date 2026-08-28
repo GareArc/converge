@@ -21,7 +21,7 @@ type funcTrigger struct {
 
 func (t funcTrigger) Run(ctx context.Context, notify func(ID)) error { return t.run(ctx, notify) }
 
-func TestCustomTriggerWakesIDs(t *testing.T) {
+func TestCustomTriggerQueuesIDs(t *testing.T) {
 	var mu sync.Mutex
 	var got []ID
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
@@ -214,7 +214,7 @@ func TestMissingMQErrorNamesTheTriggerConstructor(t *testing.T) {
 	}
 }
 
-func TestNotificationsWakesFromOwnInbox(t *testing.T) {
+func TestNotificationsQueueFromOwnInbox(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
 	mq := inmem.NewMQWithClock(te.clock)
 	te.e.deps.MQ = mq
@@ -317,7 +317,7 @@ func TestNotificationsUndecodablePayloadCountedAndDropped(t *testing.T) {
 	}
 }
 
-func TestNotificationsFromWakesUsingIDFunc(t *testing.T) {
+func TestNotificationsFromQueuesUsingIDFunc(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
 	mq := inmem.NewMQWithClock(te.clock)
 	te.e.deps.MQ = mq

@@ -156,7 +156,7 @@ func TestInspectRejectsForeignRuntime(t *testing.T) {
 	}
 }
 
-func TestOpsDepsRoundTripsWiring(t *testing.T) {
+func TestRuntimeDepsRoundTripsWiring(t *testing.T) {
 	mq := inmem.NewMQ()
 	kv := inmem.NewKV()
 	clock := convergetest.NewClock(time.Unix(0, 0))
@@ -164,7 +164,7 @@ func TestOpsDepsRoundTripsWiring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wiring, err := hook.OpsDeps(rt)
+	wiring, err := hook.RuntimeDepsOf(rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,12 +179,12 @@ func TestOpsDepsRoundTripsWiring(t *testing.T) {
 	}
 }
 
-func TestOpsDepsRejectsForeignRuntime(t *testing.T) {
-	if _, err := hook.OpsDeps("nope"); err == nil {
+func TestRuntimeDepsRejectForeignRuntime(t *testing.T) {
+	if _, err := hook.RuntimeDepsOf("nope"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
 	var nilRt *converge.Runtime
-	if _, err := hook.OpsDeps(nilRt); err == nil {
+	if _, err := hook.RuntimeDepsOf(nilRt); err == nil {
 		t.Fatal("typed-nil runtime must be rejected")
 	}
 }
@@ -192,11 +192,11 @@ func TestOpsDepsRejectsForeignRuntime(t *testing.T) {
 func TestReplicaIDsAreDistinctPerRuntime(t *testing.T) {
 	rt1 := mustRuntime(t)
 	rt2 := mustRuntime(t)
-	w1, err := hook.OpsDeps(rt1)
+	w1, err := hook.RuntimeDepsOf(rt1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w2, err := hook.OpsDeps(rt2)
+	w2, err := hook.RuntimeDepsOf(rt2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestRunPassNowReachesStubJob(t *testing.T) {
 func TestRunPassNowUnknownJobErrors(t *testing.T) {
 	rt := mustRuntime(t)
 	if err := hook.Sweep(rt, context.Background(), "no-such-job"); err == nil {
-		t.Fatal("run-pass-now on unknown job must error")
+		t.Fatal("sweep on unknown job must error")
 	}
 }
 

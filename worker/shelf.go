@@ -39,7 +39,7 @@ type Shelf struct {
 }
 
 func ShelfFrom(rt *converge.Runtime, job string) (*Shelf, error) {
-	w, err := wiring.OpsFor(rt)
+	w, err := wiring.DepsFor(rt)
 	if err != nil {
 		return nil, err
 	}

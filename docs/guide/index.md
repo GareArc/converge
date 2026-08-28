@@ -48,6 +48,9 @@ Every chapter below either teaches that distinction or builds on it.
 - Every converge-specific word is defined once in the
   [glossary](../glossary.md). If a word on these pages looks like it is
   carrying more weight than usual, it is, and the glossary says why.
+- When a chapter answers your question but not your problem, the
+  [cookbook](../cookbook/index.md) works six of them end to end, and the
+  reference starts at the [kernel page](../reference/kernel.md).
 - The programs live in the `examples` module. Run them from there:
 
 ```sh

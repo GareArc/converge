@@ -61,12 +61,12 @@ func init() {
 		}
 		return out, nil
 	}
-	hook.OpsDeps = func(rt any) (hook.OpsWiring, error) {
+	hook.RuntimeDepsOf = func(rt any) (hook.RuntimeDeps, error) {
 		r, ok := rt.(*Runtime)
 		if !ok || r == nil {
-			return hook.OpsWiring{}, fmt.Errorf("converge: ops: %T is not a usable *converge.Runtime", rt)
+			return hook.RuntimeDeps{}, fmt.Errorf("converge: runtime deps: %T is not a usable *converge.Runtime", rt)
 		}
-		return hook.OpsWiring{
+		return hook.RuntimeDeps{
 			KV:        r.opts.KV,
 			MQ:        r.opts.MQ,
 			Clock:     r.opts.Clock,
@@ -90,7 +90,7 @@ func init() {
 	hook.Sweep = func(rt any, ctx context.Context, jobName string) error {
 		r, ok := rt.(*Runtime)
 		if !ok || r == nil {
-			return fmt.Errorf("converge: run-pass-now: %T is not a usable *converge.Runtime", rt)
+			return fmt.Errorf("converge: sweep: %T is not a usable *converge.Runtime", rt)
 		}
 		r.mu.Lock()
 		j, ok := r.jobs[jobName]

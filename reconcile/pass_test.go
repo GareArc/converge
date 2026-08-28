@@ -414,7 +414,7 @@ func TestRunPassNowInactiveErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := e.Sweep(context.Background()); err == nil {
-		t.Fatal("run-pass-now before Run must error")
+		t.Fatal("sweep before Run must error")
 	}
 }
 
@@ -444,7 +444,7 @@ func TestRunPassNowWithoutScheduleTriggerErrors(t *testing.T) {
 		t.Fatal("never ready")
 	}
 	if err := e.Sweep(context.Background()); err == nil {
-		t.Fatal("run-pass-now without a Schedule trigger must error")
+		t.Fatal("sweep without a Schedule trigger must error")
 	}
 }
 
@@ -528,7 +528,7 @@ func TestRunPassNowDoesNotDisturbScheduledLastFireOrCursor(t *testing.T) {
 	if _, ok, _ := le.kv.Get(context.Background(), le.e.key("sched", "0", "cursor")); ok {
 		t.Fatal("scheduled cursor must not persist after completion")
 	}
-	if _, ok, _ := le.kv.Get(context.Background(), le.e.key("opspass", "0")); ok {
+	if _, ok, _ := le.kv.Get(context.Background(), le.e.key("sweep", "0")); ok {
 		t.Fatal("ops cursor must be cleared after completion")
 	}
 

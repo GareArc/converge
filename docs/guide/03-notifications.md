@@ -317,7 +317,7 @@ Three things are different from `Notifications`:
 Everything downstream is identical: a decoded ID goes into the same
 deduplicated queue as a sweep or a plain notification, and the schedule
 still backs it up. The whole program is
-[`examples/scenarios/a14-foreign-queue/main.go`](../../examples/scenarios/a14-foreign-queue/main.go)
+[`examples/scenarios/a14-foreign-queue/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go)
 — it needs a Redis to talk to, and tells you so and exits cleanly if there
 is not one.
 

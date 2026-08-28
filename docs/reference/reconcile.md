@@ -324,7 +324,7 @@ Two edges worth knowing:
   is subject to the same anti-hot-loop bound as `CheckAgain` below.
 
 `convergetest/versions` supplies a
-[fixed in-memory source](adapters.md#convergetest-versions) for tests.
+[fixed in-memory source](adapters.md#versions) for tests.
 
 ## CheckAgain and ErrOutdated
 

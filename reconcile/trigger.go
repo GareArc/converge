@@ -149,7 +149,7 @@ func (e *engine) deliverNotification(ctx context.Context, t *notificationTrigger
 	if err != nil {
 		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, Err: converge.ErrNotificationUndecodable})
 	} else {
-		e.notifyVia(ctx, e.wakeQueueRef(), id, wakeNotify)
+		e.notifyVia(ctx, e.idQueueRef(), id, causeNotification)
 	}
 	d.Ack(ctx)
 }

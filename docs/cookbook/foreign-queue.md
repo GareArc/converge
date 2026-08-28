@@ -2,7 +2,7 @@
 
 > Assumes [chapter 3, telling a job to look sooner](../guide/03-notifications.md).
 > The program is
-> [`a14-foreign-queue`](../../examples/scenarios/a14-foreign-queue/main.go),
+> [`a14-foreign-queue`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go),
 > and it is the one scenario that needs a real Redis.
 
 Another team's service already pushes JSON onto a Redis list when a

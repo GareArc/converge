@@ -20,7 +20,7 @@ go get github.com/GareArc/converge/bridges/kratos   # convkratos
 - [convkratos](#convkratos)
 - [portcheck](#portcheck)
 - [convergetest](#convergetest)
-- [convergetest/versions](#convergetest-versions)
+- [convergetest/versions](#versions)
 
 ## The port contract
 
@@ -474,7 +474,7 @@ counter your handler increments before it returns can be true a moment before
 the engine has finished recording the run, and a test that waits on the
 counter and then reads `Stats` can sample the gap.
 
-## convergetest/versions
+## versions
 
 Package `github.com/GareArc/converge/convergetest/versions`. A
 `reconcile.VersionSource` you can drive from a test.

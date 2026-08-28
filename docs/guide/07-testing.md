@@ -10,7 +10,7 @@ implementations, a clock you move by hand, and verbs that wait for the
 system to settle instead of for the wall clock. No Redis, no `time.Sleep`,
 no flakes.
 
-## The test for chapter 2's job
+## The test for the chapter 2 job
 
 Here is the entire test for the order-expiry job you read in
 [chapter 2](02-ids.md):
@@ -146,3 +146,9 @@ message. Everything else in this library is a consequence of that answer.
 
 - Every word with a specific meaning is in the [glossary](../glossary.md).
 - Every program is under `examples/scenarios/`, and all fifteen run.
+- Six problems that pick up where these chapters stop are worked end to end
+  in the [cookbook](../cookbook/index.md).
+- Every exported name, its default and what it costs is in the reference:
+  [kernel](../reference/kernel.md), [reconcile](../reference/reconcile.md),
+  [worker](../reference/worker.md), [operations](../reference/operations.md),
+  and [adapters and test support](../reference/adapters.md).

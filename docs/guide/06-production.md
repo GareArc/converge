@@ -161,7 +161,7 @@ and the warn-level `RunCompleted` log lines — each one carries the message
 ID of the message being retried, which is the thread to pull.
 
 Run
-[`examples/scenarios/a15-operations/main.go`](../../examples/scenarios/a15-operations/main.go)
+[`examples/scenarios/a15-operations/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a15-operations/main.go)
 to see all of it end to end — a readiness probe, a message that fails its
 way onto the shelf, the shelf depth appearing in the stats, and a requeue:
 

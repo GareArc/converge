@@ -4,9 +4,9 @@
 > [chapter 4](../guide/04-worker.md). This is the one page here with no
 > scenario of its own, because the half that matters is a database
 > transaction converge does not own. The pieces are
-> [`a06-transactional-email`](../../examples/scenarios/a06-transactional-email/main.go),
+> [`a06-transactional-email`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a06-transactional-email/main.go),
 > which is the worker the outbox feeds, and
-> [`a14-foreign-queue`](../../examples/scenarios/a14-foreign-queue/main.go),
+> [`a14-foreign-queue`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go),
 > which is what you write instead when their message only names something.
 
 One sentence on vocabulary first, because two words collide here. converge

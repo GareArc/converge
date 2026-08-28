@@ -44,20 +44,20 @@ type engine struct {
 	ready     chan struct{}
 	readyOnce sync.Once
 
-	mu           sync.Mutex
-	queue        *wakeQueue
-	lastSuccess  time.Time
-	lastErr      error
-	lastErrAt    time.Time
-	consecFails  int
-	passes       int
-	active       bool
-	leaseHeld    bool
-	backlog      int
-	backlogKnown bool
-	backlogAt    time.Time
-	state        converge.State
-	opsInFlight  sync.WaitGroup
+	mu             sync.Mutex
+	queue          *idQueue
+	lastSuccess    time.Time
+	lastErr        error
+	lastErrAt      time.Time
+	consecFails    int
+	passes         int
+	active         bool
+	leaseHeld      bool
+	backlog        int
+	backlogKnown   bool
+	backlogAt      time.Time
+	state          converge.State
+	sweepsInFlight sync.WaitGroup
 
 	stopCh      chan struct{}
 	destroyOnce sync.Once
@@ -78,7 +78,7 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 	e.handler = mw.Chain(mws, final)
 	curve := backoff.Curve{Min: backoffMin, Max: backoffMax}
 	e.mu.Lock()
-	e.queue = newWakeQueue(deps.Clock, wakePolicy{
+	e.queue = newIDQueue(deps.Clock, idQueuePolicy{
 		backoff: curve.Delay,
 		floor:   backoff.Floor,
 	})
@@ -87,7 +87,7 @@ func (e *engine) bindCore(deps converge.JobDeps) error {
 	return nil
 }
 
-func (e *engine) wakeQueueRef() *wakeQueue {
+func (e *engine) idQueueRef() *idQueue {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.queue
@@ -108,7 +108,7 @@ func (e *engine) Quiet() bool {
 }
 
 func (e *engine) Notify(id string) error {
-	q := e.wakeQueueRef()
+	q := e.idQueueRef()
 	if q == nil {
 		return fmt.Errorf("reconcile: job %q is not running", e.cfg.name)
 	}
@@ -118,17 +118,17 @@ func (e *engine) Notify(id string) error {
 	if e.cfg.single {
 		id = ""
 	}
-	e.notifyVia(context.Background(), q, ID(id), wakeNotify)
+	e.notifyVia(context.Background(), q, ID(id), causeNotification)
 	return nil
 }
 
-func (e *engine) admitOps() (*wakeQueue, bool) {
+func (e *engine) admitSweep() (*idQueue, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if !e.active {
 		return nil, false
 	}
-	e.opsInFlight.Add(1)
+	e.sweepsInFlight.Add(1)
 	return e.queue, true
 }
 
@@ -139,11 +139,11 @@ func (e *engine) isActive() bool {
 }
 
 func (e *engine) Sweep(ctx context.Context) error {
-	q, ok := e.admitOps()
+	q, ok := e.admitSweep()
 	if !ok {
-		return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: sweep needs the engine to be active", e.cfg.name)
 	}
-	defer e.opsInFlight.Done()
+	defer e.sweepsInFlight.Done()
 	found := false
 	for idx, t := range e.cfg.triggers {
 		st, ok := t.(*scheduleTrigger)
@@ -151,17 +151,17 @@ func (e *engine) Sweep(ctx context.Context) error {
 			continue
 		}
 		if !e.isActive() {
-			return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)
+			return fmt.Errorf("reconcile: job %q: sweep needs the engine to be active", e.cfg.name)
 		}
 		found = true
-		cursorKey := e.key("opspass", strconv.Itoa(idx))
+		cursorKey := e.key("sweep", strconv.Itoa(idx))
 		e.deleteKey(ctx, cursorKey)
 		if !e.runPass(ctx, q, st, cursorKey) {
 			return ctx.Err()
 		}
 	}
 	if !found {
-		return fmt.Errorf("reconcile: job %q: run-pass-now needs a Schedule trigger", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: sweep needs a Schedule trigger", e.cfg.name)
 	}
 	return nil
 }
@@ -271,10 +271,10 @@ func versionsSetting(v VersionSource) string {
 }
 
 func (e *engine) notify(ctx context.Context, id ID) {
-	e.notifyVia(ctx, e.wakeQueueRef(), id, wakeSweep)
+	e.notifyVia(ctx, e.idQueueRef(), id, causeSweep)
 }
 
-func (e *engine) notifyVia(ctx context.Context, q *wakeQueue, id ID, class wakeClass) {
+func (e *engine) notifyVia(ctx context.Context, q *idQueue, id ID, class queueCause) {
 	if id == "" && !e.cfg.single {
 		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, Err: converge.ErrNotificationEmptyID})
 		return
@@ -282,11 +282,11 @@ func (e *engine) notifyVia(ctx context.Context, q *wakeQueue, id ID, class wakeC
 	if q == nil {
 		return
 	}
-	e.report(id, q.wake(id, class))
+	e.report(id, q.add(id, class))
 }
 
-func (e *engine) report(id ID, res wakeResult) {
-	if res != wakeDroppedOverflow {
+func (e *engine) report(id ID, res queueResult) {
+	if res != resultDroppedOverflow {
 		return
 	}
 	e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, ID: string(id), Err: converge.ErrInboxOverflow})
@@ -536,7 +536,7 @@ func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	}
 	e.setState(converge.Active)
 	defer func() {
-		e.opsInFlight.Wait()
+		e.sweepsInFlight.Wait()
 		e.mu.Lock()
 		e.queue = nil
 		e.mu.Unlock()

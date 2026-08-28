@@ -2,8 +2,8 @@
 
 > Assumes [chapter 4, when the message is the work](../guide/04-worker.md).
 > The programs are
-> [`a08-transcode`](../../examples/scenarios/a08-transcode/main.go) and
-> [`a09-tracking-events`](../../examples/scenarios/a09-tracking-events/main.go).
+> [`a08-transcode`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a08-transcode/main.go) and
+> [`a09-tracking-events`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a09-tracking-events/main.go).
 
 Transcoding a video is the awkward case for a queue. The work is
 irreplaceable, so it belongs on the [worker](../glossary.md#worker) surface.

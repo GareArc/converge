@@ -2,7 +2,7 @@
 
 > Assumes [chapter 6, taking it to production](../guide/06-production.md),
 > which shows the whole program and watches it stop. That program is
-> [`a12-legacy-migration`](../../examples/scenarios/a12-legacy-migration/main.go).
+> [`a12-legacy-migration`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a12-legacy-migration/main.go).
 
 A password-hash migration is a job with an end in it. Every credential still
 on `sha1` has to be rehashed, and one day there will be none left, and after

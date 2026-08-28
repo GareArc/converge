@@ -15,7 +15,7 @@ var AttachOptions func(o any, attach func(rt any)) any
 
 var Inspect func(rt any) (any, error)
 
-type OpsWiring struct {
+type RuntimeDeps struct {
 	KV        any
 	MQ        any
 	Clock     any
@@ -23,7 +23,7 @@ type OpsWiring struct {
 	Replica   string
 }
 
-var OpsDeps func(rt any) (OpsWiring, error)
+var RuntimeDepsOf func(rt any) (RuntimeDeps, error)
 
 var Notify func(rt any, job, id string) error
 

@@ -283,7 +283,7 @@ func TestReadOnlyHasNoMutatingRoutes(t *testing.T) {
 	rt := w.Build(t)
 	registerReconcileJob(t, rt, "job")
 	h := debughttp.ReadOnlyHandler(rt)
-	rec := doRequest(h, http.MethodPost, "/debug/jobs/job/poke?id=x")
+	rec := doRequest(h, http.MethodPost, "/debug/jobs/job/sweep")
 	if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 404 or 405 (readonly must not mount verb routes)", rec.Code)
 	}

@@ -10,15 +10,15 @@ import (
 	"github.com/GareArc/converge/internal/backoff"
 )
 
-type wakeClass int
+type queueCause int
 
 const (
-	wakeSweep wakeClass = iota
-	wakeNotify
+	causeSweep queueCause = iota
+	causeNotification
 )
 
-func (c wakeClass) bypassesBackoff() bool {
-	return c == wakeNotify
+func (c queueCause) bypassesBackoff() bool {
+	return c == causeNotification
 }
 
 type idPhase int
@@ -37,15 +37,15 @@ const (
 	backoffFromThrottle
 )
 
-type wakeResult int
+type queueResult int
 
 const (
-	wakeEnqueued wakeResult = iota
-	wakeCollapsed
-	wakeRerunArmed
-	wakeBypassed
-	wakePulledForward
-	wakeDroppedOverflow
+	resultEnqueued queueResult = iota
+	resultCollapsed
+	resultRerunArmed
+	resultBypassed
+	resultPulledForward
+	resultDroppedOverflow
 )
 
 type finishKind int
@@ -57,9 +57,9 @@ const (
 	finishNeutral
 )
 
-const wakeQueueBound = 65536
+const idQueueBound = 65536
 
-type wakePolicy struct {
+type idQueuePolicy struct {
 	backoff func(consecutiveFails int) time.Duration
 	floor   func(d time.Duration) time.Duration
 }
@@ -69,7 +69,7 @@ type idState struct {
 	cause      backoffCause
 	due        time.Time
 	hasPending bool
-	pending    wakeClass
+	pending    queueCause
 	fails      int
 	noBackoff  int
 	fallbacks  int
@@ -112,17 +112,17 @@ func (h *dueHeap) Pop() any {
 	return it
 }
 
-type wakeQueue struct {
+type idQueue struct {
 	mu     sync.Mutex
 	clock  converge.Clock
-	policy wakePolicy
+	policy idQueuePolicy
 	ids    map[ID]*idState
 	heap   dueHeap
 	notify chan struct{}
 }
 
-func newWakeQueue(clock converge.Clock, policy wakePolicy) *wakeQueue {
-	return &wakeQueue{
+func newIDQueue(clock converge.Clock, policy idQueuePolicy) *idQueue {
+	return &idQueue{
 		clock:  clock,
 		policy: policy,
 		ids:    map[ID]*idState{},
@@ -130,14 +130,14 @@ func newWakeQueue(clock converge.Clock, policy wakePolicy) *wakeQueue {
 	}
 }
 
-func (q *wakeQueue) signal() {
+func (q *idQueue) signal() {
 	select {
 	case q.notify <- struct{}{}:
 	default:
 	}
 }
 
-func (q *wakeQueue) push(id ID, due time.Time) {
+func (q *idQueue) push(id ID, due time.Time) {
 	heap.Push(&q.heap, dueItem{id: id, due: due})
 	if len(q.heap) > 4*len(q.ids)+16 {
 		q.rebuildHeap()
@@ -145,7 +145,7 @@ func (q *wakeQueue) push(id ID, due time.Time) {
 	q.signal()
 }
 
-func (q *wakeQueue) rebuildHeap() {
+func (q *idQueue) rebuildHeap() {
 	fresh := make(dueHeap, 0, len(q.ids))
 	for id, st := range q.ids {
 		switch st.phase {
@@ -157,50 +157,50 @@ func (q *wakeQueue) rebuildHeap() {
 	q.heap = fresh
 }
 
-func (q *wakeQueue) wake(id ID, class wakeClass) wakeResult {
+func (q *idQueue) add(id ID, class queueCause) queueResult {
 	now := q.clock.Now()
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	st := q.ids[id]
 	if st == nil {
-		if len(q.ids) >= wakeQueueBound {
-			return wakeDroppedOverflow
+		if len(q.ids) >= idQueueBound {
+			return resultDroppedOverflow
 		}
 		q.ids[id] = &idState{phase: phaseQueued, due: now}
 		q.push(id, now)
-		return wakeEnqueued
+		return resultEnqueued
 	}
 	switch st.phase {
 	case phaseQueued:
-		return wakeCollapsed
+		return resultCollapsed
 	case phaseRunning:
 		if !st.hasPending {
 			st.hasPending = true
 			st.pending = class
-			return wakeRerunArmed
+			return resultRerunArmed
 		}
 		if class.bypassesBackoff() && !st.pending.bypassesBackoff() {
 			st.pending = class
 		}
-		return wakeCollapsed
+		return resultCollapsed
 	case phaseBackoff:
 		if !class.bypassesBackoff() {
-			return wakeCollapsed
+			return resultCollapsed
 		}
 		st.phase = phaseQueued
 		st.due = now
 		q.push(id, now)
-		return wakeBypassed
+		return resultBypassed
 	case phaseDelayed:
 		st.phase = phaseQueued
 		st.due = now
 		q.push(id, now)
-		return wakePulledForward
+		return resultPulledForward
 	}
-	return wakeCollapsed
+	return resultCollapsed
 }
 
-func (q *wakeQueue) next(now time.Time) (ID, bool) {
+func (q *idQueue) next(now time.Time) (ID, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for q.heap.Len() > 0 {
@@ -221,7 +221,7 @@ func (q *wakeQueue) next(now time.Time) (ID, bool) {
 	return "", false
 }
 
-func (q *wakeQueue) nextDue() (time.Time, bool) {
+func (q *idQueue) nextDue() (time.Time, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for q.heap.Len() > 0 {
@@ -236,7 +236,7 @@ func (q *wakeQueue) nextDue() (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func (q *wakeQueue) applyBackoffOrBypass(id ID, st *idState, now time.Time, attempt int, wait time.Duration) finishResult {
+func (q *idQueue) applyBackoffOrBypass(id ID, st *idState, now time.Time, attempt int, wait time.Duration) finishResult {
 	res := finishResult{attempt: attempt, settled: true}
 	pendingBypass := st.hasPending && st.pending.bypassesBackoff()
 	st.hasPending = false
@@ -253,7 +253,7 @@ func (q *wakeQueue) applyBackoffOrBypass(id ID, st *idState, now time.Time, atte
 	return res
 }
 
-func (q *wakeQueue) applyFailure(id ID, st *idState, now time.Time, err error) finishResult {
+func (q *idQueue) applyFailure(id ID, st *idState, now time.Time, err error) finishResult {
 	st.cause = backoffFromFailure
 	st.fails++
 	st.noBackoff = 0
@@ -262,12 +262,12 @@ func (q *wakeQueue) applyFailure(id ID, st *idState, now time.Time, err error) f
 	return q.applyBackoffOrBypass(id, st, now, st.fails, q.policy.backoff(st.fails))
 }
 
-func (q *wakeQueue) applyFallback(id ID, st *idState, now time.Time) finishResult {
+func (q *idQueue) applyFallback(id ID, st *idState, now time.Time) finishResult {
 	st.cause = backoffFromThrottle
 	return q.applyBackoffOrBypass(id, st, now, st.fallbacks, q.policy.backoff(st.fallbacks))
 }
 
-func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration, err error) finishResult {
+func (q *idQueue) finish(id ID, kind finishKind, delay time.Duration, err error) finishResult {
 	now := q.clock.Now()
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -327,7 +327,7 @@ func (q *wakeQueue) finish(id ID, kind finishKind, delay time.Duration, err erro
 	}
 }
 
-func (q *wakeQueue) quiet(now time.Time) bool {
+func (q *idQueue) quiet(now time.Time) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for _, st := range q.ids {
@@ -341,7 +341,7 @@ func (q *wakeQueue) quiet(now time.Time) bool {
 	return true
 }
 
-func (q *wakeQueue) counts() queueCounts {
+func (q *idQueue) counts() queueCounts {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var c queueCounts
@@ -356,7 +356,7 @@ func (q *wakeQueue) counts() queueCounts {
 	return c
 }
 
-func (q *wakeQueue) failing() []converge.FailingID {
+func (q *idQueue) failing() []converge.FailingID {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	ids := make([]ID, 0)
@@ -379,7 +379,7 @@ func (q *wakeQueue) failing() []converge.FailingID {
 	return out
 }
 
-func (q *wakeQueue) reset() {
+func (q *idQueue) reset() {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.ids = map[ID]*idState{}

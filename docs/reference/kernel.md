@@ -62,6 +62,13 @@ Every `Runtime` mints a random replica ID at construction. It is used
 wherever one running copy of a service has to be told apart from another;
 nothing you configure feeds it.
 
+converge has no configuration machinery of its own. Every tunable is a plain
+struct field, and no package in the library reads a file or an environment
+variable. Plumbing them is your composition root's job: wire *quantities* —
+periods, budgets, concurrency, timeouts — from whatever configuration system
+the service already has, and keep *semantics* — queue names, run modes,
+trigger wiring — in code, where the compiler can see them.
+
 ## Runtime
 
 ```go
@@ -190,9 +197,11 @@ the inbox the message was published to.
 
 ## Ports
 
-Four interfaces, all satisfied by [`inmem`](adapters.md#inmem) and by
-[`convredis`](adapters.md#convredis). What an implementation must do is
-pinned by the [`portcheck` suites](adapters.md#portcheck), not by these
+Four interfaces. Three of them — `MQ`, `Lease` and `KV` — are satisfied by
+[`inmem`](adapters.md#inmem) and by [`convredis`](adapters.md#convredis);
+`Clock` has no adapter, because the default is the wall clock and the fake is
+[`convergetest.Clock`](adapters.md#convergetest). What an implementation must
+do is pinned by the [`portcheck` suites](adapters.md#portcheck), not by these
 signatures.
 
 ```go
@@ -372,8 +381,8 @@ func (c StopCondition) String() string
 
 A job's declared reason to be destroyed, set as `Spec.Until` or
 `HandleOpts.Until`. The zero value is *no stop condition* and `String()` is
-`"none"`; the two constructors render as `deadline <RFC3339>` and `stop key
-<key>`.
+`"none"`; the two constructors render as the word `deadline` followed by an
+RFC 3339 time, and the words `stop key` followed by the key.
 
 - `Deadline(t)` — the job is destroyed the first time the engine checks at or
   after `t`, and the engine writes the library's own tombstone key so the
@@ -635,4 +644,4 @@ rendered, human-readable map — `concurrency`, `retry`, `schema-version`,
 `timeout` and `rate-limit` for a worker job; `concurrency`, `schedule`,
 `triggers` and `versions` for a reconcile one. It is for reading, not for
 parsing. `JobInfo` reaches you through
-[`debughttp.ReadOnlyHandler`](operations.md#debughttp-readonlyhandler).
+[`debughttp.ReadOnlyHandler`](operations.md#readonlyhandler).
