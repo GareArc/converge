@@ -80,6 +80,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -244,7 +245,7 @@ func run() error {
 	if err := rt.Run(ctx); err != nil {
 		return err
 	}
-	if err := <-onboarded; err != nil {
+	if err := <-onboarded; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 

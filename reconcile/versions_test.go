@@ -59,7 +59,7 @@ func TestVersionsDoNotNeedKV(t *testing.T) {
 	e, err := newEngine(Spec{
 		Name:      "job",
 		Reconcile: func(context.Context, ID) error { return nil },
-		Triggers:  []Trigger{customPeriodic{}},
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 		Versions:  fakeVersions{},
 	})
 	if err != nil {

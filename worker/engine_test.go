@@ -2263,3 +2263,22 @@ func TestFailingCapsAtBoundAndDropsNewWrites(t *testing.T) {
 		t.Fatal("write past the bound must be dropped, not recorded")
 	}
 }
+
+func TestStatsBeforeRunReportsInsteadOfPanicking(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: wns})
+	rt := w.Build(t)
+	tk := NewTask[string]("unstarted", TaskOpts{})
+	if err := Handle(rt, tk, func(ctx context.Context, s string) error { return nil }, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	stats := rt.Stats()
+	if len(stats) != 1 {
+		t.Fatalf("got %d stats, want 1", len(stats))
+	}
+	if stats[0].State != converge.NotStarted {
+		t.Fatalf("state is %v, want NotStarted", stats[0].State)
+	}
+	if stats[0].Failing != 0 {
+		t.Fatalf("failing is %d, want 0", stats[0].Failing)
+	}
+}

@@ -422,13 +422,14 @@ func TestRunPassNowWithoutScheduleTriggerErrors(t *testing.T) {
 	spec := Spec{
 		Name:      "job",
 		Reconcile: func(context.Context, ID) error { return nil },
-		Triggers:  []Trigger{customPeriodic{}},
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 		RunMode:   converge.OnAllReplicas,
 	}
 	e, err := newEngine(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
+	e.cfg.triggers = []Trigger{customTrigger{}}
 	clock := convergetest.NewClock(wqStart)
 	deps := converge.JobDeps{
 		Observer:     &convergetest.Recorder{},

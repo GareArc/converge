@@ -311,9 +311,11 @@ func MQ(t *testing.T, open func(t *testing.T) converge.MQ, o MQOptions) {
 		mq := open(t)
 		mustPublish(t, mq, queue, converge.Message{Kind: probeKind, Payload: []byte("stale")})
 		o.Advance(o.Retention + time.Minute)
-		mq2, ch, ctx := startConsumer(t, open)
-		_ = mq2
-		_ = ctx
+		ch := consumeFrom(t, mq)
+		mustPublish(t, mq, queue, converge.Message{Kind: probeKind, Payload: []byte("fresh")})
+		if got := string(recvDelivery(t, ch).Message().Payload); got != "fresh" {
+			t.Fatalf("first delivery was %q; the entry older than retention was not dropped", got)
+		}
 		assertNoDelivery(t, ch)
 	})
 
@@ -514,8 +516,17 @@ func startConsumer(t *testing.T, open func(t *testing.T) converge.MQ) (converge.
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	got := make(chan converge.Delivery, 64)
-	go mq.Consume(ctx, "q", func(d converge.Delivery) { got <- d })
+	go mq.Consume(ctx, queue, func(d converge.Delivery) { got <- d })
 	return mq, got, ctx
+}
+
+func consumeFrom(t *testing.T, mq converge.MQ) chan converge.Delivery {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	got := make(chan converge.Delivery, 64)
+	go mq.Consume(ctx, queue, func(d converge.Delivery) { got <- d })
+	return got
 }
 
 func mustPublish(t *testing.T, mq converge.MQ, queue string, m converge.Message) {

@@ -126,8 +126,8 @@ names an ID; it never runs the function and never carries instructions.
 
 `Trigger` is implemented for you three times over — `Schedule`,
 `Notifications` and `NotificationsFrom`. `PeriodicTrigger` marks the
-schedule; a job is refused at registration unless one of its triggers
-implements it.
+schedule; a job is refused at registration unless one of its triggers is a
+`Schedule`.
 
 You can implement `Trigger` yourself: return when `ctx` is done, and call
 `notify(id)` for every ID you learn about. A custom trigger that returns before
@@ -141,13 +141,19 @@ rather than notified, so they do not reset a failing ID's backoff the way
 `Notifications` and `NotificationsFrom` do — converge cannot tell whether your
 trigger is reporting fresh news or re-listing what it already knew, and takes
 the conservative reading. And a custom trigger is never swept on a cadence,
-whatever it implements. `NextAfter` is only the marker the registration gate
-looks for; the engine dispatches by concrete type, so `Schedule` is swept and
-anything else is simply run. Implementing `PeriodicTrigger` therefore
-satisfies the "every reconcile job needs a `Schedule`" check while leaving the
-job with no sweep at all — which removes the floor the rest of this library
-leans on. Do your own timing inside `Run`, and keep a real `Schedule` for the
-guarantee.
+whatever it implements. The engine dispatches by concrete type, so `Schedule`
+is swept and anything else is simply run. Implementing `PeriodicTrigger` does
+not change that, so registration **rejects** a trigger that implements it and
+is not a `Schedule`:
+
+```
+reconcile: job "x": only Schedule is swept; a custom PeriodicTrigger runs but never sweeps
+```
+
+Without that rule such a job would pass the "every reconcile job needs a
+`Schedule`" check and then never sweep at all, removing the floor the rest of
+this library leans on. Do your own timing inside `Run`, and keep a real
+`Schedule` for the guarantee.
 
 ```go
 type NotificationsOpts struct {

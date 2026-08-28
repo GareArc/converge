@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -211,7 +212,7 @@ func run() error {
 	if err := rt.Run(ctx); err != nil {
 		return err
 	}
-	if err := <-provisioned; err != nil {
+	if err := <-provisioned; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 

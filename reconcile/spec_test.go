@@ -152,11 +152,19 @@ func (customPeriodic) Run(ctx context.Context, notify func(ID)) error { <-ctx.Do
 
 func (customPeriodic) NextAfter(t time.Time) time.Time { return t.Add(time.Hour) }
 
-func TestCustomPeriodicTriggerSatisfiesScheduleRequirement(t *testing.T) {
+type customTrigger struct{}
+
+func (customTrigger) Run(ctx context.Context, notify func(ID)) error { <-ctx.Done(); return ctx.Err() }
+
+func TestCustomPeriodicTriggerCannotStandInForASchedule(t *testing.T) {
 	s := okSpec()
 	s.Triggers = []Trigger{customPeriodic{}}
-	if _, err := newEngine(s); err != nil {
-		t.Fatal(err)
+	_, err := newEngine(s)
+	if err == nil {
+		t.Fatal("a job whose only periodic trigger is never swept was accepted")
+	}
+	if !strings.Contains(err.Error(), "never sweeps") {
+		t.Fatalf("error does not say the trigger is never swept: %v", err)
 	}
 }
 
@@ -215,17 +223,14 @@ func TestEngineInfoRendersTriggerComposition(t *testing.T) {
 
 func TestEngineInfoRendersUnknownTriggerAsCustom(t *testing.T) {
 	s := okSpec()
-	s.Triggers = []Trigger{customPeriodic{}}
+	s.Triggers = []Trigger{Schedule(SingleID(), Every(time.Hour)), customTrigger{}}
 	e, err := newEngine(s)
 	if err != nil {
 		t.Fatal(err)
 	}
 	info := e.Info()
-	if got := info.Settings["triggers"]; got != "custom" {
-		t.Fatalf("triggers = %q, want %q", got, "custom")
-	}
-	if _, ok := info.Settings["schedule"]; ok {
-		t.Fatalf("schedule key must be omitted with no Schedule trigger, got %+v", info.Settings)
+	if got := info.Settings["triggers"]; got != "schedule + custom" {
+		t.Fatalf("triggers = %q, want %q", got, "schedule + custom")
 	}
 }
 
@@ -288,5 +293,21 @@ func TestEngineInfoRendersPinnedDisplayFormats(t *testing.T) {
 				t.Fatalf("Settings[%q] = %q, want %q", c.key, got, c.want)
 			}
 		})
+	}
+}
+
+func TestNotificationsRejectsAnIDFunctionItWouldIgnore(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	err := Register(rt, Spec{
+		Name:      "local-notifications-with-id",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers: []Trigger{
+			Schedule(SingleID(), Every(time.Hour)),
+			Notifications(NotificationsOpts{ID: func([]byte) (ID, error) { return "x", nil }}),
+		},
+	})
+	if err == nil {
+		t.Fatal("Notifications accepted an ID function it never calls")
 	}
 }

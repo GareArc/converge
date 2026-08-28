@@ -66,11 +66,9 @@ func newEngine(s Spec) (*engine, error) {
 		if t == nil {
 			return nil, fail("Triggers must not contain nil")
 		}
-		if _, ok := t.(PeriodicTrigger); ok {
-			periodic = true
-		}
 		switch tr := t.(type) {
 		case *scheduleTrigger:
+			periodic = true
 			if tr.source.IsZero() {
 				return nil, fail("Schedule needs an IDSource")
 			}
@@ -93,6 +91,12 @@ func newEngine(s Spec) (*engine, error) {
 				}
 			} else if tr.opts.MQ != nil {
 				return nil, fail("Notifications always reads Options.MQ; MQ is NotificationsFrom only")
+			} else if tr.opts.ID != nil {
+				return nil, fail("Notifications decodes converge notifications; ID is NotificationsFrom only")
+			}
+		default:
+			if _, ok := t.(PeriodicTrigger); ok {
+				return nil, fail("only Schedule is swept; a custom PeriodicTrigger runs but never sweeps")
 			}
 		}
 	}

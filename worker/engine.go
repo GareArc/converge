@@ -137,9 +137,12 @@ func (e *engine) Stats() converge.JobStats {
 const workerRetryingBound = 65536
 
 func (e *engine) failing() int {
-	now := e.deps.Clock.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.deps.Clock == nil {
+		return len(e.retrying)
+	}
+	now := e.deps.Clock.Now()
 	for id, until := range e.retrying {
 		if !until.After(now) {
 			delete(e.retrying, id)
@@ -199,8 +202,8 @@ func retrySetting(r RetryPolicy) string {
 }
 
 func (e *engine) bind(deps converge.JobDeps) error {
-	e.deps = deps
 	e.mu.Lock()
+	e.deps = deps
 	e.cfg.info.queue = keys.Inbox(deps.Namespace, e.cfg.info.name)
 	e.mu.Unlock()
 	if deps.MQ == nil {
