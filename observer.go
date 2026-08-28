@@ -1,6 +1,9 @@
 package converge
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type Observer interface {
 	Observe(e Event)
@@ -8,182 +11,90 @@ type Observer interface {
 
 type Event interface{ event() }
 
+type outcomeKind int
+
+const (
+	outcomeUnknown outcomeKind = iota
+	outcomeSucceeded
+	outcomeRetrying
+	outcomeDeferred
+	outcomeDiscarded
+	outcomeShelved
+)
+
+type Outcome struct{ kind outcomeKind }
+
+var (
+	Succeeded = Outcome{outcomeSucceeded}
+	Retrying  = Outcome{outcomeRetrying}
+	Deferred  = Outcome{outcomeDeferred}
+	Discarded = Outcome{outcomeDiscarded}
+	Shelved   = Outcome{outcomeShelved}
+)
+
+func (o Outcome) String() string {
+	switch o.kind {
+	case outcomeSucceeded:
+		return "succeeded"
+	case outcomeRetrying:
+		return "retrying"
+	case outcomeDeferred:
+		return "deferred"
+	case outcomeDiscarded:
+		return "discarded"
+	case outcomeShelved:
+		return "shelved"
+	default:
+		return "unknown"
+	}
+}
+
+var (
+	ErrNotificationUndecodable = errors.New("converge: notification: undecodable")
+	ErrNotificationEmptyID     = errors.New("converge: notification: empty id")
+	ErrInboxOverflow           = errors.New("converge: notification: inbox overflow")
+)
+
 type RunCompleted struct {
 	Job      string
-	Surface  Surface
 	ID       string
 	Attempt  int
 	Duration time.Duration
+	Outcome  Outcome
 	Err      error
 }
 
 func (RunCompleted) event() {}
 
-type LeaseTransition struct {
-	Job      string
-	Acquired bool
+type LeaseChanged struct {
+	Job  string
+	Held bool
 }
 
-func (LeaseTransition) event() {}
+func (LeaseChanged) event() {}
 
-type wakeDiscardKind int
-
-const (
-	wakeDiscardUnset wakeDiscardKind = iota
-	wakeDiscardParked
-	wakeDiscardPaused
-	wakeDiscardUndecodable
-	wakeDiscardEmptyID
-	wakeDiscardOverflow
-)
-
-type WakeDiscardReason struct{ kind wakeDiscardKind }
-
-var (
-	DiscardParked      = WakeDiscardReason{wakeDiscardParked}
-	DiscardPaused      = WakeDiscardReason{wakeDiscardPaused}
-	DiscardUndecodable = WakeDiscardReason{wakeDiscardUndecodable}
-	DiscardEmptyID     = WakeDiscardReason{wakeDiscardEmptyID}
-	DiscardOverflow    = WakeDiscardReason{wakeDiscardOverflow}
-)
-
-func (r WakeDiscardReason) IsZero() bool { return r.kind == wakeDiscardUnset }
-
-func (r WakeDiscardReason) String() string {
-	switch r.kind {
-	case wakeDiscardParked:
-		return "parked"
-	case wakeDiscardPaused:
-		return "paused"
-	case wakeDiscardUndecodable:
-		return "undecodable"
-	case wakeDiscardEmptyID:
-		return "empty-id"
-	case wakeDiscardOverflow:
-		return "overflow"
-	default:
-		return "unknown"
-	}
+type ScheduleOverrun struct {
+	Job  string
+	Due  time.Time
+	Late time.Duration
 }
 
-type WakeDiscarded struct {
-	Job    string
-	ID     string
-	Reason WakeDiscardReason
-}
+func (ScheduleOverrun) event() {}
 
-func (WakeDiscarded) event() {}
-
-type PassOverrun struct {
-	Job string
-	Due time.Time
-}
-
-func (PassOverrun) event() {}
-
-type IDParked struct {
-	Job      string
-	ID       string
-	Failures int
-	Err      error
-}
-
-func (IDParked) event() {}
-
-type VersionZero struct {
+type NotificationDropped struct {
 	Job string
 	ID  string
+	Err error
 }
 
-func (VersionZero) event() {}
+func (NotificationDropped) event() {}
 
-type WrongSurfaceSignal struct {
-	Job     string
-	ID      string
-	Surface Surface
-}
-
-func (WrongSurfaceSignal) event() {}
-
-type BackoffFallback struct {
-	Job         string
-	ID          string
-	Consecutive int
-}
-
-func (BackoffFallback) event() {}
-
-type MessageDiscarded struct {
-	Job       string
-	Queue     string
-	MessageID string
-	Reason    string
-}
-
-func (MessageDiscarded) event() {}
-
-type deadLetterReasonKind int
-
-const (
-	deadLetterReasonUnset deadLetterReasonKind = iota
-	deadLetterMaxAttempts
-	deadLetterMaxAge
-	deadLetterWrongKind
-	deadLetterSchemaVersion
-	deadLetterUndecodable
-	deadLetterWrongSurface
-)
-
-type DeadLetterReason struct{ kind deadLetterReasonKind }
-
-var (
-	DeadLetterMaxAttempts   = DeadLetterReason{deadLetterMaxAttempts}
-	DeadLetterMaxAge        = DeadLetterReason{deadLetterMaxAge}
-	DeadLetterWrongKind     = DeadLetterReason{deadLetterWrongKind}
-	DeadLetterSchemaVersion = DeadLetterReason{deadLetterSchemaVersion}
-	DeadLetterUndecodable   = DeadLetterReason{deadLetterUndecodable}
-	DeadLetterWrongSurface  = DeadLetterReason{deadLetterWrongSurface}
-)
-
-func (r DeadLetterReason) IsZero() bool { return r.kind == deadLetterReasonUnset }
-
-func (r DeadLetterReason) String() string {
-	switch r.kind {
-	case deadLetterMaxAttempts:
-		return "max-attempts"
-	case deadLetterMaxAge:
-		return "max-age"
-	case deadLetterWrongKind:
-		return "wrong-kind"
-	case deadLetterSchemaVersion:
-		return "schema-version"
-	case deadLetterUndecodable:
-		return "undecodable"
-	case deadLetterWrongSurface:
-		return "wrong-surface"
-	default:
-		return "unknown"
-	}
-}
-
-type MessageDeadLettered struct {
-	Job       string
-	Queue     string
-	MessageID string
-	Attempt   int
-	Reason    DeadLetterReason
-	Err       error
-}
-
-func (MessageDeadLettered) event() {}
-
-type QueueDepth struct {
+type JobDestroyed struct {
 	Job   string
-	Queue string
-	Depth int
+	Cause StopCondition
 }
 
-func (QueueDepth) event() {}
+func (JobDestroyed) event() {}
 
 type noopObserver struct{}
 

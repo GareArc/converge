@@ -8,6 +8,9 @@ import (
 
 	"github.com/GareArc/converge"
 	convotel "github.com/GareArc/converge/adapters/otel"
+	"github.com/GareArc/converge/convergetest"
+	"github.com/GareArc/converge/reconcile"
+	"github.com/GareArc/converge/worker"
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -55,20 +58,29 @@ func attrValue(t *testing.T, set attribute.Set, key string) string {
 	return v.String()
 }
 
-func TestRunCompletedRecordsDurationWithStatus(t *testing.T) {
+func sumPoints(t *testing.T, rm metricdata.ResourceMetrics, name string) []metricdata.DataPoint[int64] {
+	t.Helper()
+	s, ok := findMetric(t, rm, name).Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("%s is not an int64 sum", name)
+	}
+	return s.DataPoints
+}
+
+func TestRunCompletedRecordsDurationWithStatusAndOutcome(t *testing.T) {
 	obs, r := newTestObserver(t)
 
 	obs.Observe(converge.RunCompleted{
 		Job:      "sync",
-		Surface:  converge.SurfaceReconcile,
 		ID:       "ws-1",
 		Duration: 250 * time.Millisecond,
+		Outcome:  converge.Succeeded,
 	})
 	obs.Observe(converge.RunCompleted{
 		Job:      "sync",
-		Surface:  converge.SurfaceReconcile,
 		ID:       "ws-2",
 		Duration: 750 * time.Millisecond,
+		Outcome:  converge.Retrying,
 		Err:      errors.New("boom"),
 	})
 
@@ -90,6 +102,9 @@ func TestRunCompletedRecordsDurationWithStatus(t *testing.T) {
 	if ok1.Count != 1 || ok1.Sum != 0.25 {
 		t.Fatalf("ok point Count=%d Sum=%v, want 1 and 0.25", ok1.Count, ok1.Sum)
 	}
+	if got := attrValue(t, ok1.Attributes, "converge.outcome"); got != "succeeded" {
+		t.Fatalf("converge.outcome = %q, want succeeded", got)
+	}
 	bad, hasErr := byStatus["error"]
 	if !hasErr {
 		t.Fatal("no data point with converge.status=error")
@@ -97,8 +112,8 @@ func TestRunCompletedRecordsDurationWithStatus(t *testing.T) {
 	if bad.Count != 1 || bad.Sum != 0.75 {
 		t.Fatalf("error point Count=%d Sum=%v, want 1 and 0.75", bad.Count, bad.Sum)
 	}
-	if got := attrValue(t, ok1.Attributes, "converge.surface"); got != "reconcile" {
-		t.Fatalf("converge.surface = %q, want reconcile", got)
+	if got := attrValue(t, bad.Attributes, "converge.outcome"); got != "retrying" {
+		t.Fatalf("converge.outcome = %q, want retrying", got)
 	}
 	if got := attrValue(t, ok1.Attributes, "converge.job"); got != "sync" {
 		t.Fatalf("converge.job = %q, want sync", got)
@@ -107,7 +122,7 @@ func TestRunCompletedRecordsDurationWithStatus(t *testing.T) {
 
 func TestRunCompletedDoesNotAttributeID(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.RunCompleted{Job: "sync", Surface: converge.SurfaceWorker, ID: "tenant-42", Duration: time.Second})
+	obs.Observe(converge.RunCompleted{Job: "sync", ID: "tenant-42", Duration: time.Second, Outcome: converge.Succeeded})
 
 	h := findMetric(t, collect(t, r), "converge.run.duration").Data.(metricdata.Histogram[float64])
 	for _, dp := range h.DataPoints {
@@ -120,173 +135,244 @@ func TestRunCompletedDoesNotAttributeID(t *testing.T) {
 	}
 }
 
-func sumPoints(t *testing.T, rm metricdata.ResourceMetrics, name string) []metricdata.DataPoint[int64] {
-	t.Helper()
-	s, ok := findMetric(t, rm, name).Data.(metricdata.Sum[int64])
-	if !ok {
-		t.Fatalf("%s is not an int64 sum", name)
-	}
-	return s.DataPoints
-}
-
-func TestDeadLetterCountsByReasonAndQueue(t *testing.T) {
+func TestShelvedOutcomeCounts(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.MessageDeadLettered{
-		Job:       "email",
-		Queue:     "email-q",
-		MessageID: "m-1",
-		Attempt:   5,
-		Reason:    converge.DeadLetterMaxAttempts,
-	})
+	obs.Observe(converge.RunCompleted{Job: "email", ID: "m-1", Outcome: converge.Shelved, Err: errors.New("max attempts")})
 
-	pts := sumPoints(t, collect(t, r), "converge.dead_letters")
+	pts := sumPoints(t, collect(t, r), "converge.shelved")
 	if len(pts) != 1 || pts[0].Value != 1 {
 		t.Fatalf("points = %+v, want a single point of 1", pts)
 	}
-	if got := attrValue(t, pts[0].Attributes, "converge.reason"); got != "max-attempts" {
-		t.Fatalf("converge.reason = %q, want max-attempts", got)
+	if got := attrValue(t, pts[0].Attributes, "converge.job"); got != "email" {
+		t.Fatalf("converge.job = %q, want email", got)
 	}
-	if got := attrValue(t, pts[0].Attributes, "converge.queue"); got != "email-q" {
-		t.Fatalf("converge.queue = %q, want email-q", got)
-	}
-	if _, ok := pts[0].Attributes.Value(attribute.Key("converge.message_id")); ok {
-		t.Fatal("message ID exported as an attribute; unbounded cardinality")
+	if _, ok := pts[0].Attributes.Value(attribute.Key("converge.id")); ok {
+		t.Fatal("per-ID attribute exported; unbounded cardinality")
 	}
 }
 
-func TestDiscardsShareOneMetricSplitBySurface(t *testing.T) {
+func TestDiscardedOutcomeCounts(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.WakeDiscarded{Job: "sync", ID: "ws-1", Reason: converge.DiscardParked})
-	obs.Observe(converge.MessageDiscarded{Job: "email", Queue: "email-q", MessageID: "m-1", Reason: "tenant 42 is gone"})
+	obs.Observe(converge.RunCompleted{Job: "sync", ID: "ws-1", Outcome: converge.Discarded})
+	obs.Observe(converge.RunCompleted{Job: "email", ID: "m-1", Outcome: converge.Discarded})
 
 	pts := sumPoints(t, collect(t, r), "converge.discarded")
 	if len(pts) != 2 {
-		t.Fatalf("points = %d, want 2 (one per surface)", len(pts))
-	}
-	bySurface := map[string]metricdata.DataPoint[int64]{}
-	for _, dp := range pts {
-		bySurface[attrValue(t, dp.Attributes, "converge.surface")] = dp
-	}
-	rec, ok := bySurface["reconcile"]
-	if !ok {
-		t.Fatal("no reconcile data point")
-	}
-	if got := attrValue(t, rec.Attributes, "converge.reason"); got != "parked" {
-		t.Fatalf("reconcile converge.reason = %q, want parked", got)
-	}
-	if got := attrValue(t, rec.Attributes, "converge.job"); got != "sync" {
-		t.Fatalf("reconcile converge.job = %q, want sync", got)
-	}
-	if _, ok := rec.Attributes.Value(attribute.Key("converge.id")); ok {
-		t.Fatal("per-ID attribute exported; unbounded cardinality")
-	}
-	wrk, ok := bySurface["worker"]
-	if !ok {
-		t.Fatal("no worker data point")
-	}
-	if _, ok := wrk.Attributes.Value(attribute.Key("converge.reason")); ok {
-		t.Fatal("worker discard exported its free-form reason; unbounded cardinality")
-	}
-	if got := attrValue(t, wrk.Attributes, "converge.queue"); got != "email-q" {
-		t.Fatalf("worker converge.queue = %q, want email-q", got)
-	}
-	if got := attrValue(t, wrk.Attributes, "converge.job"); got != "email" {
-		t.Fatalf("worker converge.job = %q, want email", got)
-	}
-	if _, ok := wrk.Attributes.Value(attribute.Key("converge.message_id")); ok {
-		t.Fatal("message ID exported as an attribute; unbounded cardinality")
+		t.Fatalf("points = %d, want 2 (one per job)", len(pts))
 	}
 }
 
-func TestParkedAndLeaseTransitionsCount(t *testing.T) {
+func TestLeaseChangedCounts(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.IDParked{Job: "sync", ID: "ws-1", Failures: 3})
-	obs.Observe(converge.LeaseTransition{Job: "sync", Acquired: true})
-	obs.Observe(converge.LeaseTransition{Job: "sync", Acquired: false})
+	obs.Observe(converge.LeaseChanged{Job: "sync", Held: true})
+	obs.Observe(converge.LeaseChanged{Job: "sync", Held: false})
 
-	rm := collect(t, r)
-	parkedPts := sumPoints(t, rm, "converge.parked")
-	if len(parkedPts) != 1 || parkedPts[0].Value != 1 {
-		t.Fatalf("converge.parked points = %+v, want a single point of 1", parkedPts)
-	}
-	if got := attrValue(t, parkedPts[0].Attributes, "converge.job"); got != "sync" {
-		t.Fatalf("converge.job = %q, want sync", got)
-	}
-	if _, ok := parkedPts[0].Attributes.Value(attribute.Key("converge.id")); ok {
-		t.Fatal("per-ID attribute exported; unbounded cardinality")
-	}
-	pts := sumPoints(t, rm, "converge.lease.transitions")
+	pts := sumPoints(t, collect(t, r), "converge.lease.transitions")
 	if len(pts) != 2 {
-		t.Fatalf("lease points = %d, want 2 (acquired true and false)", len(pts))
+		t.Fatalf("lease points = %d, want 2 (held true and false)", len(pts))
 	}
 	for _, dp := range pts {
-		if attrValue(t, dp.Attributes, "converge.acquired") == "" {
-			t.Fatal("converge.acquired missing")
+		if attrValue(t, dp.Attributes, "converge.held") == "" {
+			t.Fatal("converge.held missing")
 		}
 	}
 }
 
-func TestEachAnomalyEventRecordsItsOwnKind(t *testing.T) {
-	for _, tc := range []struct {
-		kind  string
-		event converge.Event
-	}{
-		{"version-zero", converge.VersionZero{Job: "sync", ID: "ws-1"}},
-		{"wrong-surface", converge.WrongSurfaceSignal{Job: "sync", ID: "ws-1", Surface: converge.SurfaceWorker}},
-		{"backoff-fallback", converge.BackoffFallback{Job: "sync", ID: "ws-1", Consecutive: 11}},
-		{"pass-overrun", converge.PassOverrun{Job: "sync", Due: time.Unix(0, 0)}},
-	} {
-		t.Run(tc.kind, func(t *testing.T) {
-			obs, r := newTestObserver(t)
-			obs.Observe(tc.event)
+func TestNotificationDroppedCounts(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.NotificationDropped{Job: "sync", ID: "ws-1", Err: converge.ErrInboxOverflow})
 
-			pts := sumPoints(t, collect(t, r), "converge.anomalies")
-			if len(pts) != 1 {
-				t.Fatalf("points = %d, want 1", len(pts))
-			}
-			if got := attrValue(t, pts[0].Attributes, "converge.kind"); got != tc.kind {
-				t.Fatalf("converge.kind = %q, want %q", got, tc.kind)
-			}
-			if got := attrValue(t, pts[0].Attributes, "converge.job"); got != "sync" {
-				t.Fatalf("converge.job = %q, want sync", got)
-			}
-			if _, ok := pts[0].Attributes.Value(attribute.Key("converge.id")); ok {
-				t.Fatal("per-ID attribute exported; unbounded cardinality")
-			}
-		})
+	pts := sumPoints(t, collect(t, r), "converge.notifications.dropped")
+	if len(pts) != 1 || pts[0].Value != 1 {
+		t.Fatalf("points = %+v, want a single point of 1", pts)
+	}
+	if got := attrValue(t, pts[0].Attributes, "converge.job"); got != "sync" {
+		t.Fatalf("converge.job = %q, want sync", got)
+	}
+	if _, ok := pts[0].Attributes.Value(attribute.Key("converge.id")); ok {
+		t.Fatal("per-ID attribute exported; unbounded cardinality")
 	}
 }
 
-func TestQueueDepthIsDeliberatelyUnmapped(t *testing.T) {
+func TestScheduleOverrunCounts(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.QueueDepth{Job: "email", Queue: "email-q", Depth: 17})
+	obs.Observe(converge.ScheduleOverrun{Job: "sync", Due: time.Unix(0, 0), Late: time.Minute})
+
+	pts := sumPoints(t, collect(t, r), "converge.schedule.overruns")
+	if len(pts) != 1 || pts[0].Value != 1 {
+		t.Fatalf("points = %+v, want a single point of 1", pts)
+	}
+	if got := attrValue(t, pts[0].Attributes, "converge.job"); got != "sync" {
+		t.Fatalf("converge.job = %q, want sync", got)
+	}
+}
+
+func TestJobDestroyedCounts(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.JobDestroyed{Job: "sync", Cause: converge.Deadline(time.Unix(0, 0))})
+
+	pts := sumPoints(t, collect(t, r), "converge.destroyed")
+	if len(pts) != 1 || pts[0].Value != 1 {
+		t.Fatalf("points = %+v, want a single point of 1", pts)
+	}
+	if got := attrValue(t, pts[0].Attributes, "converge.job"); got != "sync" {
+		t.Fatalf("converge.job = %q, want sync", got)
+	}
+}
+
+type fakeEvent struct{ converge.RunCompleted }
+
+func TestObserverIgnoresUnrecognizedEventType(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(fakeEvent{})
 
 	rm := collect(t, r)
 	for _, sm := range rm.ScopeMetrics {
-		if len(sm.Metrics) != 0 {
-			t.Fatalf("QueueDepth produced metrics %+v; convotel exports no gauges (M1-R2)", sm.Metrics)
+		for _, m := range sm.Metrics {
+			if m.Name == "converge.run.duration" {
+				if h, ok := m.Data.(metricdata.Histogram[float64]); ok && len(h.DataPoints) != 0 {
+					t.Fatalf("unrecognized event produced data on %q", m.Name)
+				}
+				continue
+			}
+			if s, ok := m.Data.(metricdata.Sum[int64]); ok && len(s.DataPoints) != 0 {
+				t.Fatalf("unrecognized event produced data on %q", m.Name)
+			}
 		}
-	}
-}
-
-func TestUnrecognisedReasonRendersAsUnknown(t *testing.T) {
-	obs, r := newTestObserver(t)
-	obs.Observe(converge.WakeDiscarded{Job: "sync", ID: "ws-1", Reason: converge.WakeDiscardReason{}})
-
-	pts := sumPoints(t, collect(t, r), "converge.discarded")
-	if len(pts) != 1 {
-		t.Fatalf("points = %d, want 1", len(pts))
-	}
-	if got := attrValue(t, pts[0].Attributes, "converge.reason"); got != "unknown" {
-		t.Fatalf("converge.reason = %q, want unknown for a zero reason", got)
 	}
 }
 
 func TestRunDurationIsRecordedInSeconds(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.RunCompleted{Job: "sync", Surface: converge.SurfaceReconcile, Duration: 250 * time.Millisecond})
+	obs.Observe(converge.RunCompleted{Job: "sync", Duration: 250 * time.Millisecond, Outcome: converge.Succeeded})
 
 	if got := findMetric(t, collect(t, r), "converge.run.duration").Unit; got != "s" {
 		t.Fatalf("unit = %q, want s", got)
+	}
+}
+
+func TestGauges(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	if err := reconcile.Periodic(rt, "job", reconcile.Every(time.Hour), func(context.Context) error { return nil }, reconcile.PeriodicOpts{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+	h.Runtime(t)
+
+	convergetest.Await(t, func() bool {
+		for _, js := range rt.Stats() {
+			if js.Job == "job" && js.LeaseHeld {
+				return true
+			}
+		}
+		return false
+	})
+
+	r := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+	if err := convotel.RegisterGauges(mp.Meter("converge"), rt); err != nil {
+		t.Fatalf("RegisterGauges: %v", err)
+	}
+
+	g, ok := findMetric(t, collect(t, r), "converge.lease_held").Data.(metricdata.Gauge[int64])
+	if !ok {
+		t.Fatal("converge.lease_held is not an int64 gauge")
+	}
+	var found bool
+	for _, dp := range g.DataPoints {
+		if attrValue(t, dp.Attributes, "converge.job") != "job" {
+			continue
+		}
+		found = true
+		if dp.Value != 1 {
+			t.Fatalf("converge.lease_held value = %d, want 1", dp.Value)
+		}
+	}
+	if !found {
+		t.Fatal("converge.lease_held has no data point for job \"job\"")
+	}
+}
+
+func TestBacklogGaugeSkipsUnknownBacklog(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	if err := reconcile.Periodic(rt, "job", reconcile.Every(time.Hour), func(context.Context) error { return nil }, reconcile.PeriodicOpts{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+	h.Runtime(t)
+
+	convergetest.Await(t, func() bool { return len(rt.Stats()) == 1 })
+
+	r := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+	if err := convotel.RegisterGauges(mp.Meter("converge"), rt); err != nil {
+		t.Fatalf("RegisterGauges: %v", err)
+	}
+
+	assertNoGaugePoint(t, collect(t, r), "converge.backlog", "job",
+		"converge.backlog emitted a point for a job with BacklogKnown=false; a missing series is honest, a zero is not")
+}
+
+func TestShelvedGaugeSkipsAJobWithNoShelf(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	if err := reconcile.Periodic(rt, "job", reconcile.Every(time.Hour), func(context.Context) error { return nil }, reconcile.PeriodicOpts{}); err != nil {
+		t.Fatalf("Periodic: %v", err)
+	}
+	h.Runtime(t)
+
+	convergetest.Await(t, func() bool { return len(rt.Stats()) == 1 })
+
+	r := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+	if err := convotel.RegisterGauges(mp.Meter("converge"), rt); err != nil {
+		t.Fatalf("RegisterGauges: %v", err)
+	}
+
+	assertNoGaugePoint(t, collect(t, r), "converge.shelved.current", "job",
+		"converge.shelved.current emitted a point for a reconcile job, which has no shelf at all")
+}
+
+func TestLeaseHeldGaugeSkipsAJobThatTakesNoLease(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	task := worker.NewTask[string]("competing", worker.TaskOpts{})
+	if err := worker.Handle(rt, task, func(context.Context, string) error { return nil }, worker.HandleOpts{}); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	h.Runtime(t)
+
+	convergetest.Await(t, func() bool { return len(rt.Stats()) == 1 })
+	if js := rt.Stats()[0]; js.RunMode != converge.Competing {
+		t.Fatalf("run mode = %v, want Competing", js.RunMode)
+	}
+
+	r := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(r))
+	if err := convotel.RegisterGauges(mp.Meter("converge"), rt); err != nil {
+		t.Fatalf("RegisterGauges: %v", err)
+	}
+
+	assertNoGaugePoint(t, collect(t, r), "converge.lease_held", "competing",
+		"converge.lease_held emitted a point for a Competing job, which never takes a lease; a constant 0 reads as losing the lease")
+}
+
+func assertNoGaugePoint(t *testing.T, rm metricdata.ResourceMetrics, metric, job, msg string) {
+	t.Helper()
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != metric {
+				continue
+			}
+			g, ok := m.Data.(metricdata.Gauge[int64])
+			if !ok {
+				t.Fatalf("%s is not an int64 gauge", metric)
+			}
+			for _, dp := range g.DataPoints {
+				if attrValue(t, dp.Attributes, "converge.job") == job {
+					t.Fatal(msg)
+				}
+			}
+		}
 	}
 }

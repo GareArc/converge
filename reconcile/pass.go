@@ -55,15 +55,12 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 	cursorKey := e.key("sched", strconv.Itoa(idx), "cursor")
 	readLast := func(ctx context.Context) (time.Time, bool) { return e.readTime(ctx, lastKey) }
 	writeLast := func(ctx context.Context, t time.Time) { e.writeTime(ctx, lastKey, t) }
-	if e.cfg.runMode == converge.OnAllReplicas {
+	if e.cfg.runMode == converge.OnAllReplicas || e.deps.KV == nil {
 		var local time.Time
 		readLast = func(context.Context) (time.Time, bool) { return local, !local.IsZero() }
 		writeLast = func(_ context.Context, t time.Time) { local = t }
 	}
 	for ctx.Err() == nil {
-		if !q.awaitUnpaused(ctx) {
-			return
-		}
 		last, ok := readLast(ctx)
 		now := e.deps.Clock.Now()
 		if !ok {
@@ -88,24 +85,11 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 			continue
 		}
 		release := e.markBusy()
-		switch {
-		case len(pending) == 1 || st.cad.missedTick() == RunOnce:
-			if !e.runPass(ctx, q, st, cursorKey) {
-				release()
-				return
-			}
-		case st.cad.missedTick() == Catchup:
-			for range pending {
-				if !e.runPass(ctx, q, st, cursorKey) {
-					release()
-					return
-				}
-			}
+		if !e.runPass(ctx, q, st, cursorKey) {
+			release()
+			return
 		}
-		latest := pending[len(pending)-1]
-		if st.cad.missedTick() != Catchup {
-			latest = latestBoundary(st.cad, latest, now)
-		}
+		latest := latestBoundary(st.cad, pending[len(pending)-1], now)
 		writeLast(ctx, latest)
 		e.checkOverrun(ctx, st, writeLast, latest)
 		release()
@@ -119,7 +103,7 @@ func (e *engine) checkOverrun(ctx context.Context, st *scheduleTrigger, writeLas
 		return
 	}
 	for _, due := range over {
-		e.deps.Observer.Observe(converge.PassOverrun{Job: e.cfg.name, Due: due})
+		e.deps.Observer.Observe(converge.ScheduleOverrun{Job: e.cfg.name, Due: due, Late: now.Sub(due)})
 	}
 	writeLast(ctx, latestBoundary(st.cad, over[len(over)-1], now))
 }
@@ -135,8 +119,11 @@ func (e *engine) markBusy() func() {
 	}
 }
 
-func (e *engine) runPass(ctx context.Context, q *wakeQueue, st *scheduleTrigger, cursorKey string) bool {
+func (e *engine) runPass(ctx context.Context, q *idQueue, st *scheduleTrigger, cursorKey string) bool {
 	defer e.markBusy()()
+	if e.checkDestroy(ctx) {
+		return false
+	}
 	cursor := e.readString(ctx, cursorKey)
 	attempt := 0
 	for {
@@ -155,7 +142,7 @@ func (e *engine) runPass(ctx context.Context, q *wakeQueue, st *scheduleTrigger,
 		}
 		attempt = 0
 		for _, id := range ids {
-			e.hintVia(ctx, q, id)
+			e.notifyVia(ctx, q, id, causeSweep)
 		}
 		if next == "" {
 			e.deleteKey(ctx, cursorKey)
@@ -199,6 +186,9 @@ func (e *engine) writeTime(ctx context.Context, key string, t time.Time) {
 }
 
 func (e *engine) readString(ctx context.Context, key string) string {
+	if e.deps.KV == nil {
+		return ""
+	}
 	for {
 		val, ok, err := e.deps.KV.Get(ctx, key)
 		if err == nil {
@@ -214,6 +204,9 @@ func (e *engine) readString(ctx context.Context, key string) string {
 }
 
 func (e *engine) writeString(ctx context.Context, key, val string) {
+	if e.deps.KV == nil {
+		return
+	}
 	for {
 		if err := e.deps.KV.Set(ctx, key, []byte(val), 0); err == nil {
 			return
@@ -225,6 +218,9 @@ func (e *engine) writeString(ctx context.Context, key, val string) {
 }
 
 func (e *engine) deleteKey(ctx context.Context, key string) {
+	if e.deps.KV == nil {
+		return
+	}
 	for {
 		if err := e.deps.KV.Delete(ctx, key); err == nil {
 			return

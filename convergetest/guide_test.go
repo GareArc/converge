@@ -11,6 +11,7 @@ import (
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/convergetest/internal/credcheck"
 	"github.com/GareArc/converge/convergetest/internal/jobs"
+	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/worker"
 )
 
@@ -22,9 +23,9 @@ type guideRepo struct {
 	workspaceIDs []string
 	appIDs       []string
 
-	app13Blocking bool
-	app13Started  chan struct{}
-	app13Canceled chan struct{}
+	blockingEnabled bool
+	runStarted      chan struct{}
+	runCanceled     chan struct{}
 
 	startOnce    sync.Once
 	canceledOnce sync.Once
@@ -32,10 +33,10 @@ type guideRepo struct {
 
 func newGuideRepo() *guideRepo {
 	return &guideRepo{
-		workspaceIDs:  []string{"ws_42"},
-		appIDs:        []string{"app_13"},
-		app13Started:  make(chan struct{}),
-		app13Canceled: make(chan struct{}),
+		workspaceIDs: []string{"ws_42"},
+		appIDs:       []string{"app_13"},
+		runStarted:   make(chan struct{}),
+		runCanceled:  make(chan struct{}),
 	}
 }
 
@@ -56,32 +57,41 @@ func (r *guideRepo) AppIDs(ctx context.Context) ([]string, error) {
 }
 
 func (r *guideRepo) RunApp(ctx context.Context, appID string) error {
-	if appID != "app_13" {
+	if appID == "app_13" {
+		r.mu.Lock()
+		blocking := r.blockingEnabled
+		r.mu.Unlock()
+		if !blocking {
+			return errAppRunnerDownstream
+		}
+		return nil
+	}
+	if appID != "app_14" {
 		return nil
 	}
 	r.mu.Lock()
-	blocking := r.app13Blocking
+	blocking := r.blockingEnabled
 	r.mu.Unlock()
 	if !blocking {
-		return errAppRunnerDownstream
+		return nil
 	}
-	r.startOnce.Do(func() { close(r.app13Started) })
+	r.startOnce.Do(func() { close(r.runStarted) })
 	<-ctx.Done()
-	r.canceledOnce.Do(func() { close(r.app13Canceled) })
+	r.canceledOnce.Do(func() { close(r.runCanceled) })
 	return ctx.Err()
 }
 
 func (r *guideRepo) enableAppBlock() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.app13Blocking = true
+	r.blockingEnabled = true
 }
 
 func reconciledCount(h *convergetest.Harness, job, id string) int {
 	n := 0
 	for _, e := range h.Events() {
 		rc, ok := e.(converge.RunCompleted)
-		if ok && rc.Job == job && rc.ID == id && rc.Err == nil {
+		if ok && rc.Job == job && rc.ID == id && rc.Outcome == converge.Succeeded {
 			n++
 		}
 	}
@@ -112,36 +122,44 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 	h.Drain(t)
 	baselineReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
 
-	h.Wake("workspace-credentials", "ws_42")
+	h.Notify("workspace-credentials", "ws_42")
 
 	h.Drain(t)
 
-	afterWakeReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
-	if afterWakeReconciled <= baselineReconciled {
-		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Wake+Drain = %d, want > %d (the wake must drive a real run, not just the startup pass)", afterWakeReconciled, baselineReconciled)
+	afterNotifyReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
+	if afterNotifyReconciled <= baselineReconciled {
+		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Notify+Drain = %d, want > %d (the notify must drive a real run, not just the startup pass)", afterNotifyReconciled, baselineReconciled)
 	}
 
-	h.Clock.Advance(24 * time.Hour)
+	h.Clock().Advance(24 * time.Hour)
 
 	h.Drain(t)
 
 	afterAdvanceReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
-	if afterAdvanceReconciled <= afterWakeReconciled {
-		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Advance+Drain = %d, want > %d (the 24h advance must cross the schedule boundary and drive a real run)", afterAdvanceReconciled, afterWakeReconciled)
+	if afterAdvanceReconciled <= afterNotifyReconciled {
+		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Advance+Drain = %d, want > %d (the 24h advance must cross the schedule boundary and drive a real run)", afterAdvanceReconciled, afterNotifyReconciled)
 	}
 
-	h.RunPass(t, "workspace-credentials")
+	h.Sweep(t, "workspace-credentials")
 
-	afterRunPassReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
-	if afterRunPassReconciled <= afterAdvanceReconciled {
-		t.Fatalf("workspace-credentials ws_42 RunCompleted count after RunPass = %d, want > %d (RunPass must force a real additional pass)", afterRunPassReconciled, afterAdvanceReconciled)
+	afterSweepReconciled := reconciledCount(h, "workspace-credentials", "ws_42")
+	if afterSweepReconciled <= afterAdvanceReconciled {
+		t.Fatalf("workspace-credentials ws_42 RunCompleted count after Sweep = %d, want > %d (Sweep must force a real additional pass)", afterSweepReconciled, afterAdvanceReconciled)
 	}
 
 	h.AssertReconciled(t, "workspace-credentials", "ws_42")
 
-	h.AssertParked(t, "app-runner", "app_13")
+	convergetest.Await(t, func() bool {
+		for _, e := range h.Events() {
+			rc, ok := e.(converge.RunCompleted)
+			if ok && rc.Job == "app-runner" && rc.ID == "app_13" && rc.Outcome == converge.Retrying {
+				return true
+			}
+		}
+		return false
+	})
 
-	prod, err := worker.ProducerFrom(rt)
+	prod, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,36 +178,34 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 	}
 
 	fakeRepo.enableAppBlock()
-	beforePoke := len(h.Events())
-	if err := rt.Poke("app-runner", "app_13"); err != nil {
-		t.Fatal(err)
-	}
+	beforeNotify := len(h.Events())
+	h.Notify("app-runner", "app_14")
 	select {
-	case <-fakeRepo.app13Started:
+	case <-fakeRepo.runStarted:
 	case <-time.After(2 * time.Second):
-		t.Fatal("app_13 blocking run never started")
+		t.Fatal("app_14 blocking run never started")
 	}
 
-	h.Lease.Expire("app-runner")
+	h.Lease.Expire(keys.ReconcileLease("test", "app-runner"))
 
 	select {
-	case <-fakeRepo.app13Canceled:
+	case <-fakeRepo.runCanceled:
 	case <-time.After(2 * time.Second):
-		t.Fatal("app_13 run was not canceled on lease loss")
+		t.Fatal("app_14 run was not canceled on lease loss")
 	}
 	convergetest.Await(t, func() bool {
 		for _, e := range h.Events() {
-			lt, ok := e.(converge.LeaseTransition)
-			if ok && lt.Job == "app-runner" && !lt.Acquired {
+			lt, ok := e.(converge.LeaseChanged)
+			if ok && lt.Job == "app-runner" && !lt.Held {
 				return true
 			}
 		}
 		return false
 	})
-	for _, e := range h.Events()[beforePoke:] {
+	for _, e := range h.Events()[beforeNotify:] {
 		rc, ok := e.(converge.RunCompleted)
-		if ok && rc.Job == "app-runner" && rc.ID == "app_13" {
-			t.Fatalf("app_13 cancellation must be neutral, not observed as a completed run: %+v", rc)
+		if ok && rc.Job == "app-runner" && rc.ID == "app_14" {
+			t.Fatalf("app_14 cancellation must be neutral, not observed as a completed run: %+v", rc)
 		}
 	}
 }

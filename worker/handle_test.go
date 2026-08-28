@@ -13,7 +13,7 @@ import (
 )
 
 func okTaskInfo() taskInfo {
-	return taskInfo{name: "job", queue: "job", version: 1}
+	return taskInfo{name: "job", version: 1}
 }
 
 func okRun() runFunc {
@@ -63,7 +63,7 @@ func TestNewEngineValidationMatrix(t *testing.T) {
 	}{
 		{"valid", func(o *HandleOpts) {}, ""},
 		{"negative concurrency", func(o *HandleOpts) { o.Concurrency = -1 }, "Concurrency"},
-		{"negative visibility", func(o *HandleOpts) { o.Visibility = -time.Second }, "Visibility"},
+		{"negative timeout", func(o *HandleOpts) { o.Timeout = -time.Second }, "Timeout"},
 		{"negative retry max attempts", func(o *HandleOpts) { o.Retry.MaxAttempts = -1 }, "Retry"},
 		{"negative retry min backoff", func(o *HandleOpts) { o.Retry.MinBackoff = -time.Second }, "Retry"},
 		{"negative retry max backoff", func(o *HandleOpts) { o.Retry.MaxBackoff = -time.Second }, "Retry"},
@@ -104,8 +104,8 @@ func TestNewEngineAppliesDefaults(t *testing.T) {
 	if e.cfg.concurrency != DefaultConcurrency {
 		t.Fatalf("concurrency = %d, want %d", e.cfg.concurrency, DefaultConcurrency)
 	}
-	if e.cfg.visibility != DefaultVisibility {
-		t.Fatalf("visibility = %s, want %s", e.cfg.visibility, DefaultVisibility)
+	if e.cfg.visibility != defaultVisibility {
+		t.Fatalf("visibility = %s, want %s", e.cfg.visibility, defaultVisibility)
 	}
 	wantRetry := RetryPolicy{
 		MaxAttempts: DefaultMaxAttempts,
@@ -116,8 +116,23 @@ func TestNewEngineAppliesDefaults(t *testing.T) {
 	if e.cfg.retry != wantRetry {
 		t.Fatalf("retry = %+v, want %+v", e.cfg.retry, wantRetry)
 	}
-	if e.cfg.runMode != converge.SplitAcrossReplicas {
-		t.Fatalf("runMode = %v, want %v", e.cfg.runMode, converge.SplitAcrossReplicas)
+	if e.cfg.runMode != converge.Competing {
+		t.Fatalf("runMode = %v, want %v", e.cfg.runMode, converge.Competing)
+	}
+}
+
+func TestVisibilityIsDerivedFromTheTimeout(t *testing.T) {
+	for _, timeout := range []time.Duration{time.Second, 30 * time.Second, 90 * time.Second, 10 * time.Minute, time.Hour} {
+		e, err := newEngine(okTaskInfo(), okRun(), HandleOpts{Timeout: timeout})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := timeout + visibilityMargin; e.cfg.visibility != want {
+			t.Fatalf("Timeout %s: visibility = %s, want %s", timeout, e.cfg.visibility, want)
+		}
+		if e.cfg.visibility <= timeout {
+			t.Fatalf("Timeout %s: visibility %s must outlast the run it protects", timeout, e.cfg.visibility)
+		}
 	}
 }
 
@@ -127,23 +142,33 @@ func TestEngineInfoRendersDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	info := e.Info()
-	if info.Job != "job" || info.Surface != converge.SurfaceWorker || info.RunMode != converge.SplitAcrossReplicas {
+	if info.Job != "job" || info.Surface != converge.SurfaceWorker || info.RunMode != converge.Competing {
 		t.Fatalf("identity = %+v", info)
 	}
-	if info.Queue != "job" {
-		t.Fatalf("Queue = %q, want job", info.Queue)
-	}
-	if info.Paused {
-		t.Fatal("Paused must default to false")
+	if info.Queue != "" {
+		t.Fatalf("Queue = %q, want empty before bind", info.Queue)
 	}
 	want := map[string]string{
 		"concurrency":    strconv.Itoa(DefaultConcurrency),
-		"visibility":     "5m",
 		"retry":          "25 attempts, backoff 1s..15m, max-age 24h",
 		"schema-version": "1",
 	}
 	if !reflect.DeepEqual(info.Settings, want) {
 		t.Fatalf("Settings = %+v, want %+v", info.Settings, want)
+	}
+}
+
+func TestEngineInfoRendersTheTimeoutNotTheDerivedVisibility(t *testing.T) {
+	e, err := newEngine(okTaskInfo(), okRun(), HandleOpts{Timeout: 90 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := e.Info().Settings
+	if got := settings["timeout"]; got != "1m30s" {
+		t.Fatalf("timeout = %q, want %q", got, "1m30s")
+	}
+	if _, ok := settings["visibility"]; ok {
+		t.Fatalf("Settings = %+v, must not report a derived value under a name that left the surface", settings)
 	}
 }
 
@@ -157,8 +182,8 @@ func TestEngineInfoOmitsRateLimitWhenZero(t *testing.T) {
 	}
 }
 
-func TestEngineInfoRendersRateLimitAndPaused(t *testing.T) {
-	o := HandleOpts{RateLimit: converge.Rate{Events: 5, Per: time.Second}, Paused: true}
+func TestEngineInfoRendersRateLimit(t *testing.T) {
+	o := HandleOpts{RateLimit: converge.Rate{Events: 5, Per: time.Second}}
 	e, err := newEngine(okTaskInfo(), okRun(), o)
 	if err != nil {
 		t.Fatal(err)
@@ -166,9 +191,6 @@ func TestEngineInfoRendersRateLimitAndPaused(t *testing.T) {
 	info := e.Info()
 	if got := info.Settings["rate-limit"]; got != "5/1s" {
 		t.Fatalf("rate-limit = %q, want 5/1s", got)
-	}
-	if !info.Paused {
-		t.Fatal("Paused must reflect HandleOpts.Paused")
 	}
 }
 
@@ -192,26 +214,13 @@ func TestHandleNilFn(t *testing.T) {
 
 func TestHandleDuplicateTaskName(t *testing.T) {
 	rt := mustHandleRuntime(t, converge.Options{})
-	tk1 := NewTask[string]("job", TaskOpts{Queue: "q1"})
-	tk2 := NewTask[string]("job", TaskOpts{Queue: "q2"})
+	tk1 := NewTask[string]("job", TaskOpts{})
+	tk2 := NewTask[string]("job", TaskOpts{Version: 2})
 	if err := Handle(rt, tk1, noopHandler, HandleOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := Handle(rt, tk2, noopHandler, HandleOpts{}); err == nil {
 		t.Fatal("duplicate task name must be rejected")
-	}
-}
-
-func TestHandleDuplicateQueue(t *testing.T) {
-	rt := mustHandleRuntime(t, converge.Options{})
-	tk1 := NewTask[string]("job-a", TaskOpts{Queue: "shared"})
-	tk2 := NewTask[string]("job-b", TaskOpts{Queue: "shared"})
-	if err := Handle(rt, tk1, noopHandler, HandleOpts{}); err != nil {
-		t.Fatal(err)
-	}
-	err := Handle(rt, tk2, noopHandler, HandleOpts{})
-	if err == nil || !strings.Contains(err.Error(), "shared") {
-		t.Fatalf("err = %v, want mention of queue %q", err, "shared")
 	}
 }
 
@@ -226,37 +235,43 @@ func TestBindFailures(t *testing.T) {
 			name:    "no mq anywhere",
 			opts:    converge.Options{},
 			handle:  HandleOpts{},
-			wantErr: "needs an MQ",
+			wantErr: "Options.MQ",
 		},
 		{
-			name:    "split without group consumer",
-			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: publishConsumeMQ{inmem.NewMQ()}, RunMode: converge.SplitAcrossReplicas},
+			name:    "competing without group consumer",
+			opts:    converge.Options{MQ: publishConsumeMQ{inmem.NewMQ()}},
+			handle:  HandleOpts{RunMode: converge.Competing},
 			wantErr: "GroupConsumer",
 		},
 		{
 			name:    "all replicas without broadcast consumer",
-			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: publishConsumeMQ{inmem.NewMQ()}, RunMode: converge.OnAllReplicas},
+			opts:    converge.Options{MQ: publishConsumeMQ{inmem.NewMQ()}},
+			handle:  HandleOpts{RunMode: converge.OnAllReplicas},
 			wantErr: "BroadcastConsumer",
 		},
 		{
 			name:    "one replica without lease",
-			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: inmem.NewMQ(), RunMode: converge.OnOneReplica},
+			opts:    converge.Options{MQ: inmem.NewMQ()},
+			handle:  HandleOpts{RunMode: converge.OnOneReplica},
 			wantErr: "Options.Lease",
 		},
 		{
-			name:    "group mode without kv",
-			opts:    converge.Options{},
-			handle:  HandleOpts{MQ: inmem.NewMQ(), RunMode: converge.SplitAcrossReplicas},
+			name:    "competing without kv",
+			opts:    converge.Options{MQ: inmem.NewMQ()},
+			handle:  HandleOpts{RunMode: converge.Competing},
 			wantErr: "Options.KV",
 		},
 		{
-			name:    "group mode mq without delayed publisher",
-			opts:    converge.Options{KV: inmem.NewKV()},
-			handle:  HandleOpts{MQ: groupOnlyMQ{inmem.NewMQ()}, RunMode: converge.SplitAcrossReplicas},
+			name:    "competing mq without delayed publisher",
+			opts:    converge.Options{MQ: groupOnlyMQ{inmem.NewMQ()}, KV: inmem.NewKV()},
+			handle:  HandleOpts{RunMode: converge.Competing},
 			wantErr: "DelayedPublisher",
+		},
+		{
+			name:    "until without kv",
+			opts:    converge.Options{MQ: inmem.NewMQ()},
+			handle:  HandleOpts{RunMode: converge.OnAllReplicas, Until: converge.Deadline(time.Now().Add(time.Hour))},
+			wantErr: "Options.KV",
 		},
 	}
 	for _, c := range cases {

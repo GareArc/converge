@@ -20,7 +20,7 @@ const (
 	stopAdvance     = 10 * time.Second
 	drainDeadline   = 10 * time.Second
 	drainGap        = 5 * time.Millisecond
-	runPassDeadline = 5 * time.Second
+	sweepDeadline   = 5 * time.Second
 	harnessLeaseTTL = 24 * 365 * time.Hour
 )
 
@@ -35,10 +35,11 @@ type Options struct {
 }
 
 type Harness struct {
-	Clock *Clock
 	MQ    *MQ
 	KV    *inmem.KV
-	Lease *Lease
+	Lease *inmem.Lease
+
+	clock *Clock
 
 	t   testing.TB
 	rec *Recorder
@@ -82,7 +83,7 @@ func NewWith(t testing.TB, o Options) *Harness {
 	}
 
 	h := &Harness{
-		Clock:        clock,
+		clock:        clock,
 		t:            t,
 		rec:          &Recorder{},
 		done:         make(chan struct{}),
@@ -110,7 +111,7 @@ func NewWith(t testing.TB, o Options) *Harness {
 	if o.Lease != nil {
 		h.lease = o.Lease(clock)
 	} else {
-		lease := WrapLease(inmem.NewLeaseWithClock(clock), namespace)
+		lease := inmem.NewLeaseWithClock(clock)
 		h.Lease = lease
 		h.lease = lease
 	}
@@ -126,7 +127,7 @@ func (h *Harness) Options() converge.Options {
 		Lease:        h.lease,
 		KV:           h.kv,
 		Observer:     h.rec,
-		Clock:        h.Clock,
+		Clock:        h.clock,
 		LeaseTTL:     h.leaseTTL,
 		DrainTimeout: h.drainTimeout,
 	}
@@ -244,6 +245,9 @@ func (h *Harness) checkAlive(t testing.TB, allowStopped bool) bool {
 			t.Fatalf("convergetest: harness was stopped via Stop(t); this verb needs a running runtime, call Events to inspect recorded state instead")
 			return false
 		}
+		if err == nil && h.anyDestroyed() {
+			return true
+		}
 		t.Fatalf("convergetest: runtime exited early: %v", err)
 		return false
 	default:
@@ -251,12 +255,27 @@ func (h *Harness) checkAlive(t testing.TB, allowStopped bool) bool {
 	}
 }
 
+func (h *Harness) anyDestroyed() bool {
+	h.mu.Lock()
+	rt := h.rt
+	h.mu.Unlock()
+	if rt == nil {
+		return false
+	}
+	for _, s := range rt.Stats() {
+		if s.State == converge.Destroyed {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Harness) waitForStop(t testing.TB) error {
 	t.Helper()
 	ok := pollUntil(t, pollSpec{
 		deadline: stopDeadline,
 		step:     pollStep,
-		advance:  func() { h.Clock.Advance(stopAdvance) },
+		advance:  func() { h.clock.Advance(stopAdvance) },
 		fail:     func() { t.Helper(); t.Fatalf("convergetest: Run never returned") },
 	}, func() bool {
 		select {
@@ -309,14 +328,16 @@ func (h *Harness) runtime(t testing.TB) *converge.Runtime {
 	return h.rt
 }
 
-func (h *Harness) Wake(job, id string) {
+func (h *Harness) Clock() *Clock { return h.clock }
+
+func (h *Harness) Notify(job, id string) {
 	h.t.Helper()
 	if !h.ensureRunning(h.t) {
 		return
 	}
 	rt := h.runtime(h.t)
-	if err := hook.Hint(rt, job, id); err != nil {
-		h.t.Fatalf("convergetest: Wake(%q, %q): %v", job, id, err)
+	if err := hook.Notify(rt, job, id); err != nil {
+		h.t.Fatalf("convergetest: Notify(%q, %q): %v", job, id, err)
 	}
 }
 
@@ -349,7 +370,7 @@ func (h *Harness) quiet(rt *converge.Runtime) bool {
 	return h.MQ.Idle() && hook.Quiet(rt)
 }
 
-func (h *Harness) RunPass(t testing.TB, job string) {
+func (h *Harness) Sweep(t testing.TB, job string) {
 	t.Helper()
 	if !h.ensureRunning(t) {
 		return
@@ -358,14 +379,14 @@ func (h *Harness) RunPass(t testing.TB, job string) {
 	ctx := context.Background()
 	var lastErr error
 	ok := pollUntil(t, pollSpec{
-		deadline: runPassDeadline,
+		deadline: sweepDeadline,
 		step:     pollStep,
 		fail: func() {
 			t.Helper()
-			t.Fatalf("convergetest: RunPass(%q): %v", job, lastErr)
+			t.Fatalf("convergetest: Sweep(%q): %v", job, lastErr)
 		},
 	}, func() bool {
-		err := hook.RunPassNow(rt, ctx, job)
+		err := hook.Sweep(rt, ctx, job)
 		if err != nil {
 			lastErr = err
 			return false

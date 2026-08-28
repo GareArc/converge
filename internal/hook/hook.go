@@ -2,39 +2,37 @@ package hook
 
 import (
 	"context"
-
-	"github.com/GareArc/converge/internal/ctl"
+	"time"
 )
 
 var RegisterJob func(rt any, job any) error
 
-type ProducerWiring struct {
-	MQ      any
-	Clock   any
-	QueueMQ func(queue string) any
-}
+var ProducerSend func(p any, ctx context.Context, job string, m any, delay time.Duration) error
 
-var ProducerDeps func(rt any) (ProducerWiring, error)
+var ProducerNow func(p any) (time.Time, bool)
 
 var AttachOptions func(o any, attach func(rt any)) any
 
 var Inspect func(rt any) (any, error)
 
-type OpsWiring struct {
+type RuntimeDeps struct {
 	KV        any
 	MQ        any
 	Clock     any
 	Namespace string
 	Replica   string
-	QueueMQ   func(queue string) any
 }
 
-var OpsDeps func(rt any) (OpsWiring, error)
+var RuntimeDepsOf func(rt any) (RuntimeDeps, error)
 
-var Hint func(rt any, job, id string) error
+var Notify func(rt any, job, id string) error
 
-var RunPassNow func(rt any, ctx context.Context, job string) error
+var Sweep func(rt any, ctx context.Context, job string) error
 
 var Quiet func(rt any) bool
 
-var ControlDispatch func(rt any, ctx context.Context, req ctl.Request) ([]ctl.Response, error)
+var FailingIDs func(rt any, job string) (any, error)
+
+var StopConditionDeadline func(c any) (time.Time, bool)
+
+var StopConditionKey func(c any) (string, bool)

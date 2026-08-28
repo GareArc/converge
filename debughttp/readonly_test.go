@@ -3,10 +3,12 @@ package debughttp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,26 +27,6 @@ func doRequest(h http.Handler, method, path string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(method, path, nil)
 	h.ServeHTTP(rec, req)
-	return rec
-}
-
-func doOpsRequestAsync(t *testing.T, clock *convergetest.Clock, h http.Handler, method, path string) *httptest.ResponseRecorder {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(method, path, nil)
-	done := make(chan struct{})
-	go func() {
-		h.ServeHTTP(rec, req)
-		close(done)
-	}()
-	convergetest.AdvanceUntil(t, clock, 60*time.Millisecond, func() bool {
-		select {
-		case <-done:
-			return true
-		default:
-			return false
-		}
-	})
 	return rec
 }
 
@@ -78,10 +60,39 @@ func assertExactKeys(t *testing.T, m map[string]any, want []string) {
 
 func registerReconcileJob(t *testing.T, rt *converge.Runtime, name string) {
 	t.Helper()
-	if err := reconcile.Periodic(rt, name, reconcile.Every(time.Hour), func(ctx context.Context) error { return nil }); err != nil {
+	if err := reconcile.Periodic(rt, name, reconcile.Every(time.Hour), func(ctx context.Context) error { return nil }, reconcile.PeriodicOpts{}); err != nil {
 		t.Fatal(err)
 	}
 }
+
+type foreignJob struct {
+	name  string
+	ready chan struct{}
+}
+
+func newForeignJob(name string) *foreignJob {
+	return &foreignJob{name: name, ready: make(chan struct{})}
+}
+
+func (j *foreignJob) Name() string { return j.name }
+
+func (j *foreignJob) Run(ctx context.Context, d converge.JobDeps) error {
+	close(j.ready)
+	<-ctx.Done()
+	return nil
+}
+
+func (j *foreignJob) Ready() <-chan struct{} { return j.ready }
+
+func (j *foreignJob) Quiet() bool { return true }
+
+func (j *foreignJob) Notify(id string) error { return nil }
+
+func (j *foreignJob) Sweep(ctx context.Context) error { return nil }
+
+func (j *foreignJob) Stats() converge.JobStats { return converge.JobStats{Job: j.name} }
+
+func (j *foreignJob) Info() converge.JobInfo { return converge.JobInfo{Job: j.name} }
 
 func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
@@ -102,7 +113,7 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	}
 	w.Runtime(t)
 
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(w.MQ, converge.ProducerOpts{Namespace: "dt", Clock: w.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,8 +179,8 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	if wk["surface"] != "worker" {
 		t.Fatalf("surface = %v, want worker", wk["surface"])
 	}
-	if wk["queue"] != "send-invite" {
-		t.Fatalf("queue = %v, want send-invite", wk["queue"])
+	if wk["queue"] != "dt/converge/inbox/send-invite" {
+		t.Fatalf("queue = %v, want the namespaced inbox", wk["queue"])
 	}
 	if wk["last_success"] == "" {
 		t.Fatal("last_success = empty, want a populated RFC3339Nano timestamp after a successful run")
@@ -179,6 +190,12 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	}
 	if wk["consecutive_fails"] != float64(0) {
 		t.Fatalf("consecutive_fails = %v, want 0", wk["consecutive_fails"])
+	}
+	if wk["backlog_known"] == true && wk["backlog_at"] == "" {
+		t.Fatal("backlog_known is true but backlog_at is empty: a backlog reading must carry its own age")
+	}
+	if wk["shelved_known"] == true && wk["shelved_at"] == "" {
+		t.Fatal("shelved_known is true but shelved_at is empty: a shelf depth must carry its own age")
 	}
 }
 
@@ -197,8 +214,10 @@ func TestReadOnlyJobRowJSONKeysPinned(t *testing.T) {
 	}
 	row := jobs[0].(map[string]any)
 	assertExactKeys(t, row, []string{
-		"job", "surface", "run_mode", "queue", "paused", "settings",
-		"queue_depth", "parked", "last_success", "consecutive_fails",
+		"job", "surface", "run_mode", "state", "queue", "settings",
+		"lease_held", "in_flight", "backlog", "backlog_known", "backlog_at",
+		"failing", "shelved", "shelved_known", "shelved_at", "last_success", "last_error", "last_error_at",
+		"consecutive_fails",
 	})
 }
 
@@ -264,7 +283,7 @@ func TestReadOnlyHasNoMutatingRoutes(t *testing.T) {
 	rt := w.Build(t)
 	registerReconcileJob(t, rt, "job")
 	h := debughttp.ReadOnlyHandler(rt)
-	rec := doRequest(h, http.MethodPost, "/debug/jobs/job/poke?id=x")
+	rec := doRequest(h, http.MethodPost, "/debug/jobs/job/sweep")
 	if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 404 or 405 (readonly must not mount verb routes)", rec.Code)
 	}
@@ -292,62 +311,35 @@ func TestReadOnlyUnknownPath404(t *testing.T) {
 }
 
 func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
-	cases := []struct {
-		name    string
-		handler func(rt *converge.Runtime) http.Handler
-	}{
-		{"ReadOnlyHandler", func(rt *converge.Runtime) http.Handler { return debughttp.ReadOnlyHandler(rt) }},
-		{"OpsHandler", func(rt *converge.Runtime) http.Handler { return debughttp.OpsHandler(rt, debughttp.OpsOpts{}) }},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
-			rt := w.Build(t)
-			registerReconcileJob(t, rt, "license-refresh")
-
-			outer := http.NewServeMux()
-			outer.Handle("/debug/jobs/", c.handler(rt))
-			srv := httptest.NewServer(outer)
-			t.Cleanup(srv.Close)
-
-			resp, err := http.Get(srv.URL + "/debug/jobs")
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("status = %d, want 200 (the guide's own %q mounting must serve the bare path)", resp.StatusCode, "/debug/jobs/")
-			}
-			var body struct {
-				Jobs []map[string]any `json:"jobs"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if len(body.Jobs) != 1 || body.Jobs[0]["job"] != "license-refresh" {
-				t.Fatalf("jobs = %+v, want one row for license-refresh", body.Jobs)
-			}
-		})
-	}
-}
-
-func TestOpsHandlerServesReadOnlyRoutesWithParity(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "dt"})
 	rt := w.Build(t)
-	registerReconcileJob(t, rt, "job")
-	ro := debughttp.ReadOnlyHandler(rt)
-	ops := debughttp.OpsHandler(rt, debughttp.OpsOpts{})
+	registerReconcileJob(t, rt, "license-refresh")
 
-	recRO := doRequest(ro, http.MethodGet, "/debug/jobs")
-	recOps := doRequest(ops, http.MethodGet, "/debug/jobs")
-	if recRO.Code != recOps.Code || recRO.Body.String() != recOps.Body.String() {
-		t.Fatalf("readonly vs ops GET /debug/jobs differ:\n%d %s\n%d %s", recRO.Code, recRO.Body, recOps.Code, recOps.Body)
+	outer := http.NewServeMux()
+	outer.Handle("/debug/jobs/", debughttp.ReadOnlyHandler(rt))
+	srv := httptest.NewServer(outer)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/debug/jobs", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	recROJob := doRequest(ro, http.MethodGet, "/debug/jobs/job")
-	recOpsJob := doRequest(ops, http.MethodGet, "/debug/jobs/job")
-	if recROJob.Code != recOpsJob.Code || recROJob.Body.String() != recOpsJob.Body.String() {
-		t.Fatalf("readonly vs ops GET /debug/jobs/job differ:\n%d %s\n%d %s", recROJob.Code, recROJob.Body, recOpsJob.Code, recOpsJob.Body)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the guide's own %q mounting must serve the bare path)", resp.StatusCode, "/debug/jobs/")
+	}
+	var body struct {
+		Jobs []map[string]any `json:"jobs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Jobs) != 1 || body.Jobs[0]["job"] != "license-refresh" {
+		t.Fatalf("jobs = %+v, want one row for license-refresh", body.Jobs)
 	}
 }
 
@@ -356,7 +348,7 @@ func TestReadOnlyListRendersUnknownSurfaceAndRunModeSafely(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := hook.RegisterJob(rt, newOpsStubJob("mystery")); err != nil {
+	if err := hook.RegisterJob(rt, newForeignJob("mystery")); err != nil {
 		t.Fatal(err)
 	}
 	h := debughttp.ReadOnlyHandler(rt)
@@ -383,11 +375,32 @@ func TestReadOnlyHandlerNilRuntimePanics(t *testing.T) {
 	debughttp.ReadOnlyHandler(nil)
 }
 
-func TestOpsHandlerNilRuntimePanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("want a panic for a nil runtime")
-		}
-	}()
-	debughttp.OpsHandler(nil, debughttp.OpsOpts{})
+func TestReadOnlyHandlerNamesFailingIDs(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	if err := reconcile.Register(rt, reconcile.Spec{
+		Name: "flaky",
+		Reconcile: func(_ context.Context, id reconcile.ID) error {
+			if id == "bad" {
+				return errors.New("upstream refused")
+			}
+			return nil
+		},
+		Triggers: []reconcile.Trigger{reconcile.Schedule(
+			reconcile.StringIDs(func(context.Context) ([]string, error) { return []string{"good", "bad"}, nil }),
+			reconcile.Every(time.Hour))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+
+	rr := httptest.NewRecorder()
+	debughttp.ReadOnlyHandler(rt).ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/debug/jobs/flaky", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, `"bad"`) || !strings.Contains(body, "upstream refused") {
+		t.Fatalf("failing ID not reported: %s", body)
+	}
+	if strings.Contains(body, `"good"`) {
+		t.Fatalf("healthy ID reported as failing: %s", body)
+	}
 }

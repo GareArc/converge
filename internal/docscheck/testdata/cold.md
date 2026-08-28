@@ -1,3 +1,3 @@
 # Cold page
 
-The handler parks the ID when it fails twice.
+The handler shelves the message when it fails twice.

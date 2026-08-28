@@ -12,6 +12,12 @@ func join(ns string, fixed []string, parts []string) string {
 	return strings.Join(elems, "/")
 }
 
+func Probe(ns string) string {
+	return join(ns, []string{"converge", "probe"}, nil)
+}
+
+func Inbox(ns, job string) string { return join(ns, []string{"converge", "inbox"}, []string{job}) }
+
 func Worker(ns, job string, parts ...string) string {
 	return join(ns, []string{"converge", "worker", job}, parts)
 }
@@ -20,20 +26,14 @@ func Reconcile(ns, job string, parts ...string) string {
 	return join(ns, []string{"converge", "reconcile", job}, parts)
 }
 
-func Ctl(ns string, parts ...string) string {
-	return join(ns, []string{"converge", "ctl"}, parts)
-}
-
 func WorkerLease(ns, job string) string { return Worker(ns, job, "lease") }
 
 func ReconcileLease(ns, job string) string { return Reconcile(ns, job, "lease") }
 
-func WorkerDLQPrefix(ns, job string) string { return Worker(ns, job, "dlq") + "/" }
+func WorkerShelfPrefix(ns, job string) string { return Worker(ns, job, "shelf") + "/" }
 
-func WorkerDLQ(ns, job, messageID string) string { return WorkerDLQPrefix(ns, job) + messageID }
+func WorkerShelf(ns, job, messageID string) string { return WorkerShelfPrefix(ns, job) + messageID }
 
-func ReconcileParkedPrefix(ns, job string) string { return Reconcile(ns, job, "parked") + "/" }
-
-func ReconcileParked(ns, job, id string) string { return ReconcileParkedPrefix(ns, job) + id }
-
-func Tracker(namespace, id string) string { return "converge/tracker/" + namespace + "/" + id }
+func Tombstone(ns, job string) string {
+	return join(ns, []string{"converge", "tombstone"}, []string{job})
+}

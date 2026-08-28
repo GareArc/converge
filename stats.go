@@ -6,10 +6,27 @@ type JobStats struct {
 	Job              string
 	Surface          Surface
 	RunMode          RunMode
-	QueueDepth       int
-	Parked           int
+	State            State
+	LeaseHeld        bool
+	InFlight         int
+	Backlog          int
+	BacklogKnown     bool
+	BacklogAt        time.Time
+	Failing          int
+	Shelved          int
+	ShelvedKnown     bool
+	ShelvedAt        time.Time
 	LastSuccess      time.Time
+	LastError        error
+	LastErrorAt      time.Time
 	ConsecutiveFails int
+}
+
+type FailingID struct {
+	ID       string
+	Failures int
+	Err      error
+	NextTry  time.Time
 }
 
 type JobInfo struct {
@@ -17,6 +34,5 @@ type JobInfo struct {
 	Surface  Surface
 	RunMode  RunMode
 	Queue    string
-	Paused   bool
 	Settings map[string]string
 }

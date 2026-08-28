@@ -2,6 +2,7 @@ package converge
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -30,3 +31,13 @@ type BroadcastConsumer interface {
 type DelayedPublisher interface {
 	PublishDelayed(ctx context.Context, queue string, m Message, delay time.Duration) error
 }
+
+type BacklogReporter interface {
+	Backlog(ctx context.Context, queue string) (int, error)
+}
+
+type GroupBacklogReporter interface {
+	BacklogForGroup(ctx context.Context, queue, group string) (int, error)
+}
+
+var ErrBacklogUnknown = errors.New("converge: backlog: unknown")

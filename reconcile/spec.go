@@ -6,31 +6,22 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
 )
 
-type Reconciler interface {
-	Reconcile(ctx context.Context, id ID) error
-}
-
-type Func func(ctx context.Context, id ID) error
-
-func (f Func) Reconcile(ctx context.Context, id ID) error { return f(ctx, id) }
-
 type Spec struct {
-	Name             string
-	Reconciler       Reconciler
-	Triggers         []Trigger
-	Concurrency      int
-	RunMode          converge.RunMode
-	DeadLetterAfter  int
-	Versions         VersionSource
-	RateLimit        converge.Rate
-	Middleware       []converge.Middleware
-	AllowUnscheduled bool
-	Paused           bool
+	Name        string
+	Reconcile   func(ctx context.Context, id ID) error
+	Triggers    []Trigger
+	Concurrency int
+	RunMode     converge.RunMode
+	Timeout     time.Duration
+	Versions    VersionSource
+	Middleware  []converge.Middleware
+	Until       converge.StopCondition
 }
 
 func newEngine(s Spec) (*engine, error) {
@@ -41,33 +32,25 @@ func newEngine(s Spec) (*engine, error) {
 	if strings.Contains(s.Name, "/") {
 		return nil, fail(`Name must not contain "/"`)
 	}
-	if s.Reconciler == nil {
-		return nil, fail("Spec.Reconciler is required")
+	if s.Reconcile == nil {
+		return nil, fail("Spec.Reconcile is required")
 	}
 	if s.Concurrency < 0 {
 		return nil, fail("Concurrency must not be negative")
 	}
-	if s.DeadLetterAfter < 0 {
-		return nil, fail("DeadLetterAfter must not be negative")
-	}
-	if s.RateLimit.Events < 0 || s.RateLimit.Per < 0 {
-		return nil, fail("RateLimit must not be negative")
-	}
-	if !s.RateLimit.IsZero() && (s.RateLimit.Events == 0 || s.RateLimit.Per == 0) {
-		return nil, fail("RateLimit needs both Events and Per")
+	if s.Timeout < 0 {
+		return nil, fail("Timeout must not be negative")
 	}
 	cfg := config{
-		name:             s.Name,
-		rec:              s.Reconciler,
-		triggers:         slices.Clone(s.Triggers),
-		concurrency:      s.Concurrency,
-		runMode:          s.RunMode,
-		deadLetterAfter:  s.DeadLetterAfter,
-		versions:         s.Versions,
-		rateLimit:        s.RateLimit,
-		middleware:       slices.Clone(s.Middleware),
-		allowUnscheduled: s.AllowUnscheduled,
-		paused:           s.Paused,
+		name:        s.Name,
+		fn:          s.Reconcile,
+		triggers:    slices.Clone(s.Triggers),
+		concurrency: s.Concurrency,
+		runMode:     s.RunMode,
+		timeout:     s.Timeout,
+		versions:    s.Versions,
+		middleware:  slices.Clone(s.Middleware),
+		until:       s.Until,
 	}
 	if cfg.concurrency == 0 {
 		cfg.concurrency = 1
@@ -75,41 +58,17 @@ func newEngine(s Spec) (*engine, error) {
 	if cfg.runMode.IsZero() {
 		cfg.runMode = converge.OnOneReplica
 	}
-	switch cfg.runMode {
-	case converge.SplitAcrossReplicas:
-		return nil, fail("SplitAcrossReplicas is not supported on the reconcile surface in v1")
-	case converge.OnAllReplicas:
-		if s.Versions != nil {
-			return nil, fail("OnAllReplicas cannot use Versions")
-		}
-		if s.DeadLetterAfter > 0 {
-			return nil, fail("OnAllReplicas cannot use DeadLetterAfter")
-		}
-		if !s.RateLimit.IsZero() {
-			return nil, fail("OnAllReplicas cannot use RateLimit")
-		}
-	}
-	if t, ok := s.Versions.(*Tracker); ok {
-		if t == nil {
-			return nil, fail("Versions must not be a nil *Tracker")
-		}
-		if t.err != nil {
-			return nil, fmt.Errorf("reconcile: job %q: %w", s.Name, t.err)
-		}
-		if t.namespace != s.Name {
-			return nil, fail(fmt.Sprintf("Tracker namespace %q must equal Spec.Name", t.namespace))
-		}
+	if cfg.runMode == converge.Competing {
+		return nil, fail("Competing is a worker mode")
 	}
 	periodic := false
 	for _, t := range cfg.triggers {
 		if t == nil {
 			return nil, fail("Triggers must not contain nil")
 		}
-		if _, ok := t.(PeriodicTrigger); ok {
-			periodic = true
-		}
 		switch tr := t.(type) {
 		case *scheduleTrigger:
+			periodic = true
 			if tr.source.IsZero() {
 				return nil, fail("Schedule needs an IDSource")
 			}
@@ -119,28 +78,32 @@ func newEngine(s Spec) (*engine, error) {
 			if tr.cad.every == 0 && tr.cad.sched == nil {
 				return nil, fail("Schedule needs a Cadence; use Every or Cron")
 			}
-			if tr.source.paged && cfg.runMode == converge.OnAllReplicas {
-				return nil, fail("OnAllReplicas cannot use IDsByPage")
-			}
 			if tr.source.single {
 				cfg.single = true
 			}
-		case *messageTrigger:
-			if tr.queue == "" {
-				return nil, fail("OnMessage needs a queue name")
+		case *notificationTrigger:
+			if tr.foreign {
+				if tr.queue == "" {
+					return nil, fail("NotificationsFrom needs a queue name")
+				}
+				if tr.opts.ID == nil {
+					return nil, fail("NotificationsFrom needs an ID function")
+				}
+			} else if tr.opts.MQ != nil {
+				return nil, fail("Notifications always reads Options.MQ; MQ is NotificationsFrom only")
+			} else if tr.opts.ID != nil {
+				return nil, fail("Notifications decodes converge notifications; ID is NotificationsFrom only")
 			}
-			if tr.idf == nil {
-				return nil, fail("OnMessage needs an IDFunc")
-			}
-			if cfg.runMode == converge.OnAllReplicas && tr.opts.Delivery == converge.Group {
-				return nil, fail("OnAllReplicas requires Broadcast delivery")
+		default:
+			if _, ok := t.(PeriodicTrigger); ok {
+				return nil, fail("only Schedule is swept; a custom PeriodicTrigger runs but never sweeps")
 			}
 		}
 	}
-	if !periodic && !cfg.allowUnscheduled {
-		return nil, fail("no periodic trigger; set AllowUnscheduled to opt out of the schedule guarantee")
+	if !periodic {
+		return nil, fail("no Schedule trigger; every reconcile job needs one")
 	}
-	return &engine{cfg: cfg, ready: make(chan struct{}), paused: s.Paused}, nil
+	return &engine{cfg: cfg, ready: make(chan struct{}), state: converge.NotStarted}, nil
 }
 
 func Register(rt *converge.Runtime, s Spec) error {

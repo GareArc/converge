@@ -31,8 +31,8 @@ func TestMaskNonProseHidesCodeAndTitle(t *testing.T) {
 	if FirstProseUse(masked, "warm") != -1 {
 		t.Error("H1 title was not masked")
 	}
-	if got := FirstProseUse(masked, "parked"); got == -1 {
-		t.Error("prose use of parked was masked away")
+	if got := FirstProseUse(masked, "shelved"); got == -1 {
+		t.Error("prose use of shelved was masked away")
 	}
 }
 
@@ -41,11 +41,11 @@ func TestFirstGlossFindsBoldDefinition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gloss := FirstGloss(string(src), "parked")
+	gloss := FirstGloss(string(src), "shelved")
 	if gloss == -1 {
 		t.Fatal("bold definition not found")
 	}
-	use := FirstProseUse(MaskNonProse(string(src)), "parked")
+	use := FirstProseUse(MaskNonProse(string(src)), "shelved")
 	if gloss > use {
 		t.Errorf("gloss at %d comes after first use at %d", gloss, use)
 	}
@@ -56,27 +56,27 @@ func TestColdPageHasNoGloss(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if FirstGloss(string(src), "parked") != -1 {
+	if FirstGloss(string(src), "shelved") != -1 {
 		t.Error("found a gloss on a page that has none")
 	}
-	if FirstProseUse(MaskNonProse(string(src)), "parks") == -1 {
+	if FirstProseUse(MaskNonProse(string(src)), "shelves") == -1 {
 		t.Error("expected a prose use on the cold page")
 	}
 }
 
 func TestMaskNonProseUnpairedBacktickDoesNotMaskALaterLine(t *testing.T) {
 	src := "Prices are quoted in ` per unit.\n\n" +
-		"The job parks the ID after too many failures.\n\n" +
+		"The job shelves the message after too many failures.\n\n" +
 		"The symbol ` closes nothing in particular.\n"
 	masked := MaskNonProse(src)
-	if FirstProseUse(masked, "parks") == -1 {
+	if FirstProseUse(masked, "shelves") == -1 {
 		t.Error("a cold term one line below an unpaired backtick was masked away")
 	}
 }
 
 func TestMaskNonProseStillHidesASingleLineCodeSpan(t *testing.T) {
-	masked := MaskNonProse("The `parks` identifier is code, not prose.\n")
-	if FirstProseUse(masked, "parks") != -1 {
+	masked := MaskNonProse("The `shelves` identifier is code, not prose.\n")
+	if FirstProseUse(masked, "shelves") != -1 {
 		t.Error("a single-line code span was left unmasked")
 	}
 }
@@ -112,17 +112,17 @@ func TestFirstGlossGlossaryLinkRequiresWordBoundary(t *testing.T) {
 
 func TestUnclosedLinkTargetDoesNotMaskALaterLine(t *testing.T) {
 	src := "See [the reference](../reference/kernel.md for details.\n\n" +
-		"The job parks the ID after too many failures.\n\n" +
+		"The job shelves the message after too many failures.\n\n" +
 		"Rate limiting (process-local) is configured separately.\n"
 	masked := MaskNonProse(src)
-	if FirstProseUse(masked, "parks") == -1 {
+	if FirstProseUse(masked, "shelves") == -1 {
 		t.Error("a cold term below a link missing its closing paren was masked away")
 	}
 }
 
 func TestMaskNonProseStillHidesALinkTargetOnItsOwnLine(t *testing.T) {
-	masked := MaskNonProse("See [the reference](../reference/parks.md) for details.\n")
-	if FirstProseUse(masked, "parks") != -1 {
+	masked := MaskNonProse("See [the reference](../reference/shelves.md) for details.\n")
+	if FirstProseUse(masked, "shelves") != -1 {
 		t.Error("a link target on a single line was left unmasked")
 	}
 }

@@ -91,14 +91,24 @@ func TestStopBeforeStartReturnsWithoutRunning(t *testing.T) {
 	}
 }
 
+var errKVUnavailable = errors.New("kv unavailable")
+
+type brokenKV struct {
+	converge.KV
+}
+
+func (brokenKV) Get(context.Context, string) ([]byte, bool, error) {
+	return nil, false, errKVUnavailable
+}
+
 func TestStopReportsAnIncompleteDrain(t *testing.T) {
 	r := &blockingReconciler{entered: make(chan struct{}, 1), release: make(chan struct{})}
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:             "blocker",
-		Reconciler:       r,
-		AllowUnscheduled: true,
+		Name:      "blocker",
+		Reconcile: r.Reconcile,
+		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour))},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -110,9 +120,6 @@ func TestStopReportsAnIncompleteDrain(t *testing.T) {
 	case <-rt.Ready():
 	case <-time.After(2 * time.Second):
 		t.Fatal("runtime never became ready")
-	}
-	if err := rt.Poke("blocker", "id-1"); err != nil {
-		t.Fatal(err)
 	}
 	select {
 	case <-r.entered:
@@ -134,25 +141,15 @@ func TestStopReportsAnIncompleteDrain(t *testing.T) {
 	}
 }
 
-var errKVUnavailable = errors.New("kv unavailable")
-
-type brokenKV struct {
-	converge.KV
-}
-
-func (brokenKV) Get(context.Context, string) ([]byte, bool, error) {
-	return nil, false, errKVUnavailable
-}
-
 func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {
 	h := convergetest.NewWith(t, convergetest.Options{
 		KV: func(c *convergetest.Clock) converge.KV { return brokenKV{inmem.NewKVWithClock(c)} },
 	})
 	rt := h.Build(t)
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:             "unreachable",
-		Reconciler:       reconcile.Func(func(context.Context, reconcile.ID) error { return nil }),
-		AllowUnscheduled: true,
+		Name:      "unreachable",
+		Reconcile: func(context.Context, reconcile.ID) error { return nil },
+		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour))},
 	}); err != nil {
 		t.Fatal(err)
 	}

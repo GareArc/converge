@@ -11,37 +11,27 @@ func TestRunModeZeroValueMeansDefault(t *testing.T) {
 	if !m.IsZero() {
 		t.Fatal("zero RunMode must report IsZero")
 	}
-	for _, mode := range []RunMode{OnOneReplica, SplitAcrossReplicas, OnAllReplicas} {
+	for _, mode := range []RunMode{OnOneReplica, Competing, OnAllReplicas} {
 		if mode.IsZero() {
 			t.Fatalf("%v must not be zero", mode)
 		}
 	}
-	if OnOneReplica == SplitAcrossReplicas {
+	if OnOneReplica == Competing {
 		t.Fatal("modes must be distinct")
 	}
 }
 
 func TestRunModeString(t *testing.T) {
 	cases := map[string]RunMode{
-		"OnOneReplica":        OnOneReplica,
-		"SplitAcrossReplicas": SplitAcrossReplicas,
-		"OnAllReplicas":       OnAllReplicas,
-		"unset":               {},
+		"OnOneReplica":  OnOneReplica,
+		"Competing":     Competing,
+		"OnAllReplicas": OnAllReplicas,
+		"unset":         {},
 	}
 	for want, mode := range cases {
 		if got := mode.String(); got != want {
 			t.Errorf("String() = %q, want %q", got, want)
 		}
-	}
-}
-
-func TestDeliveryModeZeroFollowsRunMode(t *testing.T) {
-	var d DeliveryMode
-	if !d.IsZero() {
-		t.Fatal("zero DeliveryMode must report IsZero")
-	}
-	if Group.IsZero() || Broadcast.IsZero() || Group == Broadcast {
-		t.Fatal("Group and Broadcast must be distinct non-zero values")
 	}
 }
 
@@ -85,47 +75,37 @@ func TestRateZeroIsUnlimited(t *testing.T) {
 }
 
 var _ = []Event{
-	WakeDiscarded{},
-	PassOverrun{},
-	IDParked{},
-	VersionZero{},
-	WrongSurfaceSignal{},
-	BackoffFallback{},
-	MessageDiscarded{},
-	MessageDeadLettered{},
-	QueueDepth{},
+	RunCompleted{},
+	LeaseChanged{},
+	ScheduleOverrun{},
+	NotificationDropped{},
+	JobDestroyed{},
 }
 
-func TestWakeDiscardReasonZeroIsHonest(t *testing.T) {
-	if got := (WakeDiscardReason{}).String(); got != "unknown" {
-		t.Fatalf("zero reason = %q, want unknown, never a fabricated name", got)
-	}
-	if !(WakeDiscardReason{}).IsZero() || DiscardParked.IsZero() {
-		t.Fatal("IsZero semantics broken")
+func TestOutcomeZeroIsHonest(t *testing.T) {
+	if got := (Outcome{}).String(); got != "unknown" {
+		t.Fatalf("zero outcome = %q, want unknown, never a fabricated name", got)
 	}
 }
 
-func TestDeadLetterReasonZeroIsHonest(t *testing.T) {
-	if got := (DeadLetterReason{}).String(); got != "unknown" {
-		t.Fatalf("zero reason = %q, want unknown, never a fabricated name", got)
+func TestOutcomeStrings(t *testing.T) {
+	cases := map[string]Outcome{
+		"succeeded": Succeeded,
+		"retrying":  Retrying,
+		"deferred":  Deferred,
+		"discarded": Discarded,
+		"shelved":   Shelved,
 	}
-	if !(DeadLetterReason{}).IsZero() || DeadLetterMaxAttempts.IsZero() {
-		t.Fatal("IsZero semantics broken")
-	}
-}
-
-func TestDeadLetterReasonString(t *testing.T) {
-	cases := map[string]DeadLetterReason{
-		"max-attempts":   DeadLetterMaxAttempts,
-		"max-age":        DeadLetterMaxAge,
-		"wrong-kind":     DeadLetterWrongKind,
-		"schema-version": DeadLetterSchemaVersion,
-		"undecodable":    DeadLetterUndecodable,
-		"wrong-surface":  DeadLetterWrongSurface,
-	}
-	for want, reason := range cases {
-		if got := reason.String(); got != want {
+	for want, o := range cases {
+		if got := o.String(); got != want {
 			t.Errorf("String() = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestOutcomeUnknownKindIsHonest(t *testing.T) {
+	future := Outcome{kind: outcomeKind(99)}
+	if got := future.String(); got != "unknown" {
+		t.Fatalf("future outcome kind = %q, want unknown", got)
 	}
 }

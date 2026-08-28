@@ -3,7 +3,6 @@ package docscheck
 var Stoplist = []string{
 	"Job",
 	"Task",
-	"Pass",
 	"Version",
 	"Queue",
 	"Surface",

@@ -14,14 +14,12 @@ import (
 )
 
 type stubJob struct {
-	name    string
-	ready   chan struct{}
-	run     func(ctx context.Context, d converge.JobDeps) error
-	poked   []string
-	hinted  []string
-	ranPass int
-	paused  []bool
-	mu      sync.Mutex
+	name     string
+	ready    chan struct{}
+	run      func(ctx context.Context, d converge.JobDeps) error
+	notified []string
+	ranPass  int
+	mu       sync.Mutex
 }
 
 func newStubJob(name string) *stubJob {
@@ -41,33 +39,20 @@ func (s *stubJob) Run(ctx context.Context, d converge.JobDeps) error {
 
 func (s *stubJob) Ready() <-chan struct{} { return s.ready }
 
-func (s *stubJob) Poke(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.poked = append(s.poked, id)
-	return nil
-}
-
 func (s *stubJob) Quiet() bool { return true }
 
-func (s *stubJob) Hint(id string) error {
+func (s *stubJob) Notify(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.hinted = append(s.hinted, id)
+	s.notified = append(s.notified, id)
 	return nil
 }
 
-func (s *stubJob) RunPassNow(ctx context.Context) error {
+func (s *stubJob) Sweep(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ranPass++
 	return nil
-}
-
-func (s *stubJob) SetPaused(paused bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.paused = append(s.paused, paused)
 }
 
 func (s *stubJob) Stats() converge.JobStats {
@@ -81,42 +66,6 @@ func (s *stubJob) Info() converge.JobInfo {
 		Settings: map[string]string{"stub": s.name},
 	}
 }
-
-type stubQueueJob struct {
-	name  string
-	queue string
-	mq    converge.MQ
-	ready chan struct{}
-}
-
-func newStubQueueJob(name, queue string, mq converge.MQ) *stubQueueJob {
-	return &stubQueueJob{name: name, queue: queue, mq: mq, ready: make(chan struct{})}
-}
-
-func (s *stubQueueJob) Name() string { return s.name }
-
-func (s *stubQueueJob) Run(ctx context.Context, d converge.JobDeps) error {
-	<-ctx.Done()
-	return nil
-}
-
-func (s *stubQueueJob) Ready() <-chan struct{} { return s.ready }
-
-func (s *stubQueueJob) Poke(id string) error { return nil }
-
-func (s *stubQueueJob) Quiet() bool { return true }
-
-func (s *stubQueueJob) Hint(id string) error { return nil }
-
-func (s *stubQueueJob) RunPassNow(ctx context.Context) error { return nil }
-
-func (s *stubQueueJob) SetPaused(paused bool) {}
-
-func (s *stubQueueJob) Stats() converge.JobStats { return converge.JobStats{Job: s.name} }
-
-func (s *stubQueueJob) Info() converge.JobInfo { return converge.JobInfo{Job: s.name} }
-
-func (s *stubQueueJob) QueueBinding() (string, converge.MQ) { return s.queue, s.mq }
 
 func mustRuntime(t *testing.T) *converge.Runtime {
 	t.Helper()
@@ -153,34 +102,6 @@ func TestRegisterRejectsForeignTypes(t *testing.T) {
 		t.Fatal("non-job must be rejected")
 	}
 	if err := hook.RegisterJob("not a runtime", newStubJob("a")); err == nil {
-		t.Fatal("non-runtime must be rejected")
-	}
-}
-
-func TestProducerDepsRoundTripsWiring(t *testing.T) {
-	mq := inmem.NewMQ()
-	clock := convergetest.NewClock(time.Unix(0, 0))
-	rt, err := converge.New(converge.Options{MQ: mq, Clock: clock})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wiring, err := hook.ProducerDeps(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wiring.MQ != mq {
-		t.Fatalf("MQ not round-tripped: got %v", wiring.MQ)
-	}
-	if wiring.Clock != clock {
-		t.Fatalf("Clock not round-tripped: got %v", wiring.Clock)
-	}
-	if got := wiring.QueueMQ("unbound"); got != nil {
-		t.Fatalf("QueueMQ for unbound queue = %v, want nil", got)
-	}
-}
-
-func TestProducerDepsRejectsForeignRuntime(t *testing.T) {
-	if _, err := hook.ProducerDeps("not a runtime"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
 }
@@ -235,19 +156,15 @@ func TestInspectRejectsForeignRuntime(t *testing.T) {
 	}
 }
 
-func TestOpsDepsRoundTripsWiring(t *testing.T) {
+func TestRuntimeDepsRoundTripsWiring(t *testing.T) {
 	mq := inmem.NewMQ()
-	boundMQ := inmem.NewMQ()
 	kv := inmem.NewKV()
 	clock := convergetest.NewClock(time.Unix(0, 0))
 	rt, err := converge.New(converge.Options{Namespace: "svc", MQ: mq, KV: kv, Clock: clock})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := hook.RegisterJob(rt, newStubQueueJob("q-job", "bound-queue", boundMQ)); err != nil {
-		t.Fatal(err)
-	}
-	wiring, err := hook.OpsDeps(rt)
+	wiring, err := hook.RuntimeDepsOf(rt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,20 +177,14 @@ func TestOpsDepsRoundTripsWiring(t *testing.T) {
 	if len(wiring.Replica) != 32 {
 		t.Fatalf("Replica = %q, want 32 hex chars", wiring.Replica)
 	}
-	if got := wiring.QueueMQ("bound-queue"); got != boundMQ {
-		t.Fatalf("QueueMQ(bound-queue) = %v, want %v", got, boundMQ)
-	}
-	if got := wiring.QueueMQ("unbound"); got != nil {
-		t.Fatalf("QueueMQ(unbound) = %v, want nil", got)
-	}
 }
 
-func TestOpsDepsRejectsForeignRuntime(t *testing.T) {
-	if _, err := hook.OpsDeps("nope"); err == nil {
+func TestRuntimeDepsRejectForeignRuntime(t *testing.T) {
+	if _, err := hook.RuntimeDepsOf("nope"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
 	var nilRt *converge.Runtime
-	if _, err := hook.OpsDeps(nilRt); err == nil {
+	if _, err := hook.RuntimeDepsOf(nilRt); err == nil {
 		t.Fatal("typed-nil runtime must be rejected")
 	}
 }
@@ -281,11 +192,11 @@ func TestOpsDepsRejectsForeignRuntime(t *testing.T) {
 func TestReplicaIDsAreDistinctPerRuntime(t *testing.T) {
 	rt1 := mustRuntime(t)
 	rt2 := mustRuntime(t)
-	w1, err := hook.OpsDeps(rt1)
+	w1, err := hook.RuntimeDepsOf(rt1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w2, err := hook.OpsDeps(rt2)
+	w2, err := hook.RuntimeDepsOf(rt2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,35 +208,35 @@ func TestReplicaIDsAreDistinctPerRuntime(t *testing.T) {
 	}
 }
 
-func TestHintReachesStubJob(t *testing.T) {
+func TestNotifyReachesStubJob(t *testing.T) {
 	rt := mustRuntime(t)
 	s := newStubJob("a")
 	if err := hook.RegisterJob(rt, s); err != nil {
 		t.Fatal(err)
 	}
-	if err := hook.Hint(rt, "a", "x"); err != nil {
+	if err := hook.Notify(rt, "a", "x"); err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.hinted) != 1 || s.hinted[0] != "x" {
-		t.Fatalf("hinted = %v, want [x]", s.hinted)
+	if len(s.notified) != 1 || s.notified[0] != "x" {
+		t.Fatalf("notified = %v, want [x]", s.notified)
 	}
 }
 
-func TestHintUnknownJobErrors(t *testing.T) {
+func TestNotifyUnknownJobErrors(t *testing.T) {
 	rt := mustRuntime(t)
-	if err := hook.Hint(rt, "no-such-job", "x"); err == nil {
-		t.Fatal("hint on unknown job must error")
+	if err := hook.Notify(rt, "no-such-job", "x"); err == nil {
+		t.Fatal("notify on unknown job must error")
 	}
 }
 
-func TestHintRejectsForeignRuntime(t *testing.T) {
-	if err := hook.Hint("not a runtime", "a", "x"); err == nil {
+func TestNotifyRejectsForeignRuntime(t *testing.T) {
+	if err := hook.Notify("not a runtime", "a", "x"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
 	var nilRt *converge.Runtime
-	if err := hook.Hint(nilRt, "a", "x"); err == nil {
+	if err := hook.Notify(nilRt, "a", "x"); err == nil {
 		t.Fatal("typed-nil runtime must be rejected")
 	}
 }
@@ -336,7 +247,7 @@ func TestRunPassNowReachesStubJob(t *testing.T) {
 	if err := hook.RegisterJob(rt, s); err != nil {
 		t.Fatal(err)
 	}
-	if err := hook.RunPassNow(rt, context.Background(), "a"); err != nil {
+	if err := hook.Sweep(rt, context.Background(), "a"); err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
@@ -348,17 +259,17 @@ func TestRunPassNowReachesStubJob(t *testing.T) {
 
 func TestRunPassNowUnknownJobErrors(t *testing.T) {
 	rt := mustRuntime(t)
-	if err := hook.RunPassNow(rt, context.Background(), "no-such-job"); err == nil {
-		t.Fatal("run-pass-now on unknown job must error")
+	if err := hook.Sweep(rt, context.Background(), "no-such-job"); err == nil {
+		t.Fatal("sweep on unknown job must error")
 	}
 }
 
 func TestRunPassNowRejectsForeignRuntime(t *testing.T) {
-	if err := hook.RunPassNow("not a runtime", context.Background(), "a"); err == nil {
+	if err := hook.Sweep("not a runtime", context.Background(), "a"); err == nil {
 		t.Fatal("non-runtime must be rejected")
 	}
 	var nilRt *converge.Runtime
-	if err := hook.RunPassNow(nilRt, context.Background(), "a"); err == nil {
+	if err := hook.Sweep(nilRt, context.Background(), "a"); err == nil {
 		t.Fatal("typed-nil runtime must be rejected")
 	}
 }
@@ -399,21 +310,6 @@ func TestAttachOptionsInvokesCallbackWithBuiltRuntime(t *testing.T) {
 	}
 	if got != rt {
 		t.Fatalf("attach callback got %v, want %v", got, rt)
-	}
-}
-
-func TestSetPausedReachesStubJob(t *testing.T) {
-	rt := mustRuntime(t)
-	s := newStubJob("a")
-	if err := hook.RegisterJob(rt, s); err != nil {
-		t.Fatal(err)
-	}
-	s.SetPaused(true)
-	s.SetPaused(false)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.paused) != 2 || s.paused[0] != true || s.paused[1] != false {
-		t.Fatalf("paused = %v, want [true false]", s.paused)
 	}
 }
 

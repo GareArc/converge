@@ -17,8 +17,8 @@ func TestRawID(t *testing.T) {
 	}
 }
 
-func TestIDFromJSONField(t *testing.T) {
-	f := reconcile.IDFromJSONField("workspace_id")
+func TestIDFromJSON(t *testing.T) {
+	f := reconcile.IDFromJSON("workspace_id")
 	cases := []struct {
 		payload string
 		want    reconcile.ID
@@ -37,27 +37,5 @@ func TestIDFromJSONField(t *testing.T) {
 		if c.wantErr != (err != nil) || id != c.want {
 			t.Fatalf("payload %q: id %q err %v", c.payload, id, err)
 		}
-	}
-}
-
-func TestIDFromJSONFieldsJoinsInOrder(t *testing.T) {
-	f := reconcile.IDFromJSONFields("tenant_id", "app_id")
-	id, err := f([]byte(`{"app_id": "a1", "tenant_id": "t1"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tenant, app, err := reconcile.Split2(id)
-	if err != nil || tenant != "t1" || app != "a1" {
-		t.Fatalf("Split2 = %q %q %v", tenant, app, err)
-	}
-	if _, err := f([]byte(`{"tenant_id": "t1"}`)); err == nil {
-		t.Fatal("missing second field must error")
-	}
-}
-
-func TestIDFromJSONFieldsEmpty(t *testing.T) {
-	f := reconcile.IDFromJSONFields()
-	if _, err := f([]byte(`{}`)); err == nil {
-		t.Fatal("zero fields must error")
 	}
 }

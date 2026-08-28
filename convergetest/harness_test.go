@@ -13,6 +13,7 @@ import (
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/reconcile"
 	"github.com/GareArc/converge/worker"
 )
@@ -25,9 +26,9 @@ func TestReconcileRoundTrip(t *testing.T) {
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "workspace-credentials",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
 				return nil, nil
@@ -37,48 +38,9 @@ func TestReconcileRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.Wake("workspace-credentials", "ws_42")
+	h.Notify("workspace-credentials", "ws_42")
 	h.Drain(t)
 	h.AssertReconciled(t, "workspace-credentials", "ws_42")
-}
-
-func TestParkAfterDeadLetterThreshold(t *testing.T) {
-	h := convergetest.New(t)
-	rt, err := converge.New(h.Options())
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = reconcile.Register(rt, reconcile.Spec{
-		Name:            "flaky",
-		DeadLetterAfter: 2,
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
-			return errors.New("downstream broken")
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
-				return nil, nil
-			}), reconcile.Every(time.Hour)),
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Wake("flaky", "app_13")
-	h.Drain(t)
-	convergetest.AdvanceUntil(t, h.Clock, 250*time.Millisecond, func() bool {
-		return parked(h, "flaky", "app_13")
-	})
-	h.Drain(t)
-	h.AssertParked(t, "flaky", "app_13")
-}
-
-func parked(h *convergetest.Harness, job, id string) bool {
-	for _, e := range h.Events() {
-		if p, ok := e.(converge.IDParked); ok && p.Job == job && p.ID == id {
-			return true
-		}
-	}
-	return false
 }
 
 func TestScheduleBoundaryDrivesReconcile(t *testing.T) {
@@ -91,12 +53,12 @@ func TestScheduleBoundaryDrivesReconcile(t *testing.T) {
 	runs := 0
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "app-runner",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			mu.Lock()
 			runs++
 			mu.Unlock()
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
 				return []string{"app_13"}, nil
@@ -113,7 +75,7 @@ func TestScheduleBoundaryDrivesReconcile(t *testing.T) {
 		defer mu.Unlock()
 		return runs == 1
 	})
-	h.Clock.Advance(time.Hour)
+	h.Clock().Advance(time.Hour)
 	h.Drain(t)
 	convergetest.Await(t, func() bool {
 		mu.Lock()
@@ -122,7 +84,7 @@ func TestScheduleBoundaryDrivesReconcile(t *testing.T) {
 	})
 }
 
-func TestRunPassImmediateWithoutClockMovement(t *testing.T) {
+func TestSweepImmediateWithoutClockMovement(t *testing.T) {
 	h := convergetest.New(t)
 	rt, err := converge.New(h.Options())
 	if err != nil {
@@ -132,12 +94,12 @@ func TestRunPassImmediateWithoutClockMovement(t *testing.T) {
 	runs := 0
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "backfill",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			mu.Lock()
 			runs++
 			mu.Unlock()
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
 				return []string{"app_1"}, nil
@@ -153,7 +115,7 @@ func TestRunPassImmediateWithoutClockMovement(t *testing.T) {
 		defer mu.Unlock()
 		return runs == 1
 	})
-	h.RunPass(t, "backfill")
+	h.Sweep(t, "backfill")
 	convergetest.Await(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -161,7 +123,7 @@ func TestRunPassImmediateWithoutClockMovement(t *testing.T) {
 	})
 }
 
-func TestWakeOnWorkerJobFatals(t *testing.T) {
+func TestNotifyOnWorkerJobFatals(t *testing.T) {
 	fake := &fakeTB{}
 	t.Cleanup(fake.runCleanups)
 	h := convergetest.New(fake)
@@ -174,12 +136,12 @@ func TestWakeOnWorkerJobFatals(t *testing.T) {
 	}, worker.HandleOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	h.Wake("job", "irrelevant")
+	h.Notify("job", "irrelevant")
 	msgs := fake.messages()
 	if len(msgs) == 0 {
-		t.Fatal("expected Wake on a worker job to Fatalf")
+		t.Fatal("expected Notify on a worker job to Fatalf")
 	}
-	if !strings.Contains(msgs[0], "hint is a reconcile verb") {
+	if !strings.Contains(msgs[0], "notify is a reconcile verb") {
 		t.Fatalf("Fatalf message = %q, want mention of the worker engine's wrong-surface error", msgs[0])
 	}
 }
@@ -202,7 +164,7 @@ func TestWorkerRoundTripAndAssertEnqueued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +190,7 @@ func TestFailNextPublishSurfacesOnEnqueue(t *testing.T) {
 	if err := worker.Handle(rt, tk, func(context.Context, string) error { return nil }, worker.HandleOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +204,7 @@ func TestFailNextPublishSurfacesOnEnqueue(t *testing.T) {
 
 func leaseDropped(events []converge.Event, job string) bool {
 	for _, e := range events {
-		if lt, ok := e.(converge.LeaseTransition); ok && lt.Job == job && !lt.Acquired {
+		if lt, ok := e.(converge.LeaseChanged); ok && lt.Job == job && !lt.Held {
 			return true
 		}
 	}
@@ -266,7 +228,7 @@ func TestLeaseExpireCancelsInFlightHandler(t *testing.T) {
 	if err := worker.Handle(rt, tk, handler, worker.HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,10 +244,10 @@ func TestLeaseExpireCancelsInFlightHandler(t *testing.T) {
 		t.Fatal("handler never started")
 	}
 
-	h.Clock.Advance(1000 * time.Hour)
+	h.Clock().Advance(1000 * time.Hour)
 	convergetest.AssertStable(t, func() bool { return !leaseDropped(h.Events(), "job") })
 
-	h.Lease.Expire("job")
+	h.Lease.Expire(keys.WorkerLease("test", "job"))
 
 	convergetest.Await(t, func() bool { return leaseDropped(h.Events(), "job") })
 }
@@ -298,9 +260,9 @@ func TestLargeClockAdvanceDoesNotDropLease(t *testing.T) {
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "steady-runner",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
 				return []string{"seed"}, nil
@@ -313,30 +275,37 @@ func TestLargeClockAdvanceDoesNotDropLease(t *testing.T) {
 	h.Drain(t)
 	h.AssertReconciled(t, "steady-runner", "seed")
 
-	h.Clock.Advance(1000 * time.Hour)
+	h.Clock().Advance(1000 * time.Hour)
 	h.Drain(t)
 
 	if leaseDropped(h.Events(), "steady-runner") {
 		t.Fatal("large Clock.Advance must not drop the lease under the pinned harness LeaseTTL")
 	}
 
-	h.Wake("steady-runner", "id_1")
+	h.Notify("steady-runner", "id_1")
 	h.Drain(t)
 	h.AssertReconciled(t, "steady-runner", "id_1")
 }
 
-func TestDrainOnPausedJobReturns(t *testing.T) {
+func TestNotifyBypassesBackoff(t *testing.T) {
 	h := convergetest.New(t)
 	rt, err := converge.New(h.Options())
 	if err != nil {
 		t.Fatal(err)
 	}
+	var mu sync.Mutex
+	calls := 0
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:   "paused-job",
-		Paused: true,
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Name: "flaky-job",
+		Reconcile: func(context.Context, reconcile.ID) error {
+			mu.Lock()
+			defer mu.Unlock()
+			calls++
+			if calls == 1 {
+				return errors.New("boom")
+			}
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
 				return nil, nil
@@ -346,7 +315,20 @@ func TestDrainOnPausedJobReturns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.Drain(t)
+
+	h.Notify("flaky-job", "a")
+	convergetest.Await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls == 1
+	})
+
+	h.Notify("flaky-job", "a")
+	convergetest.Await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls == 2
+	})
 }
 
 type fakeTB struct {
@@ -390,10 +372,10 @@ func TestVerbBeforeConvergeNewFatals(t *testing.T) {
 	fake := &fakeTB{}
 	t.Cleanup(fake.runCleanups)
 	h := convergetest.New(fake)
-	h.Wake("some-job", "some-id")
+	h.Notify("some-job", "some-id")
 	msgs := fake.messages()
 	if len(msgs) == 0 {
-		t.Fatal("expected Wake before h.Build(t) to call Fatalf")
+		t.Fatal("expected Notify before h.Build(t) to call Fatalf")
 	}
 	if !strings.Contains(msgs[0], "h.Build(t)") {
 		t.Fatalf("Fatalf message = %q, want mention of h.Build(t)", msgs[0])
@@ -458,7 +440,7 @@ func TestNewWithCustomKVReachesRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, err := worker.ProducerFrom(rt)
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +450,7 @@ func TestNewWithCustomKVReachesRuntime(t *testing.T) {
 	h.Drain(t)
 
 	convergetest.Await(t, func() bool {
-		keys, _, err := captured.Scan(context.Background(), "test/converge/worker/dead-job/dlq/", "")
+		keys, _, err := captured.Scan(context.Background(), "test/converge/worker/dead-job/shelf/", "")
 		return err == nil && len(keys) == 1
 	})
 }
@@ -485,16 +467,16 @@ func TestOptionsClockIsSharedAcrossHarnesses(t *testing.T) {
 	})
 	hb := convergetest.NewWith(t, convergetest.Options{Clock: clock})
 
-	if ha.Clock != clock || hb.Clock != clock {
-		t.Fatalf("ha.Clock, hb.Clock = %p, %p, want both to be the supplied %p", ha.Clock, hb.Clock, clock)
+	if ha.Clock() != clock || hb.Clock() != clock {
+		t.Fatalf("ha.Clock(), hb.Clock() = %p, %p, want both to be the supplied %p", ha.Clock(), hb.Clock(), clock)
 	}
 	if seenByMQFactory != clock {
 		t.Fatalf("MQ factory saw clock %p, want the supplied %p", seenByMQFactory, clock)
 	}
 
-	ha.Clock.Advance(time.Hour)
-	if got := hb.Clock.Now(); !got.Equal(clock.Now()) {
-		t.Fatalf("hb.Clock.Now() = %v after advancing via ha.Clock, want %v (a shared clock)", got, clock.Now())
+	ha.Clock().Advance(time.Hour)
+	if got := hb.Clock().Now(); !got.Equal(clock.Now()) {
+		t.Fatalf("hb.Clock().Now() = %v after advancing via ha.Clock(), want %v (a shared clock)", got, clock.Now())
 	}
 }
 
@@ -583,9 +565,9 @@ func TestEventsReadableAfterStop(t *testing.T) {
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "steady",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
 				return []string{"id"}, nil
@@ -619,7 +601,7 @@ func TestDrivingVerbAfterStopFatalsNamingCause(t *testing.T) {
 		t.Fatalf("Stop returned %v, want nil", err)
 	}
 
-	h.Wake("some-job", "some-id")
+	h.Notify("some-job", "some-id")
 
 	msgs := fake.messages()
 	if len(msgs) == 0 {
@@ -648,19 +630,15 @@ func (j *crashJob) Run(context.Context, converge.JobDeps) error {
 
 func (j *crashJob) Ready() <-chan struct{} { return j.ready }
 
-func (j *crashJob) Poke(string) error { return nil }
-
 func (j *crashJob) Stats() converge.JobStats { return converge.JobStats{Job: j.Name()} }
 
 func (j *crashJob) Info() converge.JobInfo { return converge.JobInfo{Job: j.Name()} }
 
 func (j *crashJob) Quiet() bool { return true }
 
-func (j *crashJob) Hint(string) error { return nil }
+func (j *crashJob) Notify(string) error { return nil }
 
-func (j *crashJob) RunPassNow(context.Context) error { return nil }
-
-func (j *crashJob) SetPaused(bool) {}
+func (j *crashJob) Sweep(context.Context) error { return nil }
 
 func TestRuntimeExitedEarlyFatalsWithCrashWording(t *testing.T) {
 	fake := &fakeTB{}
@@ -673,7 +651,7 @@ func TestRuntimeExitedEarlyFatalsWithCrashWording(t *testing.T) {
 	h.Runtime(fake)
 
 	convergetest.Await(t, func() bool {
-		h.Wake("crash", "id")
+		h.Notify("crash", "id")
 		return len(fake.messages()) > 0
 	})
 
@@ -686,6 +664,53 @@ func TestRuntimeExitedEarlyFatalsWithCrashWording(t *testing.T) {
 	}
 	if strings.Contains(msgs[0], "stopped via Stop(t)") {
 		t.Fatalf("Fatalf message = %q, must not use the deliberate-stop wording for a genuine crash", msgs[0])
+	}
+}
+
+type quitJob struct {
+	ready chan struct{}
+	rt    *converge.Runtime
+}
+
+func (j *quitJob) Name() string { return "quit" }
+
+func (j *quitJob) Run(context.Context, converge.JobDeps) error {
+	close(j.ready)
+	<-j.rt.Ready()
+	return nil
+}
+
+func (j *quitJob) Ready() <-chan struct{} { return j.ready }
+
+func (j *quitJob) Stats() converge.JobStats {
+	return converge.JobStats{Job: j.Name(), State: converge.Active}
+}
+
+func (j *quitJob) Info() converge.JobInfo { return converge.JobInfo{Job: j.Name()} }
+
+func (j *quitJob) Quiet() bool { return true }
+
+func (j *quitJob) Notify(string) error { return nil }
+
+func (j *quitJob) Sweep(context.Context) error { return nil }
+
+func TestCleanExitWithoutDestructionStillFatals(t *testing.T) {
+	fake := &fakeTB{}
+	t.Cleanup(fake.runCleanups)
+	h := convergetest.NewWith(fake, convergetest.Options{})
+	rt := h.Build(fake)
+	if err := hook.RegisterJob(rt, &quitJob{ready: make(chan struct{}), rt: rt}); err != nil {
+		t.Fatal(err)
+	}
+	h.Runtime(fake)
+
+	convergetest.Await(t, func() bool {
+		h.Notify("quit", "id")
+		return len(fake.messages()) > 0
+	})
+	msgs := fake.messages()
+	if !strings.Contains(msgs[0], "runtime exited early") {
+		t.Fatalf("Fatalf message = %q, want a clean exit nobody asked for still reported as a crash", msgs[0])
 	}
 }
 
@@ -749,9 +774,9 @@ func TestDrainWithCustomMQDegradesToHookQuietWithoutPanicking(t *testing.T) {
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
 		Name: "steady",
-		Reconciler: reconcile.Func(func(context.Context, reconcile.ID) error {
+		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
 				return nil, nil

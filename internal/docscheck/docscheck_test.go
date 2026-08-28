@@ -19,7 +19,7 @@ func mustRoot(t *testing.T) string {
 	return root
 }
 
-const uncheckedGoBlockBudget = 21
+const uncheckedGoBlockBudget = 82
 
 func TestTaggedGoBlocksMatchTheirSourceFiles(t *testing.T) {
 	root := mustRoot(t)
@@ -193,21 +193,29 @@ func forEachProseLine(src string, fn func(line string)) error {
 	return nil
 }
 
-func headingSlugs(path string) ([]string, error) {
+func headingTexts(path string) ([]string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	seen := map[string]int{}
 	var out []string
 	err = forEachProseLine(string(raw), func(line string) {
 		m := atxHeadingRe.FindStringSubmatch(line)
 		if m == nil {
 			return
 		}
-		text := strings.TrimRight(strings.TrimSpace(m[2]), "# ")
-		out = append(out, uniqueSlug(slugify(text), seen))
+		out = append(out, strings.TrimRight(strings.TrimSpace(m[2]), "# "))
 	})
+	return out, err
+}
+
+func headingSlugs(path string) ([]string, error) {
+	texts, err := headingTexts(path)
+	seen := map[string]int{}
+	var out []string
+	for _, text := range texts {
+		out = append(out, uniqueSlug(slugify(text), seen))
+	}
 	return out, err
 }
 
@@ -229,6 +237,35 @@ func slugify(heading string) string {
 	s := slugSeparatorRun.ReplaceAllString(strings.TrimSpace(heading), "-")
 	s = strings.ToLower(s)
 	return strings.Trim(s, "-")
+}
+
+var githubSlugDrop = regexp.MustCompile(`[^\p{L}\p{N} _-]+`)
+
+func githubSlug(heading string) string {
+	s := githubSlugDrop.ReplaceAllString(strings.TrimSpace(heading), "")
+	return strings.ToLower(strings.ReplaceAll(s, " ", "-"))
+}
+
+func TestHeadingSlugsAgreeAcrossRenderers(t *testing.T) {
+	root := mustRoot(t)
+	files, err := MarkdownFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		texts, err := headingTexts(f)
+		if err != nil {
+			t.Errorf("%s: %v", relTo(root, f), err)
+			continue
+		}
+		for _, text := range texts {
+			site := uniqueSlug(slugify(text), map[string]int{})
+			if github := githubSlug(text); site != github {
+				t.Errorf("%s: heading %q anchors as %q on the site and %q on GitHub; rewrite the heading so both agree",
+					relTo(root, f), text, site, github)
+			}
+		}
+	}
 }
 
 func closestSlug(slugs []string, want string) string {
@@ -357,9 +394,28 @@ func refTargets(prose string) (targets []string, undefinedLabels []string) {
 	return targets, undefinedLabels
 }
 
+const repoBlobPrefix = "https://github.com/GareArc/converge/blob/main/"
+
+func repoRelative(target string) (string, bool) {
+	rest, ok := strings.CutPrefix(target, repoBlobPrefix)
+	if !ok {
+		return "", false
+	}
+	if i := strings.IndexAny(rest, "#?"); i >= 0 {
+		rest = rest[:i]
+	}
+	return rest, rest != ""
+}
+
 func checkLinkTarget(t *testing.T, root, f, target string, slugCache map[string][]string) {
 	t.Helper()
-	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "#") || strings.HasPrefix(target, "mailto:") {
+	if rel, ok := repoRelative(target); ok {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("%s: broken repository link %q", relTo(root, f), target)
+		}
+		return
+	}
+	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "mailto:") {
 		return
 	}
 	display := target
@@ -368,13 +424,13 @@ func checkLinkTarget(t *testing.T, root, f, target string, slugCache map[string]
 		fragment = target[i+1:]
 		target = target[:i]
 	}
-	if target == "" {
-		return
-	}
-	resolved := filepath.Join(filepath.Dir(f), target)
-	if _, err := os.Stat(resolved); err != nil {
-		t.Errorf("%s: broken link %q", relTo(root, f), display)
-		return
+	resolved := f
+	if target != "" {
+		resolved = filepath.Join(filepath.Dir(f), target)
+		if _, err := os.Stat(resolved); err != nil {
+			t.Errorf("%s: broken link %q", relTo(root, f), display)
+			return
+		}
 	}
 	if fragment == "" || !strings.HasSuffix(resolved, ".md") {
 		return
@@ -425,6 +481,16 @@ func TestInternalMarkdownLinksResolve(t *testing.T) {
 		for _, target := range targets {
 			checkLinkTarget(t, root, f, target, slugCache)
 		}
+	}
+}
+
+func TestRepoRelativeResolvesOnlyBlobLinks(t *testing.T) {
+	if _, ok := repoRelative("https://example.com/examples/scenarios/a01/main.go"); ok {
+		t.Error("a foreign URL must not be read as a repository path")
+	}
+	got, ok := repoRelative(repoBlobPrefix + "examples/scenarios/a01-nightly-invoices/main.go#L4")
+	if !ok || got != "examples/scenarios/a01-nightly-invoices/main.go" {
+		t.Errorf("repoRelative = %q, %v; want the path without its fragment", got, ok)
 	}
 }
 

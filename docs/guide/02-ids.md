@@ -1,25 +1,48 @@
-# 2. Many things to check
+# One job, many things
 
-Chapter 1's job watched one thing: the whole warehouse, checked by a single
-function on a timer. Most real jobs watch a table, not a single row — every
-product, every customer, every deployed region needs the same check, and the
-list of them lives in your own data, not in your code. This chapter turns
-that one function into one call per row of your own data, with converge
-reading the list itself, fresh, at the start of every round. By the end you
-will have a job that keeps up with your data as it grows, with no line of
-code to change when a new product is added.
+Chapter 1's job had nothing to look after but itself: one function, one run,
+nothing to name. Most real [reconcile](../glossary.md#reconcile) work is not
+like that. You have ten thousand orders, or every merchant, or every tenant,
+and each one needs the same treatment separately.
 
-## The code
+That is what an **ID** is: the name of one unit of reconcile work — one
+order, one merchant, one tenant. A job responsible for ten thousand orders
+has ten thousand IDs, and converge treats each of them on its own: its own
+run, its own failure, its own retry.
 
-The whole program:
+## Jobs are fixed, IDs come and go
 
-```go title=examples/guide/02-ids/main.go
+Jobs are written in code and registered before `rt.Run`. You cannot add or
+remove one while the process is running, because a job that appeared on one
+replica would be invisible to the others.
+
+An ID is the opposite, and it is the only thing in converge that starts and
+stops by itself. It appears when it appears in your data, is reconciled for
+as long as it is there, and leaves when your data stops listing it. Nothing
+has to be registered, torn down, or cleaned up.
+
+This is worth internalising, because it dissolves a whole category of
+question. "I need a job per customer" is one job whose IDs are customers.
+"I need a one-off job that runs until tenant X is migrated" is the ID `X` in
+a static migration job — it stops being listed when it is done, and the job
+outlives it. You do not need a job factory.
+
+## The full form
+
+`reconcile.Periodic` is a shorthand. The full form is
+`reconcile.Register` with a `reconcile.Spec`, and here it is expiring
+unpaid orders thirty minutes after checkout.
+
+```go title=examples/scenarios/a02-expire-orders/main.go
 package main
 
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
+	"os"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/GareArc/converge"
@@ -27,116 +50,244 @@ import (
 	"github.com/GareArc/converge/reconcile"
 )
 
-func skuIDs(ctx context.Context) ([]string, error) {
-	return []string{"SKU-1001", "SKU-1002"}, nil
+const (
+	demoWindow      = 2 * time.Second
+	statusPending   = "pending"
+	statusCancelled = "cancelled"
+)
+
+type orderBook struct {
+	now func() time.Time
+
+	mu     sync.Mutex
+	placed map[string]time.Time
+	state  map[string]string
+}
+
+func newStore(now func() time.Time) *orderBook {
+	return &orderBook{now: now, placed: map[string]time.Time{}, state: map[string]string{}}
+}
+
+func (b *orderBook) create(id string) { b.placeAt(id, b.now()) }
+
+func (b *orderBook) placeAt(id string, at time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.placed[id] = at
+	b.state[id] = statusPending
+}
+
+func (b *orderBook) status(id string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.state[id]
+}
+
+func (b *orderBook) unpaidOlderThan(age time.Duration) func(ctx context.Context) ([]string, error) {
+	return func(context.Context) ([]string, error) {
+		cutoff := b.now().Add(-age)
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		var stale []string
+		for id, at := range b.placed {
+			if b.state[id] == statusPending && at.Before(cutoff) {
+				stale = append(stale, id)
+			}
+		}
+		slices.Sort(stale)
+		return stale, nil
+	}
+}
+
+func (b *orderBook) cancelIfUnpaid(_ context.Context, id string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state[id] == statusPending {
+		b.state[id] = statusCancelled
+	}
+	return nil
+}
+
+func expireUnpaidOrders(orders *orderBook) reconcile.Spec {
+	return reconcile.Spec{
+		Name:      "expire-unpaid-orders",
+		Reconcile: func(ctx context.Context, id reconcile.ID) error { return orders.cancelIfUnpaid(ctx, string(id)) },
+		Triggers: []reconcile.Trigger{reconcile.Schedule(
+			reconcile.StringIDs(orders.unpaidOlderThan(30*time.Minute)), reconcile.Every(time.Minute))},
+		Timeout: 10 * time.Second,
+	}
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	rt, err := converge.New(converge.Options{
-		Lease: inmem.NewLease(),
-		KV:    inmem.NewKV(),
+		Namespace: "shop",
+		MQ:        inmem.NewMQ(),
+		Lease:     inmem.NewLease(),
+		KV:        inmem.NewKV(),
+		Observer:  converge.LogObserver(slog.Default()),
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "sync-inventory",
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			fmt.Println("checking stock for", id)
-			return nil
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.StringIDs(skuIDs), reconcile.Every(2*time.Second)),
-		},
-	})
-	if err != nil {
-		log.Fatal(err)
+	store := newStore(time.Now)
+	store.placeAt("o-1001", time.Now().Add(-45*time.Minute))
+	store.create("o-1002")
+
+	if err := reconcile.Register(rt, expireUnpaidOrders(store)); err != nil {
+		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), demoWindow)
 	defer cancel()
 	if err := rt.Run(ctx); err != nil {
-		log.Fatal(err)
+		return err
 	}
+
+	fmt.Printf("o-1001 placed 45m ago: %s\n", store.status("o-1001"))
+	fmt.Printf("o-1002 placed just now: %s\n", store.status("o-1002"))
+	return nil
 }
 ```
 
-`skuIDs` stands in for a query against your own database — in a real
-service it would list rows from a table, not return a fixed slice. Everything
-else is `reconcile.Register` in place of chapter 1's `reconcile.Periodic`: the
-longer form is what you reach for once a job has a list to read instead of
-one fixed thing to do.
-
-## Run it
-
 ```sh
-cd examples && go run ./guide/02-ids
+cd examples
+go run ./scenarios/a02-expire-orders
 ```
 
-```
-checking stock for SKU-1001
-checking stock for SKU-1002
-checking stock for SKU-1001
-checking stock for SKU-1002
-checking stock for SKU-1001
-checking stock for SKU-1002
+```text
+o-1001 placed 45m ago: cancelled
+o-1002 placed just now: pending
 ```
 
-## What happened
+The important line is the one that decides what this job is about:
 
-1. `SKU-1001` and `SKU-1002` printed together, in that order, before either name
-   appeared a second time — converge checks the whole list before it starts
-   over.
-2. That pair repeated every two seconds: three rounds inside the five-second
-   window, at roughly zero, two, and four seconds.
-3. `skuIDs` ran again at the start of each round — nothing here remembers
-   last round's list. A SKU you add to your own data between rounds shows
-   up on the very next round, with no restart.
-4. At five seconds the deadline passed, `rt.Run` returned, and the shell got
-   its prompt back with status 0 — six lines, not eight, because the deadline
-   landed between rounds.
+```go
+Triggers: []reconcile.Trigger{reconcile.Schedule(
+    reconcile.StringIDs(orders.unpaidOlderThan(30*time.Minute)), reconcile.Every(time.Minute))},
+```
 
-## The principle
+A **trigger** is a source of IDs to look at. `reconcile.Schedule` is the one
+every reconcile job must have: once per **cadence** period — here
+`reconcile.Every(time.Minute)` — it performs a **sweep**, one walk of your
+ID source that queues every ID the source yields. A sweep only queues work;
+your `Reconcile` function runs afterwards, once per ID.
 
-Your function's second argument is what changed shape from chapter 1:
-instead of taking nothing, it takes one value — the name of the SKU that
-converge wants to check right now. That name is an
-[ID](../glossary.md#id): the name of one thing a job looks after. converge
-doesn't tell your function what changed about `"SKU-1001"` or why
-it's due; it just says `"SKU-1001"`, and your function looks at that SKU's
-real state and puts it right, the same way chapter 1's job did for the one
-thing it watched.
+Notice what the job does *not* know. It does not know that `o-1001` exists,
+it does not remember that it cancelled it, and nothing had to tell it. Your
+query is the source of truth; converge asks it again every minute.
 
-That is the whole difference from a queue: a queue hands you one message per
-event, so if `"SKU-1001"` changes twice before you get to it, two messages are
-waiting. Here there is no message to pile up, only a name on a list — if
-`"SKU-1001"` needs checking twice before converge gets to it, converge checks it
-once.
+That is also why `cancelIfUnpaid` checks the status before writing. Your
+function will be called for the same ID more than once — after a retry,
+after a restart, or simply because your query still lists it — and converge
+does not promise otherwise. Being safe to run twice is your job; it is the
+only thing converge asks of your function.
 
-## Try breaking it
+## Where IDs come from
 
-Change `skuIDs` to return `nil, errors.New("catalog unavailable")`
-instead of a list (and add `"errors"` to the import block), and run it
-again. All five seconds pass without a single line of output — no
-`checking stock for` lines and no error either — and the process exits with
-status 0, the same as a run that went well.
+An ID source is a function converge calls at the start of every sweep. There
+are four ways to build one, and they differ only in the shape of your query:
 
-The job does not die, but it does not tell you anything is wrong either: this
-program never checks a single SKU, and nothing here prints when the list
-fails to load. converge keeps calling `skuIDs` on its own, waiting a
-little longer each time it fails, and if `skuIDs` starts working again the
-very next round runs normally — but none of that is visible unless your own
-code, or something watching the process, is looking for it. A round that
-never got its list is easy to mistake for a job that has nothing to do.
+| Constructor | Your function returns | Use when |
+| --- | --- | --- |
+| `reconcile.StringIDs` | `[]string` | your query already returns strings |
+| `reconcile.IDs` | `[]reconcile.ID` | you build IDs yourself |
+| `reconcile.IDsByPage` | one page plus a cursor | the list is too big to hold |
+| `reconcile.SingleID` | nothing | there is only one thing to do — this is what `Periodic` uses |
 
-## A caveat
+`IDsByPage` is the one to reach for on anything unbounded. converge calls it
+with the empty cursor, then with whatever cursor you returned, until you
+return an empty one, and it queues each page as it arrives rather than
+waiting for the whole list. It keeps your cursor in `KV` between pages, so a
+sweep interrupted by a restart resumes where it stopped instead of starting
+over, and a page that returns an error is retried with the same cursor
+rather than skipped.
 
-`skuIDs` runs once at the start of every round, and converge waits for it
-to return before checking the first SKU. Query ten thousand rows and take
-three seconds doing it, and that is three seconds before anything in that
-round gets checked — every round, not just the first. A slow list holds up
-everything on it, not only the SKU it was slow to find.
+## Doing several at once
 
-Next: [3. Reacting to events](03-triggers.md) — the other way work
-arrives, alongside the schedule: a message from the rest of your system.
+Provisioning every tenant over SCIM is the same shape as expiring orders,
+with a paged source and a slow remote call per tenant:
+
+```go
+err = reconcile.Register(rt, reconcile.Spec{
+    Name:        "scim-provision",
+    Reconcile:   scim.reconcileTenant,
+    Triggers:    []reconcile.Trigger{reconcile.Schedule(reconcile.IDsByPage(tenants.withSCIM), reconcile.Every(5*time.Minute))},
+    Concurrency: 16,
+    Timeout:     time.Minute,
+})
+```
+
+The whole program is
+[`examples/scenarios/a04-scim-provision/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a04-scim-provision/main.go).
+
+`Concurrency` is how many IDs this job may be running at once **on this
+replica**. It defaults to 1, which is why chapter 1's job and the order
+expiry above run strictly one at a time. Raise it when the work is
+per-ID and mostly waiting on something else.
+
+`Concurrency` is a per-replica number by design. converge does not split one
+reconcile job's IDs across your replicas — that is a deliberate non-goal,
+not a missing feature, and [chapter 5](05-run-modes.md) explains what it
+buys you.
+
+## When a run fails, and when it is not finished
+
+Return an error and that ID is a **failing ID**: it waits before being tried
+again, and each consecutive failure lengthens the wait, from one second up
+to a ceiling of fifteen minutes. It is a ceiling and not a bench — a thing
+that has been broken for a week still costs a handful of calls an hour and
+never stops being retried. Other IDs are unaffected; one bad merchant does
+not stop the other nine thousand.
+
+Sometimes a run did not fail, it just is not finished — you asked Kubernetes
+to apply a namespace and it is still coming up. Return
+`reconcile.CheckAgain` instead of an error, and converge comes back to that
+ID after the delay you name without counting a failure against it:
+
+```go
+Reconcile: func(ctx context.Context, id reconcile.ID) error {
+    ready, err := k8s.apply(ctx, desired.of(id))
+    if err != nil || ready {
+        return err
+    }
+    return reconcile.CheckAgain{In: 15 * time.Second}
+},
+```
+
+That is from
+[`examples/scenarios/a13-namespace-reconciler/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a13-namespace-reconciler/main.go).
+It is honest about its bound: converge honours your delay for the first ten
+deferrals of an ID in a row and starts spacing them out after that, so a
+thing that will never be ready costs you less and less rather than the same
+forever.
+
+## When the intent moves under you
+
+If what an ID is *supposed* to look like can change while your function is
+mid-run, point `Spec.Versions` at a `reconcile.VersionSource` — a counter
+you already have, usually a column that moves whenever somebody edits that
+ID. converge stores no versions of its own.
+
+Two things follow. converge reads the counter before your run and again
+after it, and if it moved, the run does not count as done — the ID is
+reconciled again, because whatever your function decided was decided from
+state that has since changed. And you can carry the counter into your own
+conditional write, then return `reconcile.ErrOutdated` when the database
+refuses it; converge treats that as a deferral rather than a failure, so a
+lost race costs a re-run and not a place in the backoff queue.
+[`examples/scenarios/a05-plan-tier-backfill/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a05-plan-tier-backfill/main.go)
+uses a `Versions` source to make a one-time backfill re-runnable.
+
+## Next
+
+The job above notices a cancelled order within a minute. If a minute is too
+long, [chapter 3](03-notifications.md) shows how the rest of your system
+tells it to look sooner.

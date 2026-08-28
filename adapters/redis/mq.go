@@ -39,13 +39,20 @@ const (
 	fieldEnqueuedAt = "enq"
 )
 
+const (
+	groupFieldName    = "name"
+	groupFieldPending = "pending"
+	groupFieldLag     = "lag"
+)
+
 type StreamsOpts struct {
 	Clock      converge.Clock
+	Retention  time.Duration
 	Visibility time.Duration
 }
 
 func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) converge.MQ {
-	m := &streamsMQ{rdb: rdb, clock: o.Clock, visibility: o.Visibility}
+	m := &streamsMQ{rdb: rdb, clock: o.Clock, visibility: o.Visibility, retention: o.Retention}
 	if m.clock == nil {
 		m.clock = wallClock{}
 	}
@@ -59,6 +66,7 @@ type streamsMQ struct {
 	rdb        *redis.Client
 	clock      converge.Clock
 	visibility time.Duration
+	retention  time.Duration
 }
 
 type wallClock struct{}
@@ -85,7 +93,102 @@ func (m *streamsMQ) Publish(ctx context.Context, queue string, msg converge.Mess
 	if err != nil {
 		return err
 	}
-	return m.rdb.XAdd(ctx, &redis.XAddArgs{Stream: streamKey(queue), Values: values}).Err()
+	key := streamKey(queue)
+	if err := m.rdb.XAdd(ctx, &redis.XAddArgs{Stream: key, Values: values}).Err(); err != nil {
+		return err
+	}
+	return m.trimRetention(ctx, key)
+}
+
+func (m *streamsMQ) trimRetention(ctx context.Context, key string) error {
+	if m.retention <= 0 {
+		return nil
+	}
+	return m.rdb.XTrimMinID(ctx, key, retentionMinID(m.clock.Now(), m.retention)).Err()
+}
+
+func retentionMinID(now time.Time, retention time.Duration) string {
+	return strconv.FormatInt(now.Add(-retention).UnixMilli(), 10)
+}
+
+func (m *streamsMQ) Backlog(ctx context.Context, queue string) (int, error) {
+	return m.BacklogForGroup(ctx, queue, reservedGroup)
+}
+
+func (m *streamsMQ) BacklogForGroup(ctx context.Context, queue, group string) (int, error) {
+	key := streamKey(queue)
+	entries, err := m.rdb.XLen(ctx, key).Result()
+	if err != nil {
+		return 0, err
+	}
+	if entries == 0 {
+		return 0, nil
+	}
+	reply, err := m.rdb.Do(ctx, "xinfo", "groups", key).Result()
+	if err != nil {
+		return 0, err
+	}
+	g, found := findGroupBacklog(reply, group)
+	if !found {
+		return int(entries), nil
+	}
+	if !g.lagKnown {
+		return 0, converge.ErrBacklogUnknown
+	}
+	return int(g.lag + g.pending), nil
+}
+
+type groupBacklog struct {
+	lag      int64
+	lagKnown bool
+	pending  int64
+}
+
+func findGroupBacklog(reply any, group string) (groupBacklog, bool) {
+	groups, ok := reply.([]any)
+	if !ok {
+		return groupBacklog{}, false
+	}
+	for _, entry := range groups {
+		fields, ok := replyFields(entry)
+		if !ok {
+			continue
+		}
+		if name, _ := fields[groupFieldName].(string); name != group {
+			continue
+		}
+		lag, lagKnown := fields[groupFieldLag].(int64)
+		pending, _ := fields[groupFieldPending].(int64)
+		return groupBacklog{lag: lag, lagKnown: lagKnown, pending: pending}, true
+	}
+	return groupBacklog{}, false
+}
+
+func replyFields(entry any) (map[string]any, bool) {
+	switch v := entry.(type) {
+	case map[any]any:
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			if name, ok := k.(string); ok {
+				out[name] = val
+			}
+		}
+		return out, true
+	case []any:
+		if len(v)%2 != 0 {
+			return nil, false
+		}
+		out := make(map[string]any, len(v)/2)
+		for i := 0; i < len(v); i += 2 {
+			name, ok := v[i].(string)
+			if !ok {
+				return nil, false
+			}
+			out[name] = v[i+1]
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 func (m *streamsMQ) PublishDelayed(ctx context.Context, queue string, msg converge.Message, delay time.Duration) error {
@@ -203,7 +306,11 @@ func pause(ctx context.Context) bool {
 }
 
 func (m *streamsMQ) ensureGroup(ctx context.Context, queue, group string) error {
-	err := m.rdb.XGroupCreateMkStream(ctx, streamKey(queue), group, groupStartID).Err()
+	key := streamKey(queue)
+	if err := m.trimRetention(ctx, key); err != nil {
+		return err
+	}
+	err := m.rdb.XGroupCreateMkStream(ctx, key, group, groupStartID).Err()
 	if err != nil && strings.HasPrefix(err.Error(), busyGroupPrefix) {
 		return nil
 	}

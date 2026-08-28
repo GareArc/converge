@@ -25,10 +25,13 @@ func openMiniServer(t *testing.T) (*miniredis.Miniredis, *redis.Client, *converg
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { client.Close() })
-	clock := convergetest.NewClock(time.Unix(1700000000, 0))
+	start := time.Unix(1700000000, 0)
+	mr.SetTime(start)
+	clock := convergetest.NewClock(start)
 	advance := func(d time.Duration) {
 		mr.FastForward(d)
 		clock.Advance(d)
+		mr.SetTime(clock.Now())
 	}
 	return mr, client, clock, advance
 }

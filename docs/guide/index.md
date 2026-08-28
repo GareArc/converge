@@ -1,109 +1,65 @@
-# Converge guide
+# The guide
 
-> Module: `github.com/GareArc/converge`.
+converge gives a service one model for all background work. This guide
+teaches that model in seven chapters. Each one ends where the next begins,
+and every program in it is a real file under `examples/scenarios/` that you
+can run.
 
-Converge gives your services **one model for all background work**: periodic
-loops, event-driven sync, queue consumers, cache invalidation, k8s-style
-control loops. It replaces the cron+lock, list-queue, and hand-rolled
-reconciler patterns with two models on one kernel — and the package layout
-*is* the model split:
+## Start with one question
 
-```go
-import (
-    "github.com/GareArc/converge"           // runtime, Options, run modes
-    "github.com/GareArc/converge/reconcile" // "is everything as it should be?"
-    "github.com/GareArc/converge/worker"    // "do this one specific thing that just happened?"
-)
+Before you reach for an API, answer this about the work you have:
+
+> **If this message were lost, would anything be wrong?**
+
+**No.** The truth lives in your own store, and a message is only a note
+saying *look at this one sooner*. Losing it costs a little latency and never
+correctness. That is a [reconcile](../glossary.md#reconcile) job.
+
+**Yes.** The truth lives in the message. Something happened, a side effect
+has to follow, and no amount of re-reading your database will tell you what
+it was. That is a [worker](../glossary.md#worker) job: the message is
+durable, it is retried, and it ends up on the
+[shelf](../glossary.md#shelf) for a person to look at rather than being
+dropped.
+
+Every chapter below either teaches that distinction or builds on it.
+
+## The chapters
+
+1. **[Your first job](01-first-job.md)** — the question above, and a
+   complete converge program you can run.
+2. **[One job, many things](02-ids.md)** — a single job responsible for ten
+   thousand customers, one [ID](../glossary.md#id) at a time, and where the
+   list of IDs comes from.
+3. **[Telling a job to look sooner](03-notifications.md)** — the
+   [inbox](../glossary.md#inbox), `Notify` from a different binary, and
+   reading a queue some other system already writes.
+4. **[When the message is the work](04-worker.md)** — tasks, retries, the
+   three ways to stop early, and the shelf.
+5. **[Where a job runs](05-run-modes.md)** — three values, one rule, and
+   what converge deliberately does not do across replicas.
+6. **[Taking it to production](06-production.md)** — Redis, logs, readiness,
+   the numbers converge will and will not report, and jobs that finish.
+7. **[Testing a job](07-testing.md)** — a harness, a fake clock, and no
+   `time.Sleep`.
+
+## Before you start
+
+- Every converge-specific word is defined once in the
+  [glossary](../glossary.md). If a word on these pages looks like it is
+  carrying more weight than usual, it is, and the glossary says why.
+- When a chapter answers your question but not your problem, the
+  [cookbook](../cookbook/index.md) works six of them end to end, and the
+  reference starts at the [kernel page](../reference/kernel.md).
+- The programs live in the `examples` module. Run them from there:
+
+```sh
+cd examples
+go run ./scenarios/a01-nightly-invoices
 ```
 
-A file's imports declare its model: code importing `worker` but not
-`reconcile` is provably pure queue-processing, and vice versa.
-
-## The core path
-
-Chapters 1–6 are the core path: a job on a schedule, a list of IDs it looks
-after, ways to check something sooner than the schedule would, the other
-kind of job for one-time work, how many of your copies actually run any of
-it, and somewhere durable to keep all of that bookkeeping. Finish them and
-you can ship.
-
-Chapters 1, 2, 4 and 5 run with nothing installed. Chapters 3 and 6 need a
-Redis, because a message has to come from somewhere real and bookkeeping
-has to outlive a process; both show the one `docker run` line that gets you
-one.
-
-- [1. A first job](01-first-job.md) — one function, on a schedule, with
-  nothing installed.
-- [2. Many things to check](02-ids.md) — the IDs one job looks after, and
-  where that list comes from.
-- [3. Reacting to events](03-triggers.md) — the `Triggers` list: turning a
-  queue into work alongside the schedule. Needs a Redis.
-- [4. The other kind of job](04-worker.md) — sending one message for one
-  thing that happened, and what converge does when your handler fails to
-  handle it.
-- [5. More than one copy](05-run-modes.md) — running three copies of your
-  service, and which one does the work.
-- [6. Going to production](06-production.md) — the whole composition root
-  of a deployable service: config, all three ports on Redis, metrics,
-  middleware, a debug endpoint, and a clean shutdown. Needs a Redis.
-
-## Chapters you reach for
-
-Chapters 7–10 are opt-in: reach for one when your job's situation calls for
-it, not because chapter 6 left it unfinished.
-
-- [7. Stale writes](07-versions.md) — protecting a write when "safe to run
-  twice" isn't enough on its own.
-- [8. Testing your jobs](08-testing.md) — running the real engine in a Go
-  test, against in-memory storage and a clock you control.
-- [9. Running it in production](09-operations.md) — looking at a running
-  job from outside the process, pausing it, and working the
-  [dead-letter](../glossary.md#dead-letter-dlq) queue.
-- [10. Seeing what it is doing](10-observability.md) — turning what
-  converge reports into metrics, and setting the one alert that catches a
-  job that quietly stopped running.
-
-Outside the numbered path: the
-[cookbook](../cookbook/scenario-a-safety-net.md) has worked scenarios A–F,
-and the [reference](../reference/kernel.md) is the condensed API.
-
-Every term this guide uses has a plain-language definition in
-[the glossary](../glossary.md). For what converge deliberately does not do,
-see the [README](https://github.com/GareArc/converge/blob/main/README.md#non-goals) for the
-short version, or [the reference](../reference/kernel.md#v1-limits) for the
-precise one.
-
-## The two models
-
-Every background job is one of exactly two things:
-
-| | **`reconcile`** | **`worker`** |
-|---|---|---|
-| Style | level-triggered — you are given *what to look at* | edge-triggered — you are given *what to do* |
-| You write | `Reconcile(ctx, id) error` | `Handle(ctx, payload) error` |
-| A message is | a *[hint](../glossary.md#hint)* — "re-check this ID" | the *work itself* |
-| Lost message means | the state is put right a little later: the next scheduled round looks at that ID anyway | the work is gone, and no later round notices — so converge keeps hold of it. It records a message as handled only once your handler has dealt with it, hands it back again if that fails, and sets it aside as a [dead-letter](../glossary.md#dead-letter-dlq) rather than dropping it. That reaches only as far as the queue underneath stores messages durably |
-| Must be | safe to run twice, and written to look at how things actually are rather than trust what it was told | safe to run twice: your handler can be called more than once for the same message |
-| Examples | keeping credentials in sync, keeping a deployment in step with what it should be, warming a cache | send an email, run an export, call a webhook once |
-
-**The decision test:** *given only an ID, can the handler recompute everything
-by re-reading storage?* Yes → `reconcile`. No (the message is the only copy of
-the data) → `worker`.
-
-**The rule that prevents the classic [reconcile](../glossary.md#reconcile)
-incident:** your reconcile handler runs **every time the schedule comes
-around, whether or not anything has changed**. So every side effect it
-performs has to depend on what it finds, not on the fact that it ran. "Email
-the buyer when a SKU is back in stock" must not send an email every time —
-write it to work toward "a notification exists": read the stored
-`notified_at` fact, send only if it is absent, and record that you sent it.
-That turns "every pass" into "once, plus a rare repeat if the process dies
-between sending and recording" — conditional, not exactly-once, which is the
-most any handler on either surface gets. A side effect you cannot make
-conditional like that is a one-time action; send it through `worker`
-instead.
-
-When in doubt, it is a reconcile job. A queue whose messages carry
-`{"sku": X, "type": "changed"}` is not carrying work — it is
-carrying a name to go and look at, which makes it a reconcile job dressed as
-a worker.
+- Almost nothing here needs Redis, a database, or a container: the `inmem`
+  package supplies everything converge needs in process, so the programs run
+  and their tests pass with no services at all. Exactly one scenario is the
+  exception — `a14-foreign-queue`, which chapter 3 links to rather than
+  shows, reads a real Redis list and tells you so if there is not one.

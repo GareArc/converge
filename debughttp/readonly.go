@@ -1,6 +1,7 @@
 package debughttp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,19 +9,43 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/wiring"
+	"github.com/GareArc/converge/worker"
 )
+
+const debugListCap = 100
 
 type jobView struct {
 	Job              string            `json:"job"`
 	Surface          string            `json:"surface"`
 	RunMode          string            `json:"run_mode"`
+	State            string            `json:"state"`
 	Queue            string            `json:"queue"`
-	Paused           bool              `json:"paused"`
 	Settings         map[string]string `json:"settings"`
-	QueueDepth       int               `json:"queue_depth"`
-	Parked           int               `json:"parked"`
+	LeaseHeld        bool              `json:"lease_held"`
+	InFlight         int               `json:"in_flight"`
+	Backlog          int               `json:"backlog"`
+	BacklogKnown     bool              `json:"backlog_known"`
+	BacklogAt        string            `json:"backlog_at"`
+	Failing          int               `json:"failing"`
+	Shelved          int               `json:"shelved"`
+	ShelvedKnown     bool              `json:"shelved_known"`
+	ShelvedAt        string            `json:"shelved_at"`
 	LastSuccess      string            `json:"last_success"`
+	LastError        string            `json:"last_error"`
+	LastErrorAt      string            `json:"last_error_at"`
 	ConsecutiveFails int               `json:"consecutive_fails"`
+
+	FailingIDs       []failingIDView         `json:"failing_ids,omitempty"`
+	FailingTruncated bool                    `json:"failing_truncated,omitempty"`
+	ShelvedMessages  []worker.ShelvedMessage `json:"shelved_messages,omitempty"`
+	ShelvedTruncated bool                    `json:"shelved_truncated,omitempty"`
+}
+
+type failingIDView struct {
+	ID       string `json:"id"`
+	Failures int    `json:"failures"`
+	Error    string `json:"error,omitempty"`
+	NextTry  string `json:"next_try,omitempty"`
 }
 
 type jobsResponse struct {
@@ -43,7 +68,11 @@ func ReadOnlyHandler(rt *converge.Runtime) http.Handler {
 func registerReadOnlyRoutes(mux *http.ServeMux, rt *converge.Runtime) {
 	mux.HandleFunc("GET /debug/jobs", listJobsHandler(rt))
 	mux.HandleFunc("GET /debug/jobs/{$}", listJobsHandler(rt))
-	mux.HandleFunc("GET /debug/jobs/{job}", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /debug/jobs/{job}", singleJobHandler(rt))
+}
+
+func singleJobHandler(rt *converge.Runtime) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		job := r.PathValue("job")
 		info, ok, err := lookupJob(rt, job)
 		if err != nil {
@@ -55,8 +84,13 @@ func registerReadOnlyRoutes(mux *http.ServeMux, rt *converge.Runtime) {
 			return
 		}
 		stats := statsByJob(rt.Stats())
-		writeJSON(w, http.StatusOK, mergeJobView(info, stats[job]))
-	})
+		view := mergeJobView(info, stats[job])
+		if err := attachFailingAndShelved(r.Context(), rt, info, &view); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
+	}
 }
 
 func listJobsHandler(rt *converge.Runtime) http.HandlerFunc {
@@ -105,17 +139,80 @@ func mergeJobView(info converge.JobInfo, stats converge.JobStats) jobView {
 		Job:              info.Job,
 		Surface:          info.Surface.String(),
 		RunMode:          info.RunMode.String(),
+		State:            stats.State.String(),
 		Queue:            info.Queue,
-		Paused:           info.Paused,
 		Settings:         info.Settings,
-		QueueDepth:       stats.QueueDepth,
-		Parked:           stats.Parked,
-		LastSuccess:      formatLastSuccess(stats.LastSuccess),
+		LeaseHeld:        stats.LeaseHeld,
+		InFlight:         stats.InFlight,
+		Backlog:          stats.Backlog,
+		BacklogKnown:     stats.BacklogKnown,
+		BacklogAt:        formatTime(stats.BacklogAt),
+		Failing:          stats.Failing,
+		Shelved:          stats.Shelved,
+		ShelvedKnown:     stats.ShelvedKnown,
+		ShelvedAt:        formatTime(stats.ShelvedAt),
+		LastSuccess:      formatTime(stats.LastSuccess),
+		LastError:        errString(stats.LastError),
+		LastErrorAt:      formatTime(stats.LastErrorAt),
 		ConsecutiveFails: stats.ConsecutiveFails,
 	}
 }
 
-func formatLastSuccess(t time.Time) string {
+func attachFailingAndShelved(ctx context.Context, rt *converge.Runtime, info converge.JobInfo, view *jobView) error {
+	switch info.Surface {
+	case converge.SurfaceReconcile:
+		ids, err := wiring.FailingIDs(rt, info.Job)
+		if err != nil {
+			return err
+		}
+		view.FailingIDs, view.FailingTruncated = capFailingIDs(ids)
+	case converge.SurfaceWorker:
+		shelf, err := worker.ShelfFrom(rt, info.Job)
+		if err != nil {
+			return err
+		}
+		list, err := shelf.List(ctx)
+		if err != nil {
+			return err
+		}
+		view.ShelvedMessages, view.ShelvedTruncated = capShelved(list)
+	}
+	return nil
+}
+
+func capFailingIDs(ids []converge.FailingID) ([]failingIDView, bool) {
+	truncated := len(ids) > debugListCap
+	if truncated {
+		ids = ids[:debugListCap]
+	}
+	out := make([]failingIDView, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, failingIDView{
+			ID:       id.ID,
+			Failures: id.Failures,
+			Error:    errString(id.Err),
+			NextTry:  formatTime(id.NextTry),
+		})
+	}
+	return out, truncated
+}
+
+func capShelved(list []worker.ShelvedMessage) ([]worker.ShelvedMessage, bool) {
+	truncated := len(list) > debugListCap
+	if truncated {
+		list = list[:debugListCap]
+	}
+	return list, truncated
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func formatTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}

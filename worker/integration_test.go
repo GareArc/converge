@@ -58,11 +58,6 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	})
 	consumerRt := consumer.Build(t)
 
-	producerRt, err := converge.New(converge.Options{MQ: mq, Clock: consumer.Clock})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	tk := NewTask[invitePayload]("send-invite", TaskOpts{Version: 1})
 	mailer := newInviteMailer()
 
@@ -71,7 +66,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	var throttleAttempts []int
 	var hardFailRuns, escalations int32
 
-	err = Handle(consumerRt, tk, func(ctx context.Context, payload invitePayload) error {
+	err := Handle(consumerRt, tk, func(ctx context.Context, payload invitePayload) error {
 		meta, _ := MetaFromContext(ctx)
 		mu.Lock()
 		messageIDs[payload.Email] = meta.MessageID
@@ -110,10 +105,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	}
 	consumer.Runtime(t)
 
-	producer, err := ProducerFrom(producerRt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	producer := wProducer(t, mq, consumer.Clock())
 
 	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: cleanInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
@@ -141,10 +133,10 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		t.Fatalf("clean send RunCompleted{Err:nil} count = %d, want 1", n)
 	}
 	if n := eventCount(consumer.Events(), func(e converge.Event) bool {
-		md, ok := e.(converge.MessageDiscarded)
-		return ok && md.MessageID == rejectID && md.Reason == "rejected address"
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.ID == rejectID && rc.Outcome == converge.Discarded
 	}); n != 1 {
-		t.Fatalf("MessageDiscarded count = %d, want 1", n)
+		t.Fatalf("RunCompleted{Outcome: Discarded} count = %d, want 1", n)
 	}
 	if got := mailer.count(rejectedInviteEmail); got != 0 {
 		t.Fatalf("mailer called %d times for rejected address, want 0", got)
@@ -163,7 +155,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		defer mu.Unlock()
 		return len(throttleAttempts) == 1
 	})
-	convergetest.AdvanceUntil(t, consumer.Clock, 30*time.Second, func() bool {
+	convergetest.AdvanceUntil(t, consumer.Clock(), 30*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(throttleAttempts) == 2
@@ -179,26 +171,21 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: hardFailInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	convergetest.AdvanceUntil(t, consumer.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 2 })
-	convergetest.AdvanceUntil(t, consumer.Clock, 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 3 })
-	convergetest.Await(t, func() bool {
-		return eventCount(consumer.Events(), func(e converge.Event) bool {
-			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == converge.DeadLetterMaxAttempts
-		}) == 1
-	})
+	convergetest.AdvanceUntil(t, consumer.Clock(), 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 2 })
+	convergetest.AdvanceUntil(t, consumer.Clock(), 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 3 })
+	convergetest.Await(t, func() bool { return len(shelfKeys(t, consumer.KV, "send-invite")) == 1 })
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&hardFailRuns) == 3 })
 	if got := atomic.LoadInt32(&escalations); got != 1 {
 		t.Fatalf("escalations = %d, want 1", got)
 	}
 
-	keys := dlqKeys(t, consumer.KV, "send-invite")
+	keys := shelfKeys(t, consumer.KV, "send-invite")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, consumer.KV, keys[0])
-	if rec.Reason != converge.DeadLetterMaxAttempts.String() {
-		t.Fatalf("dlq reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAttempts.String())
+	rec := shelfRecordAt(t, consumer.KV, keys[0])
+	if rec.Reason != reasonMaxAttempts {
+		t.Fatalf("shelf reason = %q, want %q", rec.Reason, reasonMaxAttempts)
 	}
 	wantPayload := invitePayload{Email: hardFailInviteEmail, Team: "eng"}
 	var gotPayload invitePayload
@@ -206,7 +193,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if gotPayload != wantPayload {
-		t.Fatalf("dlq payload = %+v, want %+v", gotPayload, wantPayload)
+		t.Fatalf("shelf payload = %+v, want %+v", gotPayload, wantPayload)
 	}
 }
 
@@ -223,18 +210,15 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := wProducer(t, w.MQ, w.Clock())
 	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 
-	convergetest.AdvanceUntil(t, w.Clock, time.Minute, func() bool {
+	convergetest.AdvanceUntil(t, w.Clock(), time.Minute, func() bool {
 		return eventCount(w.Events(), func(e converge.Event) bool {
-			dl, ok := e.(converge.MessageDeadLettered)
-			return ok && dl.Reason == converge.DeadLetterMaxAge
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Shelved
 		}) == 1
 	})
 
@@ -244,79 +228,15 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 	stopped := atomic.LoadInt32(&runs)
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&runs) == stopped })
 
-	keys := dlqKeys(t, w.KV, "job")
+	keys := shelfKeys(t, w.KV, "job")
 	if len(keys) != 1 {
-		t.Fatalf("dlq keys = %v, want exactly 1", keys)
+		t.Fatalf("shelf keys = %v, want exactly 1", keys)
 	}
-	rec := dlqRecordAt(t, w.KV, keys[0])
-	if rec.Reason != converge.DeadLetterMaxAge.String() {
-		t.Fatalf("reason = %q, want %q", rec.Reason, converge.DeadLetterMaxAge.String())
+	rec := shelfRecordAt(t, w.KV, keys[0])
+	if rec.Reason != reasonMaxAge {
+		t.Fatalf("reason = %q, want %q", rec.Reason, reasonMaxAge)
 	}
 	if rec.Attempt != 1 {
-		t.Fatalf("dlq record attempt = %d, want 1", rec.Attempt)
-	}
-}
-
-func TestProducerFromResolvesHandlerBinding(t *testing.T) {
-	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
-	rt := w.Build(t)
-	jobMQ := inmem.NewMQWithClock(w.Clock)
-
-	bound := NewTask[string]("bound", TaskOpts{})
-	var boundRuns int32
-	err := Handle(rt, bound, func(ctx context.Context, payload string) error {
-		atomic.AddInt32(&boundRuns, 1)
-		return nil
-	}, HandleOpts{MQ: jobMQ})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	unbound := NewTask[string]("unbound", TaskOpts{})
-
-	w.Runtime(t)
-	p, err := ProducerFrom(rt)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := bound.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool { return atomic.LoadInt32(&boundRuns) == 1 })
-	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&boundRuns) == 1 })
-
-	if err := unbound.Enqueue(context.Background(), p, "world", EnqueueOpts{}); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	delivered := make(chan converge.Delivery, 1)
-	go w.MQ.Consume(ctx, "unbound", func(d converge.Delivery) {
-		select {
-		case delivered <- d:
-		default:
-		}
-	})
-	var d converge.Delivery
-	select {
-	case d = <-delivered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("no delivery on default mq")
-	}
-	m := d.Message()
-	if m.Kind != "unbound" {
-		t.Fatalf("kind = %q, want %q", m.Kind, "unbound")
-	}
-	var payload string
-	if err := json.Unmarshal(m.Payload, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload != "world" {
-		t.Fatalf("payload = %q, want %q", payload, "world")
-	}
-	if err := d.Ack(context.Background()); err != nil {
-		t.Fatal(err)
+		t.Fatalf("shelf record attempt = %d, want 1", rec.Attempt)
 	}
 }

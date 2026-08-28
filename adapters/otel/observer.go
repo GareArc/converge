@@ -9,13 +9,10 @@ import (
 )
 
 const (
-	attrJob      = "converge.job"
-	attrSurface  = "converge.surface"
-	attrStatus   = "converge.status"
-	attrQueue    = "converge.queue"
-	attrReason   = "converge.reason"
-	attrKind     = "converge.kind"
-	attrAcquired = "converge.acquired"
+	attrJob     = "converge.job"
+	attrStatus  = "converge.status"
+	attrOutcome = "converge.outcome"
+	attrHeld    = "converge.held"
 )
 
 const (
@@ -23,20 +20,14 @@ const (
 	statusError = "error"
 )
 
-const (
-	kindVersionZero     = "version-zero"
-	kindWrongSurface    = "wrong-surface"
-	kindBackoffFallback = "backoff-fallback"
-	kindPassOverrun     = "pass-overrun"
-)
-
 type observer struct {
-	runDuration metric.Float64Histogram
-	parked      metric.Int64Counter
-	deadLetters metric.Int64Counter
-	discarded   metric.Int64Counter
-	leaseMoves  metric.Int64Counter
-	anomalies   metric.Int64Counter
+	runDuration      metric.Float64Histogram
+	shelved          metric.Int64Counter
+	discarded        metric.Int64Counter
+	leaseMoves       metric.Int64Counter
+	notifyDropped    metric.Int64Counter
+	scheduleOverruns metric.Int64Counter
+	destroyed        metric.Int64Counter
 }
 
 func NewObserver(meter metric.Meter) (converge.Observer, error) {
@@ -52,11 +43,12 @@ func NewObserver(meter metric.Meter) (converge.Observer, error) {
 		target     *metric.Int64Counter
 		name, desc string
 	}{
-		{&o.parked, "converge.parked", "Reconcile IDs parked after repeated failure."},
-		{&o.deadLetters, "converge.dead_letters", "Worker messages moved to the dead-letter store."},
-		{&o.discarded, "converge.discarded", "Work items dropped without running."},
+		{&o.shelved, "converge.shelved", "Runs whose outcome was Shelved."},
+		{&o.discarded, "converge.discarded", "Runs whose outcome was Discarded."},
 		{&o.leaseMoves, "converge.lease.transitions", "Job lease acquisitions and losses."},
-		{&o.anomalies, "converge.anomalies", "Misconfiguration and guard-rail signals that should stay at zero."},
+		{&o.notifyDropped, "converge.notifications.dropped", "Notifications dropped before reaching a job."},
+		{&o.scheduleOverruns, "converge.schedule.overruns", "Scheduled passes that started later than due."},
+		{&o.destroyed, "converge.destroyed", "Jobs that reached the Destroyed state."},
 	} {
 		ctr, err := meter.Int64Counter(c.name, metric.WithDescription(c.desc))
 		if err != nil {
@@ -73,42 +65,26 @@ func (o *observer) Observe(e converge.Event) {
 	case converge.RunCompleted:
 		o.runDuration.Record(ctx, v.Duration.Seconds(), metric.WithAttributes(
 			attribute.String(attrJob, v.Job),
-			attribute.String(attrSurface, v.Surface.String()),
 			attribute.String(attrStatus, runStatus(v.Err)),
+			attribute.String(attrOutcome, v.Outcome.String()),
 		))
-	case converge.IDParked:
-		o.parked.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
-	case converge.MessageDeadLettered:
-		o.deadLetters.Add(ctx, 1, metric.WithAttributes(
-			attribute.String(attrJob, v.Job),
-			attribute.String(attrQueue, v.Queue),
-			attribute.String(attrReason, v.Reason.String()),
-		))
-	case converge.WakeDiscarded:
-		o.discarded.Add(ctx, 1, metric.WithAttributes(
-			attribute.String(attrJob, v.Job),
-			attribute.String(attrSurface, converge.SurfaceReconcile.String()),
-			attribute.String(attrReason, v.Reason.String()),
-		))
-	case converge.MessageDiscarded:
-		o.discarded.Add(ctx, 1, metric.WithAttributes(
-			attribute.String(attrJob, v.Job),
-			attribute.String(attrSurface, converge.SurfaceWorker.String()),
-			attribute.String(attrQueue, v.Queue),
-		))
-	case converge.LeaseTransition:
+		switch v.Outcome {
+		case converge.Shelved:
+			o.shelved.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
+		case converge.Discarded:
+			o.discarded.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
+		}
+	case converge.LeaseChanged:
 		o.leaseMoves.Add(ctx, 1, metric.WithAttributes(
 			attribute.String(attrJob, v.Job),
-			attribute.Bool(attrAcquired, v.Acquired),
+			attribute.Bool(attrHeld, v.Held),
 		))
-	case converge.VersionZero:
-		o.anomaly(ctx, v.Job, kindVersionZero)
-	case converge.WrongSurfaceSignal:
-		o.anomaly(ctx, v.Job, kindWrongSurface)
-	case converge.BackoffFallback:
-		o.anomaly(ctx, v.Job, kindBackoffFallback)
-	case converge.PassOverrun:
-		o.anomaly(ctx, v.Job, kindPassOverrun)
+	case converge.NotificationDropped:
+		o.notifyDropped.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
+	case converge.ScheduleOverrun:
+		o.scheduleOverruns.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
+	case converge.JobDestroyed:
+		o.destroyed.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
 	}
 }
 
@@ -119,9 +95,55 @@ func runStatus(err error) string {
 	return statusOK
 }
 
-func (o *observer) anomaly(ctx context.Context, job, kind string) {
-	o.anomalies.Add(ctx, 1, metric.WithAttributes(
-		attribute.String(attrJob, job),
-		attribute.String(attrKind, kind),
-	))
+func RegisterGauges(meter metric.Meter, rt *converge.Runtime) error {
+	backlog, err := meter.Int64ObservableGauge("converge.backlog",
+		metric.WithDescription("Cluster-wide inbox depth as of this replica's last periodic poll (stale by up to one lease heartbeat); omitted when not known."))
+	if err != nil {
+		return err
+	}
+	failing, err := meter.Int64ObservableGauge("converge.failing",
+		metric.WithDescription("IDs or messages on this replica currently serving out backoff or awaiting retry."))
+	if err != nil {
+		return err
+	}
+	shelvedCurrent, err := meter.Int64ObservableGauge("converge.shelved.current",
+		metric.WithDescription("Messages currently on the job's shelf as of this replica's last periodic poll; omitted when not known."))
+	if err != nil {
+		return err
+	}
+	leaseHeld, err := meter.Int64ObservableGauge("converge.lease_held",
+		metric.WithDescription("1 if this replica currently holds the job's lease, 0 otherwise; omitted for jobs whose run mode takes no lease."))
+	if err != nil {
+		return err
+	}
+	inFlight, err := meter.Int64ObservableGauge("converge.in_flight",
+		metric.WithDescription("IDs or deliveries currently mid-run on this replica."))
+	if err != nil {
+		return err
+	}
+	_, err = meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		for _, js := range rt.Stats() {
+			attrs := metric.WithAttributes(attribute.String(attrJob, js.Job))
+			if js.BacklogKnown {
+				o.ObserveInt64(backlog, int64(js.Backlog), attrs)
+			}
+			o.ObserveInt64(failing, int64(js.Failing), attrs)
+			if js.ShelvedKnown {
+				o.ObserveInt64(shelvedCurrent, int64(js.Shelved), attrs)
+			}
+			if js.RunMode == converge.OnOneReplica {
+				o.ObserveInt64(leaseHeld, boolToInt64(js.LeaseHeld), attrs)
+			}
+			o.ObserveInt64(inFlight, int64(js.InFlight), attrs)
+		}
+		return nil
+	}, backlog, failing, shelvedCurrent, leaseHeld, inFlight)
+	return err
+}
+
+func boolToInt64(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
 }

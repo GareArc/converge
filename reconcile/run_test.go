@@ -3,14 +3,16 @@ package reconcile
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/convergetest"
 	"github.com/GareArc/converge/inmem"
+	"github.com/GareArc/converge/internal/keys"
+	"github.com/GareArc/converge/internal/notice"
 )
 
 type liveEngine struct {
@@ -71,27 +73,27 @@ func waitRun(t *testing.T, le *liveEngine) error {
 
 func acquired(rec *convergetest.Recorder) int {
 	return rec.Count(func(e converge.Event) bool {
-		lt, ok := e.(converge.LeaseTransition)
-		return ok && lt.Acquired
+		lt, ok := e.(converge.LeaseChanged)
+		return ok && lt.Held
 	})
 }
 
 func released(rec *convergetest.Recorder) int {
 	return rec.Count(func(e converge.Event) bool {
-		lt, ok := e.(converge.LeaseTransition)
-		return ok && !lt.Acquired
+		lt, ok := e.(converge.LeaseChanged)
+		return ok && !lt.Held
 	})
 }
 
 func specWithSchedule() Spec {
 	return Spec{
-		Name:       "job",
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Name:      "job",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}
 }
 
-func TestRunRejectsBadDeps(t *testing.T) {
+func TestRunRejectsOnOneReplicaWithoutALease(t *testing.T) {
 	e, err := newEngine(specWithSchedule())
 	if err != nil {
 		t.Fatal(err)
@@ -100,30 +102,23 @@ func TestRunRejectsBadDeps(t *testing.T) {
 	if err := e.Run(context.Background(), deps); err == nil {
 		t.Fatal("OnOneReplica without a Lease must fail Run")
 	}
-	e2, err := newEngine(specWithSchedule())
-	if err != nil {
-		t.Fatal(err)
-	}
-	deps2 := converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}}
-	if err := e2.Run(context.Background(), deps2); err == nil {
-		t.Fatal("Schedule without KV must fail Run")
-	}
 }
 
-func TestVersionsRequireKV(t *testing.T) {
-	s := Spec{
-		Name:             "job",
-		Reconciler:       Func(func(context.Context, ID) error { return nil }),
-		AllowUnscheduled: true,
-		Versions:         fakeVersions{},
+func TestRunRejectsUntilWithoutKV(t *testing.T) {
+	spec := Spec{
+		Name:      "cache",
+		RunMode:   converge.OnAllReplicas,
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Until:     converge.Deadline(wqStart.Add(time.Hour)),
 	}
-	e, err := newEngine(s)
+	e, err := newEngine(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = e.bind(converge.JobDeps{Lease: inmem.NewLease(), Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}})
-	if err == nil || !strings.Contains(err.Error(), "Versions needs Options.KV") {
-		t.Fatalf("bind without KV = %v", err)
+	deps := converge.JobDeps{Clock: convergetest.NewClock(wqStart), Observer: &convergetest.Recorder{}}
+	if err := e.Run(context.Background(), deps); err == nil {
+		t.Fatal("Until without a KV must fail Run")
 	}
 }
 
@@ -158,13 +153,13 @@ func TestLeaseLossStepsDownAndReelects(t *testing.T) {
 func TestLeaseLossCancelsInFlightNeutrally(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once
-	blocked := Func(func(ctx context.Context, id ID) error {
+	blocked := func(ctx context.Context, id ID) error {
 		once.Do(func() { close(started) })
 		<-ctx.Done()
 		return ctx.Err()
-	})
+	}
 	spec := specWithSchedule()
-	spec.Reconciler = blocked
+	spec.Reconcile = blocked
 	le, _ := startRun(t, spec, nil)
 	select {
 	case <-started:
@@ -185,11 +180,11 @@ func TestShutdownGivesDrainGraceThenReturnsNil(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once
 	spec := specWithSchedule()
-	spec.Reconciler = Func(func(ctx context.Context, id ID) error {
+	spec.Reconcile = func(ctx context.Context, id ID) error {
 		once.Do(func() { close(started) })
 		<-ctx.Done()
 		return ctx.Err()
-	})
+	}
 	le, cancel := startRun(t, spec, nil)
 	select {
 	case <-started:
@@ -238,10 +233,10 @@ func TestShutdownReleasesLease(t *testing.T) {
 
 func TestAllReplicasRunsWithoutLease(t *testing.T) {
 	spec := Spec{
-		Name:       "cache",
-		RunMode:    converge.OnAllReplicas,
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Name:      "cache",
+		RunMode:   converge.OnAllReplicas,
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}
 	e, err := newEngine(spec)
 	if err != nil {
@@ -315,18 +310,18 @@ func TestPeriodicSugar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Periodic(rt, "license-refresh", Every(time.Hour), func(ctx context.Context) error { return nil }); err != nil {
+	if err := Periodic(rt, "license-refresh", Every(time.Hour), func(ctx context.Context) error { return nil }, PeriodicOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Periodic(rt, "nil-fn", Every(time.Hour), nil); err == nil {
+	if err := Periodic(rt, "nil-fn", Every(time.Hour), nil, PeriodicOpts{}); err == nil {
 		t.Fatal("nil function must be rejected")
 	}
-	if err := Periodic(rt, "bad-cadence", Every(0), func(ctx context.Context) error { return nil }); err == nil {
+	if err := Periodic(rt, "bad-cadence", Every(0), func(ctx context.Context) error { return nil }, PeriodicOpts{}); err == nil {
 		t.Fatal("bad cadence must be rejected")
 	}
 }
 
-func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
+func TestStandbyNotifySurvivesIntoLeadership(t *testing.T) {
 	blockName := "converge/reconcile/job/lease"
 	clock := convergetest.NewClock(wqStart)
 	lease := inmem.NewLeaseWithClock(clock)
@@ -338,12 +333,12 @@ func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
 	var got []ID
 	spec := Spec{
 		Name: "job",
-		Reconciler: Func(func(_ context.Context, id ID) error {
+		Reconcile: func(_ context.Context, id ID) error {
 			mu.Lock()
 			defer mu.Unlock()
 			got = append(got, id)
 			return nil
-		}),
+		},
 		Triggers: []Trigger{Schedule(IDs(func(context.Context) ([]ID, error) { return nil, nil }), Every(time.Hour))},
 	}
 	e, err := newEngine(spec)
@@ -367,7 +362,7 @@ func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("standby never ready")
 	}
-	if err := e.Poke("ws_7"); err != nil {
+	if err := e.Notify("ws_7"); err != nil {
 		t.Fatal(err)
 	}
 	holder.Release(context.Background())
@@ -380,7 +375,7 @@ func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("standby poke never ran after taking leadership")
+			t.Fatal("standby notify never ran after taking leadership")
 		}
 		clock.Advance(10 * time.Second)
 		time.Sleep(2 * time.Millisecond)
@@ -388,32 +383,8 @@ func TestStandbyPokeSurvivesIntoLeadership(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if got[0] != "ws_7" {
-		t.Fatalf("first run = %q, want the standby poke", got[0])
+		t.Fatalf("first run = %q, want the standby notify", got[0])
 	}
-}
-
-func TestPausedSpecDropsPokes(t *testing.T) {
-	spec := Spec{
-		Name:       "job",
-		Paused:     true,
-		Reconciler: Func(func(context.Context, ID) error { return nil }),
-		Triggers:   []Trigger{Schedule(IDs(func(context.Context) ([]ID, error) { return nil, nil }), Every(time.Hour))},
-	}
-	le, _ := startRun(t, spec, nil)
-	select {
-	case <-le.e.Ready():
-	case <-time.After(2 * time.Second):
-		t.Fatal("never ready")
-	}
-	if err := le.e.Poke("x"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool {
-		return le.rec.Count(func(e converge.Event) bool {
-			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.ID == "x" && wd.Reason == converge.DiscardPaused
-		}) >= 1
-	})
 }
 
 type flakyLease struct {
@@ -589,11 +560,11 @@ func startDrainingLeader(t *testing.T) (*convergetest.Clock, *flakyLease, contex
 	started := make(chan struct{})
 	var once sync.Once
 	spec := specWithSchedule()
-	spec.Reconciler = Func(func(ctx context.Context, id ID) error {
+	spec.Reconcile = func(ctx context.Context, id ID) error {
 		once.Do(func() { close(started) })
 		<-ctx.Done()
 		return ctx.Err()
-	})
+	}
 	e, err := newEngine(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -662,17 +633,184 @@ func TestHeartbeatExtendsThroughDrain(t *testing.T) {
 	awaitCleanReturn(t, clock, done)
 }
 
-func bootPersistent(t *testing.T, clock *convergetest.Clock, kv converge.KV, fn Func, dla int) (*testEngine, chan error, context.CancelFunc) {
-	t.Helper()
+func TestFailingIDKeepsRetryingForever(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	var calls atomic.Int64
+	if err := Register(rt, Spec{
+		Name:      "always-fails",
+		Reconcile: func(context.Context, ID) error { calls.Add(1); return errors.New("boom") },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	convergetest.AdvanceUntil(t, h.Clock(), 20*time.Minute, func() bool { return calls.Load() >= 5 })
+}
+
+func TestTimeoutCancelsTheRun(t *testing.T) {
+	started := make(chan struct{})
+	var once sync.Once
+	deadline := make(chan error, 1)
+	spec := specWithSchedule()
+	spec.Timeout = 30 * time.Second
+	spec.Reconcile = func(ctx context.Context, id ID) error {
+		once.Do(func() { close(started) })
+		<-ctx.Done()
+		deadline <- ctx.Err()
+		return ctx.Err()
+	}
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never started")
+	}
+	convergetest.AdvanceUntil(t, le.clock, 10*time.Second, func() bool { return len(deadline) > 0 })
+	if err := <-deadline; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("run ended with %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestDeadlineDestroysTheJob(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	var runs atomic.Int64
+	cutover := h.Clock().Now().Add(time.Hour)
+	if err := Register(rt, Spec{
+		Name:      "migration",
+		Reconcile: func(context.Context, ID) error { runs.Add(1); return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
+		Until:     converge.Deadline(cutover),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	h.Clock().Advance(2 * time.Hour)
+	h.Drain(t)
+	before := runs.Load()
+	h.Clock().Advance(10 * time.Minute)
+	h.Drain(t)
+	if got := runs.Load(); got != before {
+		t.Fatalf("ran %d more times after the deadline", got-before)
+	}
+	convergetest.Await(t, func() bool {
+		for _, s := range rt.Stats() {
+			if s.Job == "migration" && s.State == converge.Destroyed {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestStopKeyDestroysTheJob(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	var runs atomic.Int64
+	stopKey := keys.Tombstone("test", "migration")
+	if err := Register(rt, Spec{
+		Name:      "migration",
+		Reconcile: func(context.Context, ID) error { runs.Add(1); return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
+		Until:     converge.StopKey(stopKey),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	if err := h.KV.Set(context.Background(), stopKey, []byte("1"), 0); err != nil {
+		t.Fatal(err)
+	}
+	h.Clock().Advance(2 * time.Minute)
+	h.Drain(t)
+	before := runs.Load()
+	h.Clock().Advance(10 * time.Minute)
+	h.Drain(t)
+	if got := runs.Load(); got != before {
+		t.Fatalf("ran %d more times after the stop key was set", got-before)
+	}
+	convergetest.Await(t, func() bool {
+		for _, s := range rt.Stats() {
+			if s.Job == "migration" && s.State == converge.Destroyed {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestJobDestroyedReportsTheConditionThatFired(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	stopKey := keys.Tombstone("test", "migration")
+	if err := Register(rt, Spec{
+		Name:      "migration",
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
+		Until:     converge.StopKey(stopKey),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	if err := h.KV.Set(context.Background(), stopKey, []byte("1"), 0); err != nil {
+		t.Fatal(err)
+	}
+	h.Clock().Advance(2 * time.Minute)
+	h.Drain(t)
+	convergetest.Await(t, func() bool {
+		for _, s := range rt.Stats() {
+			if s.Job == "migration" && s.State == converge.Destroyed {
+				return true
+			}
+		}
+		return false
+	})
+	var causes []string
+	for _, e := range h.Events() {
+		if d, ok := e.(converge.JobDestroyed); ok && d.Job == "migration" {
+			causes = append(causes, d.Cause.String())
+		}
+	}
+	want := converge.StopKey(stopKey).String()
+	if len(causes) != 1 || causes[0] != want {
+		t.Fatalf("JobDestroyed causes = %v, want exactly one %q", causes, want)
+	}
+}
+
+func TestAlreadyPastDeadlineStillBecomesReadyThenStopsCleanly(t *testing.T) {
+	spec := specWithSchedule()
+	spec.Until = converge.Deadline(wqStart.Add(-time.Minute))
+	le, _ := startRun(t, spec, nil)
+	select {
+	case <-le.e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("engine never became ready even though it was already destroyed at Run start")
+	}
+	if err := waitRun(t, le); err != nil {
+		t.Fatalf("clean stop on an already-destroyed job must return nil, got %v", err)
+	}
+}
+
+func TestOnAllReplicasAlreadyPastDeadlineStillBecomesReadyThenStopsCleanly(t *testing.T) {
+	spec := Spec{
+		Name:      "cache",
+		RunMode:   converge.OnAllReplicas,
+		Reconcile: func(context.Context, ID) error { return nil },
+		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
+		Until:     converge.Deadline(wqStart.Add(-time.Minute)),
+	}
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := convergetest.NewClock(wqStart)
 	rec := &convergetest.Recorder{}
-	e := &engine{cfg: config{name: "job", concurrency: 1, deadLetterAfter: dla, allowUnscheduled: true, rec: fn}, ready: make(chan struct{})}
 	deps := converge.JobDeps{
-		KV:           kv,
-		Lease:        inmem.NewLeaseWithClock(clock),
+		KV:           inmem.NewKVWithClock(clock),
 		Observer:     rec,
 		Clock:        clock,
 		LeaseTTL:     30 * time.Second,
-		DrainTimeout: 30 * time.Second,
+		DrainTimeout: time.Second,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -681,59 +819,130 @@ func bootPersistent(t *testing.T, clock *convergetest.Clock, kv converge.KV, fn 
 	select {
 	case <-e.Ready():
 	case <-time.After(2 * time.Second):
-		t.Fatal("engine never ready")
+		t.Fatal("never ready even though it was already destroyed at Run start")
 	}
-	return &testEngine{e: e, clock: clock, rec: rec, cancel: cancel}, done, cancel
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("clean stop on an already-destroyed job must return nil, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run never returned")
+	}
 }
 
-func TestParkedMarksSurviveRestart(t *testing.T) {
-	clock := convergetest.NewClock(wqStart)
-	kv := inmem.NewKVWithClock(clock)
-	te1, done1, cancel1 := bootPersistent(t, clock, kv, func(context.Context, ID) error {
-		return errors.New("boom")
-	}, 1)
-	te1.e.hint(context.Background(), "a")
-	convergetest.Await(t, func() bool {
-		return te1.rec.Count(func(e converge.Event) bool {
-			_, ok := e.(converge.IDParked)
-			return ok
-		}) == 1
-	})
-	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(context.Background(), parkKey(te1.e, "a"))
-		return err == nil && ok
-	})
-	cancel1()
-	awaitCleanReturn(t, clock, done1)
+func TestScheduleOnlyJobNeverReportsBacklogKnown(t *testing.T) {
+	le, _ := startRun(t, specWithSchedule(), nil)
+	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })
+	le.clock.Advance(time.Hour)
+	convergetest.AssertStable(t, func() bool { return !le.e.Stats().BacklogKnown })
+}
 
-	var mu sync.Mutex
-	runs := 0
-	te2, done2, cancel2 := bootPersistent(t, clock, kv, func(context.Context, ID) error {
-		mu.Lock()
-		runs++
-		mu.Unlock()
+func TestBacklogIsZeroOnceNotificationsAreConsumed(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	rec := &convergetest.Recorder{}
+	lease := inmem.NewLeaseWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
+	mq := convergetest.WrapMQ(inmem.NewMQWithClock(clock))
+	reconciled := make(chan ID, 4)
+	spec := specWithSchedule()
+	spec.Reconcile = func(_ context.Context, id ID) error {
+		reconciled <- id
 		return nil
-	}, 1)
-	convergetest.Await(t, func() bool { return te2.e.Stats().Parked == 1 })
-	te2.e.hint(context.Background(), "a")
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 0 })
-	if n := te2.rec.Count(func(e converge.Event) bool {
-		w, ok := e.(converge.WakeDiscarded)
-		return ok && w.Reason == converge.DiscardParked
-	}); n != 1 {
-		t.Fatalf("restored parked ID must drop hints with DiscardParked, got %d events", n)
 	}
-	if err := te2.e.Poke("a"); err != nil {
+	spec.Triggers = append(spec.Triggers, Notifications(NotificationsOpts{}))
+	e, err := newEngine(spec)
+	if err != nil {
 		t.Fatal(err)
 	}
-	convergetest.Await(t, func() bool { mu.Lock(); defer mu.Unlock(); return runs == 1 })
-	convergetest.Await(t, func() bool {
-		_, ok, err := kv.Get(context.Background(), parkKey(te2.e, "a"))
-		return err == nil && !ok
+	deps := converge.JobDeps{
+		MQ:           mq,
+		Lease:        lease,
+		KV:           kv,
+		Observer:     rec,
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.Run(ctx, deps)
+	select {
+	case <-e.Ready():
+	case <-time.After(2 * time.Second):
+		t.Fatal("never ready")
+	}
+	convergetest.Await(t, func() bool { return e.Stats().LeaseHeld })
+	payload, err := notice.Encode("id-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mq.Publish(context.Background(), keys.Inbox("", "job"), converge.Message{Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reconciled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification never reached the handler")
+	}
+	before := e.Stats().BacklogAt
+	convergetest.AdvanceUntil(t, clock, 5*time.Second, func() bool {
+		s := e.Stats()
+		return s.BacklogKnown && s.BacklogAt.After(before) && s.Backlog == 0
 	})
-	cancel2()
-	awaitCleanReturn(t, clock, done2)
+	if s := e.Stats(); !s.BacklogKnown || s.Backlog != 0 {
+		t.Fatalf("Stats = %+v, want a known backlog of 0: a notification that was consumed and acked is not backlog", s)
+	}
 }
+
+func TestBacklogSumsEveryNotificationTrigger(t *testing.T) {
+	spec := specWithSchedule()
+	spec.Triggers = append(spec.Triggers,
+		NotificationsFrom("first", NotificationsOpts{MQ: countingMQ{backlog: 2}, ID: firstPayloadID}),
+		NotificationsFrom("second", NotificationsOpts{MQ: countingMQ{backlog: 1}, ID: firstPayloadID}),
+	)
+	le, _ := startRun(t, spec, nil)
+	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })
+	convergetest.Await(t, func() bool {
+		s := le.e.Stats()
+		return s.BacklogKnown && s.Backlog == 3
+	})
+	if s := le.e.Stats(); s.Backlog != 3 || s.BacklogAt.IsZero() {
+		t.Fatalf("Stats = %+v, want a dated backlog of 3: the total is every notification inbox, not the first", s)
+	}
+}
+
+func TestBacklogUnknownWhenOneNotificationTriggerCannotReport(t *testing.T) {
+	spec := specWithSchedule()
+	spec.Triggers = append(spec.Triggers,
+		NotificationsFrom("first", NotificationsOpts{MQ: countingMQ{backlog: 2}, ID: firstPayloadID}),
+		NotificationsFrom("second", NotificationsOpts{MQ: silentMQ{}, ID: firstPayloadID}),
+	)
+	le, _ := startRun(t, spec, nil)
+	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })
+	convergetest.AssertStable(t, func() bool {
+		s := le.e.Stats()
+		return !s.BacklogKnown && s.Backlog == 0
+	})
+}
+
+func firstPayloadID(payload []byte) (ID, error) { return ID(payload), nil }
+
+type silentMQ struct{}
+
+func (silentMQ) Publish(context.Context, string, converge.Message) error { return nil }
+
+func (silentMQ) Consume(ctx context.Context, _ string, _ func(converge.Delivery)) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+type countingMQ struct {
+	silentMQ
+	backlog int
+}
+
+func (m countingMQ) Backlog(context.Context, string) (int, error) { return m.backlog, nil }
 
 func TestHeartbeatSurvivesTransientExtendFailureDuringDrain(t *testing.T) {
 	clock, lease, cancel, done := startDrainingLeader(t)

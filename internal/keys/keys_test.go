@@ -8,19 +8,20 @@ func TestLayout(t *testing.T) {
 		got  string
 		want string
 	}{
+		{"probe", Probe("ns"), "ns/converge/probe"},
+		{"probe no namespace", Probe(""), "converge/probe"},
+		{"inbox", Inbox("ns", "job"), "ns/converge/inbox/job"},
+		{"inbox no namespace", Inbox("", "job"), "converge/inbox/job"},
 		{"worker", Worker("ns", "job", "x"), "ns/converge/worker/job/x"},
 		{"worker no namespace", Worker("", "job", "x"), "converge/worker/job/x"},
 		{"worker bare", Worker("ns", "job"), "ns/converge/worker/job"},
 		{"reconcile", Reconcile("ns", "job", "x"), "ns/converge/reconcile/job/x"},
-		{"ctl queue", Ctl("ns"), "ns/converge/ctl"},
-		{"ctl response", Ctl("", "res", "op1", "r1"), "converge/ctl/res/op1/r1"},
 		{"worker lease", WorkerLease("ns", "job"), "ns/converge/worker/job/lease"},
 		{"reconcile lease", ReconcileLease("", "job"), "converge/reconcile/job/lease"},
-		{"dlq prefix", WorkerDLQPrefix("ns", "job"), "ns/converge/worker/job/dlq/"},
-		{"dlq", WorkerDLQ("ns", "job", "m1"), "ns/converge/worker/job/dlq/m1"},
-		{"parked prefix", ReconcileParkedPrefix("ns", "job"), "ns/converge/reconcile/job/parked/"},
-		{"parked", ReconcileParked("ns", "job", "id1"), "ns/converge/reconcile/job/parked/id1"},
-		{"tracker", Tracker("t", "id1"), "converge/tracker/t/id1"},
+		{"shelf prefix", WorkerShelfPrefix("ns", "job"), "ns/converge/worker/job/shelf/"},
+		{"shelf", WorkerShelf("ns", "job", "m1"), "ns/converge/worker/job/shelf/m1"},
+		{"tombstone", Tombstone("ns", "job"), "ns/converge/tombstone/job"},
+		{"tombstone no namespace", Tombstone("", "job"), "converge/tombstone/job"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -20,7 +20,6 @@ const (
 
 	chaosDB       = 9
 	chaosJobName  = "chaos-leader"
-	chaosPokeID   = "leader"
 	chaosLeaseTTL = 5 * time.Second
 	chaosSleep    = 30 * time.Second
 	chaosStep     = 100 * time.Millisecond
@@ -46,8 +45,8 @@ func chaosSleepCtx(ctx context.Context, total time.Duration) error {
 	return nil
 }
 
-func chaosHandler(kv converge.KV, key string, sleep time.Duration) reconcile.Reconciler {
-	return reconcile.Func(func(ctx context.Context, _ reconcile.ID) error {
+func chaosHandler(kv converge.KV, key string, sleep time.Duration) func(context.Context, reconcile.ID) error {
+	return func(ctx context.Context, _ reconcile.ID) error {
 		if err := kv.Set(ctx, key, []byte("1"), 0); err != nil {
 			return err
 		}
@@ -55,27 +54,32 @@ func chaosHandler(kv converge.KV, key string, sleep time.Duration) reconcile.Rec
 			return nil
 		}
 		return chaosSleepCtx(ctx, sleep)
-	})
+	}
 }
 
 type chaosElectionObserver struct {
 	job string
-	rt  *converge.Runtime
+	p   *converge.Producer
 }
 
 func (o *chaosElectionObserver) Observe(e converge.Event) {
-	lt, ok := e.(converge.LeaseTransition)
-	if !ok || !lt.Acquired || lt.Job != o.job {
+	lt, ok := e.(converge.LeaseChanged)
+	if !ok || !lt.Held || lt.Job != o.job {
 		return
 	}
-	o.rt.Poke(o.job, chaosPokeID)
+	o.p.Notify(context.Background(), o.job, "")
 }
 
-func newChaosRuntime(t testing.TB, lease converge.Lease, kv converge.KV, ns string, rec reconcile.Reconciler) *converge.Runtime {
+func newChaosRuntime(t testing.TB, mq converge.MQ, lease converge.Lease, kv converge.KV, ns string, fn func(context.Context, reconcile.ID) error) *converge.Runtime {
 	t.Helper()
-	obs := &chaosElectionObserver{job: chaosJobName}
+	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: ns})
+	if err != nil {
+		t.Fatalf("convredis: chaos producer: %v", err)
+	}
+	obs := &chaosElectionObserver{job: chaosJobName, p: p}
 	rt, err := converge.New(converge.Options{
 		Namespace: ns,
+		MQ:        mq,
 		Lease:     lease,
 		KV:        kv,
 		Observer:  obs,
@@ -84,12 +88,14 @@ func newChaosRuntime(t testing.TB, lease converge.Lease, kv converge.KV, ns stri
 	if err != nil {
 		t.Fatalf("convredis: chaos runtime: %v", err)
 	}
-	obs.rt = rt
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:             chaosJobName,
-		Reconciler:       rec,
-		RunMode:          converge.OnOneReplica,
-		AllowUnscheduled: true,
+		Name:      chaosJobName,
+		Reconcile: fn,
+		RunMode:   converge.OnOneReplica,
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
+			reconcile.Notifications(reconcile.NotificationsOpts{}),
+		},
 	}); err != nil {
 		t.Fatalf("convredis: chaos job register: %v", err)
 	}
@@ -147,7 +153,8 @@ func TestChaosChild(t *testing.T) {
 	defer client.Close()
 	kv := convredis.NewKV(client)
 	lease := convredis.NewLease(client)
-	rt := newChaosRuntime(t, lease, kv, ns, chaosHandler(kv, chaosPassStartKey(ns), chaosSleep))
+	mq := convredis.NewStreamsMQ(client, convredis.StreamsOpts{})
+	rt := newChaosRuntime(t, mq, lease, kv, ns, chaosHandler(kv, chaosPassStartKey(ns), chaosSleep))
 	if err := rt.Run(context.Background()); err != nil {
 		t.Fatalf("convredis: chaos child runtime: %v", err)
 	}
@@ -162,6 +169,7 @@ func TestChaosKillLeaderHandoff(t *testing.T) {
 	client := openReal(t)
 	kv := convredis.NewKV(client)
 	lease := convredis.NewLease(client)
+	mq := convredis.NewStreamsMQ(client, convredis.StreamsOpts{})
 	ns := fmt.Sprintf("chaos-%d", time.Now().UnixNano())
 
 	childCmd := exec.Command(os.Args[0], "-test.run=TestChaosChild$")
@@ -194,7 +202,7 @@ func TestChaosKillLeaderHandoff(t *testing.T) {
 	}
 	<-childDone
 
-	rt := newChaosRuntime(t, lease, kv, ns, chaosHandler(kv, chaosCompletionKey(ns), 0))
+	rt := newChaosRuntime(t, mq, lease, kv, ns, chaosHandler(kv, chaosCompletionKey(ns), 0))
 	rtCtx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)
 	go func() { runDone <- rt.Run(rtCtx) }()

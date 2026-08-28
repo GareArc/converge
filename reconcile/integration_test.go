@@ -42,12 +42,12 @@ func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 	synced := map[reconcile.ID]int{}
 	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "workspace-credentials",
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
+		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
 			synced[id]++
 			return nil
-		}),
+		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(
 				reconcile.StringIDs(func(context.Context) ([]string, error) {
@@ -71,7 +71,7 @@ func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 	mu.Lock()
 	workspaces = append(workspaces, "ws_4")
 	mu.Unlock()
-	convergetest.AdvanceUntil(t, h.Clock, time.Hour, func() bool {
+	convergetest.AdvanceUntil(t, h.Clock(), time.Hour, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return synced["ws_4"] >= 1
@@ -95,7 +95,7 @@ func TestTenMinuteTourPeriodic(t *testing.T) {
 		defer mu.Unlock()
 		calls++
 		return nil
-	})
+	}, reconcile.PeriodicOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestTenMinuteTourPeriodic(t *testing.T) {
 		defer mu.Unlock()
 		return calls == 1
 	})
-	convergetest.AdvanceUntil(t, h.Clock, time.Hour, func() bool {
+	convergetest.AdvanceUntil(t, h.Clock(), time.Hour, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return calls >= 2
@@ -116,65 +116,74 @@ func TestTenMinuteTourPeriodic(t *testing.T) {
 	}
 }
 
-type foreignSignal struct{}
-
-func (foreignSignal) Error() string                    { return "worker signal from a reconciler" }
-func (foreignSignal) ControlSurface() converge.Surface { return converge.SurfaceWorker }
-
-func TestForeignSignalParksImmediatelyEndToEnd(t *testing.T) {
+func TestNotifyFromAnotherBinaryReconcilesTheID(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
-	err := reconcile.Register(rt, reconcile.Spec{
-		Name: "confused",
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			return foreignSignal{}
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
+	seen := make(chan string, 4)
+	if err := reconcile.Register(rt, reconcile.Spec{
+		Name: "merchants",
+		Reconcile: func(_ context.Context, id reconcile.ID) error {
+			seen <- string(id)
+			return nil
 		},
-	})
-	if err != nil {
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
+			reconcile.Notifications(reconcile.NotificationsOpts{}),
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	convergetest.Await(t, func() bool {
-		return eventCount(h.Events(), func(e converge.Event) bool {
-			ws, ok := e.(converge.WrongSurfaceSignal)
-			return ok && ws.Job == "confused" && ws.Surface == converge.SurfaceWorker
-		}) == 1
-	})
-	convergetest.Await(t, func() bool {
-		return eventCount(h.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.IDParked)
-			return ok
-		}) == 1
-	})
-	convergetest.Await(t, func() bool {
-		for _, s := range rt.Stats() {
-			if s.Job == "confused" && s.Parked == 1 {
-				return true
-			}
+
+	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Notify(context.Background(), "merchants", "m-42"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-seen:
+		if id != "m-42" {
+			t.Fatalf("reconciled %q, want %q", id, "m-42")
 		}
-		return false
-	})
+	case <-time.After(2 * time.Second):
+		t.Fatal("notification never reached the reconciler")
+	}
 }
 
-func TestMalformedHintsCountedAndDropped(t *testing.T) {
+func TestNotificationsFromRequiresAnIDFunction(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	err := reconcile.Register(rt, reconcile.Spec{
+		Name:      "workspaces",
+		Reconcile: func(context.Context, reconcile.ID) error { return nil },
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
+			reconcile.NotificationsFrom("legacy:queue", reconcile.NotificationsOpts{}),
+		},
+	})
+	if err == nil {
+		t.Fatal("NotificationsFrom accepted with no ID function")
+	}
+}
+
+func TestMalformedNotificationsCountedAndDropped(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	var mu sync.Mutex
 	var got []reconcile.ID
 	err := reconcile.Register(rt, reconcile.Spec{
 		Name: "member-sync",
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
+		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
 			got = append(got, id)
 			return nil
-		}),
-		AllowUnscheduled: true,
+		},
 		Triggers: []reconcile.Trigger{
-			reconcile.OnMessage("member-events", reconcile.IDFromJSONField("workspace_id"), reconcile.OnMessageOpts{}),
+			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
+			reconcile.NotificationsFrom("member-events", reconcile.NotificationsOpts{ID: reconcile.IDFromJSON("workspace_id")}),
 		},
 	})
 	if err != nil {
@@ -190,8 +199,8 @@ func TestMalformedHintsCountedAndDropped(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool {
 		return eventCount(h.Events(), func(e converge.Event) bool {
-			wd, ok := e.(converge.WakeDiscarded)
-			return ok && wd.Reason == converge.DiscardUndecodable
+			nd, ok := e.(converge.NotificationDropped)
+			return ok && errors.Is(nd.Err, converge.ErrNotificationUndecodable)
 		}) == 1
 	})
 	convergetest.Await(t, func() bool {
@@ -199,6 +208,43 @@ func TestMalformedHintsCountedAndDropped(t *testing.T) {
 		defer mu.Unlock()
 		return len(got) == 1 && got[0] == "ws_5"
 	})
+}
+
+func TestScheduleRunsWithoutKV(t *testing.T) {
+	clock := convergetest.NewClock(start)
+	rt, err := converge.New(converge.Options{Lease: inmem.NewLeaseWithClock(clock), Clock: clock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := make(chan struct{})
+	var once sync.Once
+	if err := reconcile.Periodic(rt, "no-kv", reconcile.Every(time.Hour), func(context.Context) error {
+		once.Do(func() { close(ran) })
+		return nil
+	}, reconcile.PeriodicOpts{}); err != nil {
+		t.Fatalf("Register with Options.KV nil: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx) }()
+
+	select {
+	case <-ran:
+	case err := <-done:
+		t.Fatalf("Run returned %v with Options.KV nil; the last fire must fall back to in-process memory", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("a Schedule trigger never fired with Options.KV nil")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run = %v, want nil on clean shutdown", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
 }
 
 func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
@@ -217,7 +263,7 @@ func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 			defer mu.Unlock()
 			calls++
 			return nil
-		}); err != nil {
+		}, reconcile.PeriodicOpts{}); err != nil {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -284,180 +330,4 @@ func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 		clock.Advance(10 * time.Second)
 		time.Sleep(2 * time.Millisecond)
 	}
-}
-
-func TestPokeRevivesParkedID(t *testing.T) {
-	h := convergetest.NewWith(t, convergetest.Options{Namespace: "it"})
-	rt := h.Build(t)
-	var mu sync.Mutex
-	healed := false
-	err := reconcile.Register(rt, reconcile.Spec{
-		Name:            "flaky",
-		DeadLetterAfter: 1,
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			mu.Lock()
-			defer mu.Unlock()
-			if !healed {
-				return errors.New("downstream broken")
-			}
-			return nil
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(
-				reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
-					return []reconcile.ID{"app_13"}, nil
-				}),
-				reconcile.Every(time.Hour),
-			),
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Runtime(t)
-	convergetest.Await(t, func() bool {
-		return eventCount(h.Events(), func(e converge.Event) bool {
-			dl, ok := e.(converge.IDParked)
-			return ok && dl.Job == "flaky" && dl.ID == "app_13"
-		}) == 1
-	})
-	mu.Lock()
-	healed = true
-	mu.Unlock()
-	if err := rt.Poke("flaky", "app_13"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool { return successes(h.Events, "flaky")() >= 1 })
-}
-
-func TestUnknownJobPokeFails(t *testing.T) {
-	h := convergetest.NewWith(t, convergetest.Options{Namespace: "it"})
-	rt := h.Build(t)
-	if err := reconcile.Periodic(rt, "only-job", reconcile.Every(time.Hour), func(context.Context) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	h.Runtime(t)
-	if err := rt.Poke("no-such-job", "x"); err == nil {
-		t.Fatal("poke on an unknown job must error")
-	}
-}
-
-func TestScenarioBStaleMarkAppliedRefusedThenConverges(t *testing.T) {
-	h := convergetest.New(t)
-	rt := h.Build(t)
-	tr := reconcile.NewTracker(h.KV, "deploy")
-	ctx := context.Background()
-	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	var applied []reconcile.Version
-	raceOnce := true
-	err := reconcile.Register(rt, reconcile.Spec{
-		Name:     "deploy",
-		Versions: tr,
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			v, err := tr.Latest(ctx, id)
-			if err != nil {
-				return err
-			}
-			mu.Lock()
-			race := raceOnce
-			raceOnce = false
-			mu.Unlock()
-			if race {
-				if _, err := tr.MarkChanged(ctx, id); err != nil {
-					return err
-				}
-			}
-			res := tr.MarkApplied(ctx, id, v)
-			if res == nil {
-				mu.Lock()
-				applied = append(applied, v)
-				mu.Unlock()
-			}
-			return res
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
-				return []string{"app-1"}, nil
-			}), reconcile.Every(time.Hour)),
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Drain(t)
-	convergetest.AdvanceUntil(t, h.Clock, 100*time.Millisecond, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(applied) == 1
-	})
-	mu.Lock()
-	got := applied[0]
-	mu.Unlock()
-	if got != 2 {
-		t.Fatalf("converged at version %d; want 2", got)
-	}
-	if n := eventCount(h.Events(), func(e converge.Event) bool {
-		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.Err != nil
-	}); n != 0 {
-		t.Fatalf("ErrOutdated must not count as failure: %d failed RunCompleted events", n)
-	}
-}
-
-func TestScenarioBParkedRevivesOnMarkChanged(t *testing.T) {
-	h := convergetest.New(t)
-	rt := h.Build(t)
-	tr := reconcile.NewTracker(h.KV, "deploy")
-	ctx := context.Background()
-	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	broken := true
-	converged := false
-	err := reconcile.Register(rt, reconcile.Spec{
-		Name:            "deploy",
-		Versions:        tr,
-		DeadLetterAfter: 2,
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			mu.Lock()
-			defer mu.Unlock()
-			if broken {
-				return errors.New("runner rejects config")
-			}
-			converged = true
-			return nil
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.StringIDs(func(context.Context) ([]string, error) {
-				return []string{"app-1"}, nil
-			}), reconcile.Every(time.Minute)),
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.Drain(t)
-	convergetest.AdvanceUntil(t, h.Clock, time.Second, func() bool {
-		return eventCount(h.Events(), func(e converge.Event) bool {
-			_, ok := e.(converge.IDParked)
-			return ok
-		}) == 1
-	})
-	mu.Lock()
-	broken = false
-	mu.Unlock()
-	h.Clock.Advance(time.Minute)
-	convergetest.AssertStable(t, func() bool { mu.Lock(); defer mu.Unlock(); return !converged })
-	if _, err := tr.MarkChanged(ctx, "app-1"); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.AdvanceUntil(t, h.Clock, time.Minute, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return converged
-	})
 }

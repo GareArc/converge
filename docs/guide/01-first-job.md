@@ -1,143 +1,205 @@
-# 1. A first job
+# Your first job
 
-You have something that needs doing every so often — syncing inventory with the warehouse,
-expiring sessions, pulling a table back into line with an upstream — and you
-have more than one copy of your service running. Cron gives you the "every so
-often" and stops there: all your copies fire at once, and keeping that from
-happening becomes your problem. converge gives you both halves. You write the
-function and say how often; converge calls it, and converge decides which copy
-of your service calls it. Run three copies of your service and one of them
-does the work, not all three. By the end of this chapter you will have the
-function running, with nothing installed.
+A **job** is one piece of background work you hand to converge: a function,
+a name you choose, and two declarations — when it runs, and what it is
+about. converge takes it from there, on every replica of your service.
 
-## The code
+There are two kinds of job. Which kind you have is not a matter of taste,
+and you do not have to know the library to decide it.
 
-The whole program:
+## One question decides everything
 
-```go title=examples/guide/01-first-job/main.go
+> **If this message were lost, would anything be wrong?**
+
+**No — you want [reconcile](../glossary.md#reconcile).** The truth already
+lives in your own store. Your function re-reads it and makes the world
+match. A message can only ever say *look at this one sooner*, so losing one
+costs you a little latency and never correctness. You can lose every message
+converge sends and the job still comes out right, because the job also walks
+the whole store on a **schedule**.
+
+**Yes — the message is the work.** Something happened, a side effect has to
+follow, and re-reading your database will not tell you what it was: send
+this receipt, deliver this webhook. converge keeps the message, hands it to
+your function, and hands it over again if your function fails. When the
+retries are spent it puts the message on the **shelf** — a durable store
+where a person can look at it — rather than dropping it. That kind of job is
+built from a **task**, a typed contract shared by the code that sends the
+message and the code that handles it, and [chapter 4](04-worker.md) is about
+it.
+
+Answer the question first. It settles what starts a run, what your function
+is handed, and what a failure costs.
+
+## A job that runs every night
+
+Billing generates invoices at 00:05 Tokyo time. If the message that says
+"it's 00:05" went missing, nothing would be wrong — the accounts that need
+invoicing are still sitting in the database, and the next run will find
+them. No: so this is a reconcile job.
+
+Here is the whole program.
+
+```go title=examples/scenarios/a01-nightly-invoices/main.go
 package main
 
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
+	"os"
+	"slices"
+	"sync"
 	"time"
+	_ "time/tzdata"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/reconcile"
 )
 
+const demoWindow = 2 * time.Second
+
+type ledger struct {
+	mu     sync.Mutex
+	due    []string
+	issued []string
+}
+
+func newLedger(due ...string) *ledger { return &ledger{due: due} }
+
+func (l *ledger) generateDueInvoices(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.issued = append(l.issued, l.due...)
+	l.due = nil
+	return nil
+}
+
+func (l *ledger) invoiced() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.issued)
+}
+
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		return err
+	}
+
 	rt, err := converge.New(converge.Options{
-		Lease: inmem.NewLease(),
-		KV:    inmem.NewKV(),
+		Namespace: "billing",
+		MQ:        inmem.NewMQ(),
+		Lease:     inmem.NewLease(),
+		KV:        inmem.NewKV(),
+		Observer:  converge.LogObserver(slog.Default()),
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	err = reconcile.Periodic(rt, "sync-inventory", reconcile.Every(2*time.Second), func(ctx context.Context) error {
-		fmt.Println("syncing inventory with the warehouse")
-		return nil
-	})
+	billing := newLedger("acct-1001", "acct-1002", "acct-1003")
+
+	err = reconcile.Periodic(rt, "generate-invoices",
+		reconcile.Cron("5 0 * * *", reconcile.CronOpts{Location: tokyo}),
+		billing.generateDueInvoices,
+		reconcile.PeriodicOpts{Timeout: 30 * time.Minute})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), demoWindow)
 	defer cancel()
 	if err := rt.Run(ctx); err != nil {
-		log.Fatal(err)
+		return err
 	}
+
+	fmt.Printf("invoices issued: %v\n", billing.invoiced())
+	return nil
 }
 ```
 
-## Run it
+Run it:
 
 ```sh
-cd examples && go run ./guide/01-first-job
+cd examples
+go run ./scenarios/a01-nightly-invoices
 ```
 
-```
-syncing inventory with the warehouse
-syncing inventory with the warehouse
-syncing inventory with the warehouse
-syncing inventory with the warehouse
-```
-
-## What happened
-
-1. The first line appeared straight away: converge did not wait out the first
-   interval before calling your function. That is what happens the first time
-   a [job](../glossary.md#job) ever runs — after that converge works from a
-   record of when the job last ran, which [chapter 6](06-production.md)
-   puts somewhere it survives a restart.
-2. Three more followed, one every two seconds — at roughly two, four and six
-   seconds in.
-3. At seven seconds the context deadline passed, `rt.Run` returned, and the
-   shell got its prompt back with status 0. Four lines and not five because
-   the deadline landed between ticks. Had `rt.Run` returned an error,
-   `log.Fatal` would have printed it and exited 1 — which is what happens
-   further down this page.
-
-## The principle
-
-The two `inmem` lines are converge's own bookkeeping: where it writes down
-which job last ran when, and which copy of your service is currently in
-charge. You never read or write it yourself. Here it is kept in memory, which
-is why this example needs nothing installed — and why it only holds up inside
-one process, because there is nothing there for a second copy of your service
-to read.
-
-Swapping those two lines for Redis is the whole of
-[chapter 6](06-production.md): with one shared place to keep the bookkeeping,
-every copy of your service reads the same answer to "who is in charge", and
-the promise at the top of this page holds across the deployment rather than
-inside one process. How converge picks the one, how to ask for all of them
-instead, and why your function should still be safe to run twice: that is
-[chapter 5](05-run-modes.md).
-
-## Other shapes
-
-`reconcile.Periodic` is the short form: one function, called on an interval,
-looking after exactly one thing. The [reconcile](../glossary.md#reconcile) in
-the name is converge's word for work that fixes drift — your function reads
-how things actually are and puts them right, rather than being handed a piece
-of work and told to do it. Most work of that kind looks after many things at
-once, one per customer or one per product, and that is the general form:
-[chapter 2](02-ids.md).
-
-## Try breaking it
-
-Delete the `KV: inmem.NewKV(),` line and run it again:
+Timestamps and run durations are trimmed from the log lines below.
 
 ```text
-2026/08/24 16:57:56 reconcile: job "sync-inventory": Schedule needs Options.KV
-exit status 1
+INFO converge: lease changed job=generate-invoices held=true
+INFO converge: run completed job=generate-invoices id="" attempt=1 outcome=succeeded
+INFO converge: lease changed job=generate-invoices held=false
+invoices issued: [acct-1001 acct-1002 acct-1003]
 ```
 
-No lines, no partial run. converge checks that everything registered has what
-it needs the moment `rt.Run` starts, and stops there: with nowhere to write
-down when this job last ran, it will not guess and start ticking anyway. The
-`Lease:` line is checked the same way — delete that one instead and the
-failure has the same shape, naming `Options.Lease`, because converge cannot
-tell which copy of your service is in charge and will not let all of them run
-the work by default.
+It ran immediately, not at 00:05. converge had no record of ever having run
+this job, so it ran it once on startup and then went back to waiting for
+00:05. That rule has no options: if one or more scheduled times passed while
+the job was not running, the job runs once when it comes back, and then
+carries on as normal.
 
-In production this shows up as a process that exits at startup with one log
-line naming the option it is missing — never as a job that silently never
-runs.
+## Reading the program
 
-## A caveat
+**`converge.New`** is where converge gets everything it needs from outside
+your process — `MQ`, `Lease`, `KV`, and an `Observer` for events. The
+`inmem` package supplies all four in process, which is why this program
+needs nothing installed. [Chapter 6](06-production.md) swaps in Redis
+without touching the job.
 
-`Every(2*time.Second)` is here so the example finishes while you are watching
-it, and the seven-second deadline is there so it exits at all. Real work runs
-on something more like `Every(time.Hour)`, and a real service sets no deadline:
-you pass `rt.Run` a context that is cancelled when your process is asked to
-shut down, and it blocks until then. Carry the two-second interval into
-production by accident and you will call your function eighteen hundred times
-an hour.
+**`reconcile.Periodic`** registers the job under the name
+`generate-invoices`, with the **schedule** it runs on, the function, and its
+options. The name is not decoration: it is how other code addresses this
+job, and it is what appears in every log line and every metric. `Namespace`
+scopes it, so two services on one Redis can each have a
+`generate-invoices` without colliding.
 
-Next: [2. Many things to check](02-ids.md) — one function looking after
-ten thousand things instead of one.
+**`reconcile.Cron("5 0 * * *", reconcile.CronOpts{Location: tokyo})`** is
+the schedule. Five cron fields, in a location you name; `reconcile.Every(d)`
+is the other form. There is exactly one schedule per job and every reconcile
+job needs one, because the schedule is the part that makes the job correct.
+
+**`Timeout: 30 * time.Minute`** is the job's **time limit**: how long one
+run may take before converge cancels the context it handed your function. A
+call that hangs on a dead dependency gives the job back instead of holding
+it forever. Leave it unset and a run may take as long as it takes — that is
+what zero means here, not "no time at all".
+
+**`rt.Run(ctx)`** starts every registered job and blocks until `ctx` is
+cancelled. It returns `nil` on a clean shutdown; a non-`nil` return is
+always a real failure, so it is safe to treat as one.
+
+You did not say where this job runs, so converge ran it on **one replica**.
+Start four copies of this service and 00:05 produces one set of invoices,
+not four. Saying it should run on **all replicas** instead is one field, and
+[chapter 5](05-run-modes.md) is about when you would want that.
+
+## How other code reaches a job
+
+Code elsewhere in your system — an HTTP handler, a CLI, another service —
+can say exactly two things to a job, and nothing else:
+
+- **`Notify`** — *look at this one sooner.*
+  [Chapter 3](03-notifications.md).
+- **`Enqueue`** — *do this.* [Chapter 4](04-worker.md).
+
+Both address the job by the name you registered it under. The message lands
+in that job's **inbox**, which converge names and owns; you never name one
+and you never route anything. Nothing else about a job — how often it runs,
+how long a run may take, when it stops — can be set from outside. All of it
+is declared where the job is registered, which is the file you just read.
+
+## Next
+
+[Chapter 2](02-ids.md) keeps the same shape and gives one job ten thousand
+things to look after, one at a time.

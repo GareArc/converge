@@ -1,224 +1,138 @@
-# 5. More than one copy
+# Where a job runs
 
-You deploy three copies of your service, the way chapter 1 assumed without
-saying how. Register `refresh-price-cache` — the job below, one function that
-rebuilds an in-memory cache every second — on all three copies exactly as
-chapters 1 through 4 taught, and with nothing deciding between them all three
-would run it: three rebuilds a second for one cache, not one. This chapter is
-the dial that decides how many of your copies actually do the work for a job
-like this one, and why converge already set it for you without asking. By the
-end you will have run the same job two different ways and watched the
-difference in how many times it actually happened.
+Your service runs as four replicas. You register one job. How many times
+does the work happen?
 
-## The code
+That is the one declaration both kinds of job share, and it has three
+possible answers. Before the three, though, one thing converge deliberately
+does not do.
 
-The whole program:
+## The thing converge will not do
 
-```go title=examples/guide/05-run-modes/main.go
-package main
+**converge does not split one [reconcile](../glossary.md#reconcile) job's
+[IDs](../glossary.md#id) across your replicas.** Ten thousand orders on four
+replicas does not mean two and a half thousand each. One replica does all
+ten thousand, and `Spec.Concurrency` is how many of them it does at once.
 
-import (
-	"context"
-	"fmt"
-	"log"
-	"sync"
-	"sync/atomic"
-	"time"
+This is a decision, not a gap. Sharding IDs across replicas means agreeing
+who owns which shard, rebalancing when a replica dies, and a whole class of
+split-brain question that converge would then have to answer honestly on
+every backend it supports. The answer it gives instead is: reconcile work is
+usually waiting on something, so run more of it inside one process. If a
+single replica genuinely cannot keep up with your ID source, converge is not
+the tool for that job, and it would rather tell you than pretend.
 
-	"github.com/GareArc/converge"
-	"github.com/GareArc/converge/inmem"
-	"github.com/GareArc/converge/reconcile"
-)
+Worker jobs *are* spread across replicas — that is what the third value
+below is for. The non-goal is specific to splitting one reconcile job's IDs.
 
-func replica(runs *atomic.Int64, lease converge.Lease, kv converge.KV, mode converge.RunMode) *converge.Runtime {
-	rt, err := converge.New(converge.Options{Lease: lease, KV: kv})
-	if err != nil {
-		log.Fatal(err)
-	}
-	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "refresh-price-cache",
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			runs.Add(1)
-			return nil
-		}),
-		RunMode:  mode,
-		Triggers: []reconcile.Trigger{reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Second))},
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	return rt
-}
+## Three values
 
-func runTwoCopies(mode converge.RunMode) (int64, int64) {
-	lease, kv := inmem.NewLease(), inmem.NewKV()
-	var first, second atomic.Int64
-	runtimes := []*converge.Runtime{
-		replica(&first, lease, kv, mode),
-		replica(&second, lease, kv, mode),
-	}
+A **run mode** is who runs a job across your replicas. It is
+`Spec.RunMode` on a [reconcile](../glossary.md#reconcile) job and
+`HandleOpts.RunMode` on a [worker](../glossary.md#worker) job, and there are
+three of them.
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
-	defer cancel()
+| Value | Who runs it | Takes a [lease](../glossary.md#lease) |
+| --- | --- | --- |
+| `converge.OnOneReplica` | exactly one replica at a time | yes |
+| `converge.OnAllReplicas` | every replica, independently | no |
+| `converge.Competing` | every replica, sharing out the messages | no |
 
-	var wg sync.WaitGroup
-	for _, rt := range runtimes {
-		wg.Add(1)
-		go func(rt *converge.Runtime) {
-			defer wg.Done()
-			if err := rt.Run(ctx); err != nil {
-				log.Println(err)
-			}
-		}(rt)
-	}
-	wg.Wait()
-	return first.Load(), second.Load()
-}
+**One rule governs all three: `Competing` is a worker mode.** Setting it on
+a reconcile job is refused when you register it, with the reason in the
+error. It is illegal for a reason that is not arbitrary: `Competing` means
+the replicas split a stream of messages between them, and on the reconcile
+surface a message is only a [notification](../glossary.md#notification).
+Splitting notifications is meaningless — the schedule already covers every
+ID on whichever replica holds the job.
 
-func main() {
-	a, b := runTwoCopies(converge.OnOneReplica)
-	fmt.Printf("OnOneReplica: %d runs in total, %d of them on a single copy\n", a+b, max(a, b))
+That is the only rule about which value goes with which kind of job. It is
+not converge's only registration-time refusal, though: there is a second one
+and it belongs to `OnAllReplicas`, below.
 
-	a, b = runTwoCopies(converge.OnAllReplicas)
-	fmt.Printf("OnAllReplicas: %d runs in total, %d on each copy\n", a+b, a)
-}
+The defaults follow from the same idea. Reconcile jobs default to
+`OnOneReplica`, because a reconcile job's work is defined by your store and
+running it four times over just does the same work four times. Worker jobs
+default to `Competing`, because messages are the work and splitting them is
+how you go faster.
+
+## OnOneReplica, and what a lease is for
+
+Under `OnOneReplica` the replicas race for a lease. Whichever one takes
+it runs the job; the others sit and wait. If the holder dies, the lease
+expires — after `Options.LeaseTTL`, 30 seconds by default — and another
+replica picks the job up.
+
+A lease is an efficiency device and never a correctness device. There is a
+window during which a replica believes it holds a lease that has in fact
+expired elsewhere, and converge does not pretend otherwise. Duplicate work
+is rare; it is not impossible. Correctness comes from your function being
+safe to run twice, which is exactly what a reconcile function already is.
+
+## OnAllReplicas, for things that live in the process
+
+Some work is per-process by nature. A feature-flag cache lives in one
+replica's memory, so every replica has to refresh its own:
+
+```go
+err = reconcile.Periodic(rt, "flag-cache", reconcile.Every(10*time.Second), flags.reload,
+    reconcile.PeriodicOpts{RunMode: converge.OnAllReplicas})
 ```
 
-`replica` builds one copy of your service the way chapter 1 did — its own
-`converge.Runtime`, registering `refresh-price-cache` through `reconcile.Register`
-the way chapter 2 introduced — except this time two copies share the same
-`Lease` and the same `KV`, standing in for the one shared Redis every real
-deployment's copies would actually use. `runTwoCopies` starts both, gives
-them two and a half seconds against a schedule that fires every second, and
-waits for them to finish. `main` calls it twice: once under
-`converge.OnOneReplica`, once under `converge.OnAllReplicas`, and prints how
-many times `refresh-price-cache` actually ran each time.
+That is
+[`examples/scenarios/a10-flag-cache/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a10-flag-cache/main.go),
+which runs two replicas inside one process so you can watch both of them
+reload.
 
-## Run it
+`OnAllReplicas` takes no lease and keeps no shared record of when it last
+ran. On the worker surface it is deliberately narrow, and here is the second
+refusal: **a broadcast worker job cannot set a `Retry` policy**, and
+converge rejects that registration rather than accepting a promise it could
+not keep. A failed run on a broadcast job is discarded — every replica had
+its own copy and acknowledged it for itself, so there is no redelivery to
+wait for and nothing durable to set aside. A retry budget would have nowhere
+to land. Use `OnAllReplicas` for cache warming and local state, not for work
+that must not be lost.
 
-```sh
-cd examples && go run ./guide/05-run-modes
+## Competing, the worker default
+
+```go
+var trackingEvent = worker.NewTask[TrackingEvent]("tracking-event", worker.TaskOpts{Version: 2})
+err = worker.Handle(rt, trackingEvent, shipments.applyEvent, worker.HandleOpts{Concurrency: 32})
 ```
 
-```
-OnOneReplica: 3 runs in total, 3 of them on a single copy
-OnAllReplicas: 6 runs in total, 3 on each copy
-```
+No `RunMode` here, so this is `Competing`: every replica reads the same
+[inbox](../glossary.md#inbox), each message goes to exactly one of them, and
+adding replicas adds throughput. `Concurrency` is per replica on top of that
+— 32 in flight each, times however many replicas you run. That is
+[`examples/scenarios/a09-tracking-events/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a09-tracking-events/main.go).
 
-## What happened
+Nothing about ordering is promised, by converge or by this run mode. Two
+messages for the same shipment can be handled at the same time, on different
+replicas, in either order — which is why `applyEvent` in that program compares
+timestamps before it writes. If your handler needs "the latest one wins",
+write that yourself.
 
-1. Nothing printed for about two and a half seconds: the first
-   `runTwoCopies` call, run under `converge.OnOneReplica`, doesn't print
-   anything itself — it only counts.
-2. Then the first line: `OnOneReplica: 3 runs in total, 3 of them on a
-   single copy`. Three ticks happened in that window — roughly at zero, one,
-   and two seconds — and every one of them landed on the same copy; the
-   other copy's own count never left zero.
-3. Nothing printed for another two and a half seconds, while the second
-   call ran the same two copies again, this time under
-   `converge.OnAllReplicas`.
-4. Then the second line: `OnAllReplicas: 6 runs in total, 3 on each copy`.
-   The same three ticks, over the same window — but now both copies ran
-   `refresh-price-cache` on every one of them: three runs each, six in total, not
-   three.
-5. `main` returned, and the process exited with status 0.
+## What each run mode asks of your backend
 
-## The principle
+A run mode is a demand on the transport, and converge checks it when the
+job starts rather than when the first message arrives:
 
-Chapter 1's two `inmem` lines included a [lease](../glossary.md#lease):
-converge's own record of which copy of your service is currently in charge
-of a job. Under `converge.OnOneReplica` — the default for every
-[reconcile](../glossary.md#reconcile) job, including `refresh-price-cache` here —
-every copy tries to take that lease when it starts. Whichever copy gets it
-first holds it, runs the schedule, and renews it on a timer to keep holding
-it; the other copy tries too, finds the lease already taken, and does not
-run the schedule at all while that stays true — which is why its own count
-sat at zero for the whole run, not because it saw the work already done,
-but because it never got to look. That is the mechanism chapter 1 promised
-and did not name: not a vote between copies, not any copy checking what the
-others are doing, just one copy holding something the rest cannot get.
+- `Competing` needs the backend to support consumer groups.
+- `OnAllReplicas` needs the backend to support broadcast.
+- `OnOneReplica` needs `Options.Lease`.
 
-`converge.OnOneReplica` is one of three [run mode](../glossary.md#run-mode)
-values, and it is the one you get by not choosing: leave `RunMode` unset on
-a reconcile job, the way chapters 1 through 3 did, and that is what you
-already had. `refresh-price-cache` above sets it explicitly only so that `main` can
-run the same job both ways. `converge.OnAllReplicas`, the one this chapter's
-second run used, is the opposite choice — it skips the lease entirely, so
-every copy runs the schedule on its own, with nothing coordinating between
-them, which is exactly why the count doubled instead of staying flat.
+A worker job that is *not* broadcast asks for two more, whichever value it
+uses: `Options.KV`, because that is where its [shelf](../glossary.md#shelf)
+lives, and an MQ that can publish a message with a delay, because that is
+how `Snooze` republishes one. (Ordinary retries do not need it — those go
+back through the transport as a negative acknowledgement.)
 
-## Other shapes
+Redis Streams and the `inmem` backend satisfy all of it. If a backend does
+not, `rt.Run` fails at startup with a message naming the job and the missing
+capability — not quietly, and not at 3am when the first message lands.
 
-There is a third run mode, `converge.SplitAcrossReplicas`: instead of one
-copy doing all the work, or every copy doing all of it, the work is
-divided between them — each message goes to exactly one copy, chosen by
-the queue itself, not by converge. In v1 that exists only on the worker
-[surface](../glossary.md#surface) — which of converge's two kinds of job
-this one is — where the queue's own consumer groups do the dividing. Set
-`RunMode: converge.SplitAcrossReplicas` on a reconcile spec — including
-`refresh-price-cache` above — and converge refuses to register the job at all,
-the same way it refused `sync-inventory` in chapter 3 without
-`AllowUnscheduled`: there is no list here for converge to divide the way a
-queue divides messages between consumers, so v1 does not offer it on this
-surface.
+## Next
 
-`converge.OnAllReplicas` means something different again on the worker
-surface (chapter 4) than it does here. There, every copy gets its own
-delivery of every message straight from the queue, with nothing shared
-between them, and that delivery is at-most-once: no dead-lettering, and no
-retry. Registering a `Retry` policy alongside `OnAllReplicas` is itself a
-registration error, the same shape as the `SplitAcrossReplicas` refusal
-above; and if the handler does return an error, converge does not
-redeliver the message or set it aside in a
-[dead-letter](../glossary.md#dead-letter-dlq) queue — that copy simply gets
-no further attempt at it. `OnAllReplicas` is for work each copy is meant to
-do for itself, like a local cache; a message meant to happen exactly once,
-like chapter 4's `charge-order`, is the wrong job for it.
-
-## Try breaking it
-
-Take `replica` and force `converge.OnAllReplicas` regardless of what is
-passed in, and give `refresh-price-cache` something with a real consequence
-instead of a counter: an invoice ledger standing in for a real database
-row, incremented and printed on every run. Run two copies of that against
-the same one-second schedule for two and a half seconds:
-
-```
-issuing invoice #1
-issuing invoice #2
-issuing invoice #4
-issuing invoice #3
-issuing invoice #5
-issuing invoice #6
-total invoices issued: 6
-```
-
-Three ticks, six invoices: on every tick, both copies ran the job and both
-added to the same ledger, so whatever real system that ledger stood for
-gets billed twice for every event it should have billed once. Nothing
-crashed and nothing logged an error — this is a program working exactly as
-told, giving a wrong answer. converge cannot tell this case apart from the
-in-memory cache `refresh-price-cache` stood for up to now, where every copy doing
-its own work is correct; choosing the right run mode is how you tell it
-apart. Notice, too, that in the run behind this transcript `#4` printed
-before `#3` — two copies writing to the same thing with nothing
-coordinating the order between them, not even that.
-
-## A caveat
-
-`converge.OnOneReplica` does not mean one copy is in charge forever,
-without exception. The lease that holds it has a lifetime, renewed on a
-timer for as long as the holder keeps running; if the holder stalls
-mid-pass, or dies without releasing it, the lease simply stops being
-renewed and expires on its own, and another copy picks it up on its next
-attempt. For a moment around that handover, the previous holder can still
-be finishing a run on the same ID the new holder is about to start on —
-`OnOneReplica` makes duplicate work rare, not impossible. A handler still
-has to be safe to run twice regardless of which run mode you chose;
-[7. Stale writes](07-versions.md) is how you protect a write against
-exactly that, for the cases where "probably fine" is not good enough.
-
-Next: [6. Going to production](06-production.md) — replacing the two
-in-memory lines chapter 1 started with, so the lease and the schedule's own
-bookkeeping are shared across real, separate processes, not goroutines in
-one.
+[Chapter 6](06-production.md) takes everything so far off `inmem` and onto
+Redis, and covers what you can see once it is running.

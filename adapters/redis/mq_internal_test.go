@@ -74,3 +74,35 @@ func TestEntryIDAdvanced(t *testing.T) {
 		})
 	}
 }
+
+func TestFindGroupBacklogReadsAMissingLagFieldAsUnknown(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry any
+	}{
+		{
+			name:  "resp2",
+			entry: []any{"name", "converge", "consumers", int64(1), "pending", int64(2), "last-delivered-id", "1700000000000-0"},
+		},
+		{
+			name: "resp3",
+			entry: map[any]any{
+				"name":              "converge",
+				"consumers":         int64(1),
+				"pending":           int64(2),
+				"last-delivered-id": "1700000000000-0",
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			g, found := findGroupBacklog([]any{c.entry}, "converge")
+			if !found {
+				t.Fatal("the group is in the reply and must be found")
+			}
+			if g.lagKnown {
+				t.Fatalf("lag = %d reported as known; Redis 6.2 sends no lag field and nothing may stand in for it", g.lag)
+			}
+		})
+	}
+}

@@ -1,46 +1,154 @@
-# Outbox and inbox recipes
+# Outbox and inbox
 
-> Assumes [chapter 04, the other kind of job](../guide/04-worker.md) and
-> [chapter 05, more than one copy](../guide/05-run-modes.md).
+> Assumes [chapter 3](../guide/03-notifications.md) and
+> [chapter 4](../guide/04-worker.md). This is the one page here with no
+> scenario of its own, because the half that matters is a database
+> transaction converge does not own. The pieces are
+> [`a06-transactional-email`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a06-transactional-email/main.go),
+> which is the worker the outbox feeds, and
+> [`a14-foreign-queue`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go),
+> which is what you write instead when their message only names something.
 
-Two recipes for the same underlying problem: converge's queue boundary
-doesn't span your database transaction. Both compose the two surfaces —
-worker for the durable unit of work,
-[reconcile](../glossary.md#reconcile) for the drain loop.
+One sentence on vocabulary first, because two words collide here. converge
+already uses **[inbox](../glossary.md#inbox)** for the queue a job reads —
+the one it names after the job. The *inbox table* on this page is the second
+half of the outbox pattern and is always spelled that way. They are unrelated
+things.
 
-## Outbox
+## The problem both patterns solve
 
-*From [Scenario C](scenario-c-durable-work.md): producer-side durability.*
+converge's queue boundary does not span your database transaction, and it
+cannot: `Enqueue` is a call to your message queue, `COMMIT` is a call to your
+database, and nothing makes two remote calls atomic.
 
-A plain `Enqueue` call is not atomic with your DB transaction: a rollback
-still sends the email; a failed enqueue after commit loses it. When the
-enqueue must ride the transaction, use the outbox pattern:
+So there are two failures, and they are opposites:
 
-1. In the **same transaction** as the domain write, insert the payload into
-   an outbox table. Commit = the work durably exists.
-2. A small reconciler (`"outbox-drain"`, `OnOneReplica`, `Every(2s)` + a
-   [poke](../glossary.md#poke) from the committing handler) reads unsent
-   rows, `Enqueue`s them, marks them sent. At-least-once end to end; the
-   worker's idempotency absorbs the duplicates.
+- The enqueue succeeds and the transaction rolls back. A receipt is sent for
+  an order that does not exist.
+- The transaction commits and the enqueue fails, or the process dies between
+  them. The order exists and nobody is ever told.
 
-## Inbox
+Moving less data does not help. Enqueueing a row ID instead of the payload
+leaves the enqueue exactly where it was — outside the transaction — and the
+same two failures remain. The fix is to make the *record of the intent* part
+of the transaction, and to move it out afterwards. Both patterns below are
+that idea, once on each side of the wire, and both are the two surfaces
+composed: a [worker](../guide/04-worker.md) job for the unit of work, a
+[reconcile](../glossary.md#reconcile) job for the drain.
 
-*From [Scenario D](scenario-d-foreign-queue.md): consumer-side durability
-over a foreign queue you cannot change.*
+Neither makes anything exactly-once. Both turn "might be lost" into "might be
+delivered twice", which is the trade converge already asks you to be ready
+for.
 
-When the foreign queue carries true verbs (data you cannot re-read) and you
-*can't* change the producer, use the **inbox pattern** — the outbox's mirror
-image: a minimal consumer moves each foreign message into a durable inbox
-table (that move is the only lossy step, kept tiny), and a reconciler
-converges the table — processing each row exactly like the outbox drain
-above. You get durability and retries from the table, not from hand-rolled
-queue machinery.
+## The outbox
 
-The order inside that move is the whole pattern: **commit the inbox row
-first, acknowledge the foreign message second.** Acking first turns a crash
-between the two into a lost message; acking after the commit turns the same
-crash into a duplicate row — so key the table on a stable message ID (or an
-equivalent idempotency key) and make the insert conflict-safe
-(`INSERT … ON CONFLICT DO NOTHING`, or a duplicate-key error treated as
-success): the duplicate collapses into a no-op instead of an error, and the
-retry still acknowledges.
+**In the same transaction as the domain write, insert the payload into an
+outbox table.** Commit now means the work durably exists, and the transaction
+is back to being one call to one system.
+
+Then a small reconcile job drains it. Its IDs are the unsent rows:
+
+```go
+err = reconcile.Register(rt, reconcile.Spec{
+    Name:      "outbox-drain",
+    Reconcile: outbox.sendOne,
+    Triggers: []reconcile.Trigger{
+        reconcile.Schedule(reconcile.IDsByPage(outbox.unsent), reconcile.Every(2*time.Second)),
+        reconcile.Notifications(reconcile.NotificationsOpts{}),
+    },
+    Concurrency: 8,
+    Timeout:     30 * time.Second,
+})
+```
+
+`sendOne` re-reads the row, enqueues it, and marks it sent — **in that
+order**:
+
+```go
+func (o *outboxTable) sendOne(ctx context.Context, id reconcile.ID) error {
+    row, ok, err := o.load(ctx, string(id))
+    if err != nil || !ok || row.Sent {
+        return err
+    }
+    if err := jobs.SendReceipt.Enqueue(ctx, o.producer, row.Receipt, worker.EnqueueOpts{}); err != nil {
+        return err
+    }
+    return o.markSent(ctx, string(id))
+}
+```
+
+`Enqueue` is typed on the task's payload, so whatever form the table holds a
+row in, the drain is where it becomes a `ReceiptPayload` again.
+
+Marking sent before enqueueing would turn a crash between the two into a lost
+message. Enqueueing first turns the same crash into a duplicate, which the
+handler's idempotency absorbs — and being safe to run twice is the one thing
+converge asks of a handler anyway.
+
+The committing side then says *look at this row sooner*, after the commit and
+never before:
+
+```go
+if err := tx.Commit(); err != nil {
+    return err
+}
+p.Notify(ctx, "outbox-drain", row.ID)
+```
+
+The [notification](../glossary.md#notification) is the right tool here for
+exactly the reason it is a cheap one: it is allowed to be lost. Nothing
+downstream depends on it arriving, so its error does not have to be handled,
+retried, or logged as a failure. If it vanishes, the next
+[sweep](../glossary.md#sweep) picks the row up.
+
+Which makes the [cadence](../glossary.md#cadence) the number that matters.
+Two seconds, above, is the outbox's real latency guarantee — the worst case
+when a notification is lost — and it is not a number you can raise casually,
+because you are choosing how late a receipt may be. Two consequences follow:
+index the "unsent" predicate, since this query runs every two seconds
+forever, and use `IDsByPage` rather than a list, since a backed-up outbox is
+exactly when the table is largest.
+
+Two more details worth settling once:
+
+- **The drain runs on one replica.** That is the default
+  ([`OnOneReplica`](../guide/05-run-modes.md)) and you want it: the table is
+  the shared state, and eight IDs at a time in one process is plenty for a
+  drain.
+- **Rows are never deleted by converge.** Whether "sent" is a column you set
+  or a row you delete is yours; either way, the ID stops being listed and the
+  job forgets it existed.
+
+## The inbox table
+
+The mirror image, on the consuming side. Use it when a queue you do not own
+carries a true verb — data you cannot re-read — and you cannot change the
+producer. If their message merely names something you can look up, you do not
+want this at all; you want
+[a queue somebody else owns](foreign-queue.md), which is a much smaller
+amount of machinery.
+
+The pattern is two steps:
+
+1. **A minimal consumer moves each foreign message into a durable inbox
+   table.** That move is the only lossy step in the whole design, which is
+   why it is kept as small as possible: read, insert, acknowledge, nothing
+   else.
+2. **A reconcile job converges the table**, exactly like the outbox drain
+   above — one ID per unprocessed row, a schedule, and your own idempotent
+   handler.
+
+The order inside step 1 is the entire pattern: **commit the inbox row first,
+acknowledge the foreign message second.** Acknowledging first turns a crash
+between the two into a lost message. Committing first turns the same crash
+into a duplicate row — so key the table on their message ID, or on whatever
+idempotency key they give you, and make the insert conflict-safe
+(`INSERT ... ON CONFLICT DO NOTHING`, or a duplicate-key error treated as
+success). The duplicate collapses into a no-op and the retry still
+acknowledges.
+
+You write that consumer. `reconcile.NotificationsFrom` is *not* it, and
+reaching for it here is the mistake this section exists to prevent: that
+trigger acknowledges every delivery whether it decoded or not, and keeps
+nothing anywhere. It is the right answer when losing a message costs latency
+and the wrong one when losing a message costs the message.

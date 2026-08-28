@@ -12,10 +12,11 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
+	"github.com/GareArc/converge/internal/clockctx"
+	"github.com/GareArc/converge/internal/hook"
 	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/mw"
 	"github.com/GareArc/converge/internal/sig"
-	"github.com/GareArc/converge/internal/tokenbucket"
 )
 
 const (
@@ -24,37 +25,42 @@ const (
 )
 
 type config struct {
-	name             string
-	rec              Reconciler
-	triggers         []Trigger
-	concurrency      int
-	runMode          converge.RunMode
-	deadLetterAfter  int
-	versions         VersionSource
-	rateLimit        converge.Rate
-	middleware       []converge.Middleware
-	allowUnscheduled bool
-	paused           bool
-	single           bool
+	name        string
+	fn          func(ctx context.Context, id ID) error
+	triggers    []Trigger
+	concurrency int
+	runMode     converge.RunMode
+	timeout     time.Duration
+	versions    VersionSource
+	middleware  []converge.Middleware
+	single      bool
+	until       converge.StopCondition
 }
 
 type engine struct {
 	cfg       config
 	deps      converge.JobDeps
-	limit     *tokenbucket.Bucket
 	handler   converge.Handler
-	parks     parkStore
 	ready     chan struct{}
 	readyOnce sync.Once
 
-	mu          sync.Mutex
-	queue       *wakeQueue
-	paused      bool
-	lastSuccess time.Time
-	consecFails int
-	passes      int
-	active      bool
-	opsInFlight sync.WaitGroup
+	mu             sync.Mutex
+	queue          *idQueue
+	lastSuccess    time.Time
+	lastErr        error
+	lastErrAt      time.Time
+	consecFails    int
+	passes         int
+	active         bool
+	leaseHeld      bool
+	backlog        int
+	backlogKnown   bool
+	backlogAt      time.Time
+	state          converge.State
+	sweepsInFlight sync.WaitGroup
+
+	stopCh      chan struct{}
+	destroyOnce sync.Once
 }
 
 func (e *engine) Name() string { return e.cfg.name }
@@ -65,50 +71,26 @@ func (e *engine) markReady() { e.readyOnce.Do(func() { close(e.ready) }) }
 
 func (e *engine) bindCore(deps converge.JobDeps) error {
 	e.deps = deps
-	if e.cfg.concurrency <= 0 {
-		e.cfg.concurrency = 1
-	}
 	mws := append(slices.Clone(deps.Middleware), e.cfg.middleware...)
 	final := func(ctx context.Context, r converge.Run) error {
 		return e.invoke(ctx, ID(r.ID))
 	}
 	e.handler = mw.Chain(mws, final)
-	e.limit = tokenbucket.New(e.cfg.rateLimit, deps.Clock)
-	e.parks = e.newParkStore(deps)
 	curve := backoff.Curve{Min: backoffMin, Max: backoffMax}
 	e.mu.Lock()
-	e.queue = newWakeQueue(deps.Clock, wakePolicy{
-		deadLetterAfter: e.cfg.deadLetterAfter,
-		backoff:         curve.Delay,
-		floor:           backoff.Floor,
-	}, e.paused)
+	e.queue = newIDQueue(deps.Clock, idQueuePolicy{
+		backoff: curve.Delay,
+		floor:   backoff.Floor,
+	})
 	e.mu.Unlock()
+	e.stopCh = make(chan struct{})
 	return nil
 }
 
-func (e *engine) wakeQueueRef() *wakeQueue {
+func (e *engine) idQueueRef() *idQueue {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.queue
-}
-
-func (e *engine) Poke(id string) error {
-	q := e.wakeQueueRef()
-	if q == nil {
-		return fmt.Errorf("reconcile: job %q is not running", e.cfg.name)
-	}
-	if id == "" && !e.cfg.single {
-		return fmt.Errorf("reconcile: job %q: poke needs an id", e.cfg.name)
-	}
-	if e.cfg.single {
-		id = ""
-	}
-	res := q.wake(ID(id), wakePoke)
-	if res == wakeRevived {
-		e.parks.clear(context.Background(), ID(id))
-	}
-	e.report(ID(id), res)
-	return nil
 }
 
 func (e *engine) Quiet() bool {
@@ -125,37 +107,28 @@ func (e *engine) Quiet() bool {
 	return q.quiet(e.deps.Clock.Now())
 }
 
-func (e *engine) Hint(id string) error {
-	q := e.wakeQueueRef()
+func (e *engine) Notify(id string) error {
+	q := e.idQueueRef()
 	if q == nil {
 		return fmt.Errorf("reconcile: job %q is not running", e.cfg.name)
 	}
 	if id == "" && !e.cfg.single {
-		return fmt.Errorf("reconcile: job %q: hint needs an id", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: notify needs an id", e.cfg.name)
 	}
 	if e.cfg.single {
 		id = ""
 	}
-	e.hintVia(context.Background(), q, ID(id))
+	e.notifyVia(context.Background(), q, ID(id), causeNotification)
 	return nil
 }
 
-func (e *engine) SetPaused(paused bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.paused = paused
-	if e.queue != nil {
-		e.queue.setPaused(paused)
-	}
-}
-
-func (e *engine) admitOps() (*wakeQueue, bool) {
+func (e *engine) admitSweep() (*idQueue, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if !e.active {
 		return nil, false
 	}
-	e.opsInFlight.Add(1)
+	e.sweepsInFlight.Add(1)
 	return e.queue, true
 }
 
@@ -165,12 +138,12 @@ func (e *engine) isActive() bool {
 	return e.active
 }
 
-func (e *engine) RunPassNow(ctx context.Context) error {
-	q, ok := e.admitOps()
+func (e *engine) Sweep(ctx context.Context) error {
+	q, ok := e.admitSweep()
 	if !ok {
-		return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: sweep needs the engine to be active", e.cfg.name)
 	}
-	defer e.opsInFlight.Done()
+	defer e.sweepsInFlight.Done()
 	found := false
 	for idx, t := range e.cfg.triggers {
 		st, ok := t.(*scheduleTrigger)
@@ -178,17 +151,17 @@ func (e *engine) RunPassNow(ctx context.Context) error {
 			continue
 		}
 		if !e.isActive() {
-			return fmt.Errorf("reconcile: job %q: run-pass-now needs the engine to be active", e.cfg.name)
+			return fmt.Errorf("reconcile: job %q: sweep needs the engine to be active", e.cfg.name)
 		}
 		found = true
-		cursorKey := e.key("opspass", strconv.Itoa(idx))
+		cursorKey := e.key("sweep", strconv.Itoa(idx))
 		e.deleteKey(ctx, cursorKey)
 		if !e.runPass(ctx, q, st, cursorKey) {
 			return ctx.Err()
 		}
 	}
 	if !found {
-		return fmt.Errorf("reconcile: job %q: run-pass-now needs a Schedule trigger", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: sweep needs a Schedule trigger", e.cfg.name)
 	}
 	return nil
 }
@@ -200,15 +173,38 @@ func (e *engine) Stats() converge.JobStats {
 		Job:              e.cfg.name,
 		Surface:          converge.SurfaceReconcile,
 		RunMode:          e.cfg.runMode,
+		State:            e.state,
+		LeaseHeld:        e.leaseHeld,
+		Backlog:          e.backlog,
+		BacklogKnown:     e.backlogKnown,
+		BacklogAt:        e.backlogAt,
 		LastSuccess:      e.lastSuccess,
+		LastError:        e.lastErr,
+		LastErrorAt:      e.lastErrAt,
 		ConsecutiveFails: e.consecFails,
 	}
 	if e.queue != nil {
 		c := e.queue.counts()
-		s.QueueDepth = c.depth
-		s.Parked = c.parked
+		s.InFlight = c.inFlight
+		s.Failing = c.failing
 	}
 	return s
+}
+
+func (e *engine) FailingIDs() []converge.FailingID {
+	e.mu.Lock()
+	q := e.queue
+	e.mu.Unlock()
+	if q == nil {
+		return nil
+	}
+	return q.failing()
+}
+
+func (e *engine) setLeaseHeld(held bool) {
+	e.mu.Lock()
+	e.leaseHeld = held
+	e.mu.Unlock()
 }
 
 func (e *engine) Info() converge.JobInfo {
@@ -218,52 +214,41 @@ func (e *engine) Info() converge.JobInfo {
 	if sched := scheduleSetting(e.cfg.triggers); sched != "" {
 		settings["schedule"] = sched
 	}
-	if trig := triggersSetting(e.cfg.triggers); trig != "" {
+	if trig := e.triggersSetting(); trig != "" {
 		settings["triggers"] = trig
-	}
-	if e.cfg.deadLetterAfter != 0 {
-		settings["dead-letter-after"] = strconv.Itoa(e.cfg.deadLetterAfter)
-	}
-	if !e.cfg.rateLimit.IsZero() {
-		settings["rate-limit"] = e.cfg.rateLimit.String()
 	}
 	if v := versionsSetting(e.cfg.versions); v != "" {
 		settings["versions"] = v
-	}
-	if e.cfg.allowUnscheduled {
-		settings["allow-unscheduled"] = "true"
-	}
-	e.mu.Lock()
-	q := e.queue
-	paused := e.paused
-	e.mu.Unlock()
-	if q != nil {
-		paused = q.paused()
 	}
 	return converge.JobInfo{
 		Job:      e.cfg.name,
 		Surface:  converge.SurfaceReconcile,
 		RunMode:  e.cfg.runMode,
-		Paused:   paused,
 		Settings: settings,
 	}
 }
 
-func triggerLabel(t Trigger) string {
+func (e *engine) triggerLabel(t Trigger) string {
 	switch tr := t.(type) {
 	case *scheduleTrigger:
 		return "schedule"
-	case *messageTrigger:
-		return "on-message " + tr.queue
+	case *notificationTrigger:
+		e.mu.Lock()
+		queue := tr.queue
+		e.mu.Unlock()
+		if tr.foreign {
+			return "notifications-from " + queue
+		}
+		return "notifications"
 	default:
 		return "custom"
 	}
 }
 
-func triggersSetting(triggers []Trigger) string {
-	labels := make([]string, 0, len(triggers))
-	for _, t := range triggers {
-		labels = append(labels, triggerLabel(t))
+func (e *engine) triggersSetting() string {
+	labels := make([]string, 0, len(e.cfg.triggers))
+	for _, t := range e.cfg.triggers {
+		labels = append(labels, e.triggerLabel(t))
 	}
 	return strings.Join(labels, " + ")
 }
@@ -282,60 +267,29 @@ func versionsSetting(v VersionSource) string {
 	if v == nil {
 		return ""
 	}
-	if t, ok := v.(*Tracker); ok {
-		return t.namespace
-	}
 	return "custom"
 }
 
-func (e *engine) hint(ctx context.Context, id ID) {
-	e.hintVia(ctx, e.wakeQueueRef(), id)
+func (e *engine) notify(ctx context.Context, id ID) {
+	e.notifyVia(ctx, e.idQueueRef(), id, causeSweep)
 }
 
-func (e *engine) hintVia(ctx context.Context, q *wakeQueue, id ID) {
+func (e *engine) notifyVia(ctx context.Context, q *idQueue, id ID, class queueCause) {
 	if id == "" && !e.cfg.single {
-		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, Reason: converge.DiscardEmptyID})
+		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, Err: converge.ErrNotificationEmptyID})
 		return
 	}
 	if q == nil {
 		return
 	}
-	res := q.wake(id, wakeHint)
-	if res == wakeDroppedParked && e.tryRevive(ctx, q, id) {
-		return
-	}
-	e.report(id, res)
+	e.report(id, q.add(id, class))
 }
 
-func (e *engine) tryRevive(ctx context.Context, q *wakeQueue, id ID) bool {
-	if e.cfg.versions == nil {
-		return false
-	}
-	marked, ok := e.parks.read(ctx, id)
-	if !ok {
-		return false
-	}
-	latest, err := e.cfg.versions.Latest(ctx, id)
-	if err != nil || latest <= marked {
-		return false
-	}
-	e.clearPark(ctx, id)
-	return q.wake(id, wakeVersion) == wakeRevived
-}
-
-func (e *engine) report(id ID, res wakeResult) {
-	var reason converge.WakeDiscardReason
-	switch res {
-	case wakeDroppedParked:
-		reason = converge.DiscardParked
-	case wakeDroppedPaused:
-		reason = converge.DiscardPaused
-	case wakeDroppedOverflow:
-		reason = converge.DiscardOverflow
-	default:
+func (e *engine) report(id ID, res queueResult) {
+	if res != resultDroppedOverflow {
 		return
 	}
-	e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: reason})
+	e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, ID: string(id), Err: converge.ErrInboxOverflow})
 }
 
 func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.WaitGroup) {
@@ -350,10 +304,6 @@ func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.Wa
 		}
 		id, ok := e.awaitDue(ctx)
 		if !ok {
-			return
-		}
-		if err := e.limit.Wait(ctx); err != nil {
-			e.queue.finish(id, finishNeutral, 0)
 			return
 		}
 		wg.Add(1)
@@ -399,11 +349,28 @@ func (e *engine) preRunVersion(ctx context.Context, id ID) versionSnapshot {
 	return versionSnapshot{v: v, known: true}
 }
 
+func (e *engine) versionAdvanced(ctx context.Context, id ID, snap versionSnapshot) bool {
+	if !snap.known {
+		return false
+	}
+	v, err := e.cfg.versions.Latest(ctx, id)
+	if err != nil {
+		return false
+	}
+	return v > snap.v
+}
+
 func (e *engine) runOne(hctx context.Context, id ID) {
 	start := e.deps.Clock.Now()
 	snap := e.preRunVersion(hctx, id)
 	run := converge.Run{Job: e.cfg.name, Surface: converge.SurfaceReconcile, ID: string(id)}
-	err := e.invokeChain(hctx, run)
+	runCtx := hctx
+	if e.cfg.timeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = clockctx.WithTimeout(hctx, e.deps.Clock, e.cfg.timeout)
+		defer cancel()
+	}
+	err := e.invokeChain(runCtx, run)
 	e.settle(hctx, id, err, e.deps.Clock.Now().Sub(start), snap)
 }
 
@@ -426,67 +393,55 @@ func (e *engine) invoke(ctx context.Context, id ID) (err error) {
 			err = panicErr(e.cfg.name, r)
 		}
 	}()
-	return e.cfg.rec.Reconcile(ctx, id)
+	return e.cfg.fn(ctx, id)
 }
 
 func (e *engine) settle(hctx context.Context, id ID, err error, took time.Duration, snap versionSnapshot) {
 	var (
 		kind  finishKind
 		delay time.Duration
-		wrong converge.Surface
 	)
 	s, isSig := sig.FromError(err)
 	switch {
+	case err == nil && e.versionAdvanced(hctx, id, snap):
+		kind = finishDelay
 	case err == nil:
 		kind = finishSuccess
-	case isSig && s.ControlSurface() != converge.SurfaceReconcile:
-		kind = finishForcePark
-		wrong = s.ControlSurface()
-	case isSig:
+	case isSig && isDeferralSignal(s):
+		kind = finishDelay
 		if d, ok := checkAgainDelay(s); ok {
-			kind = finishDelay
 			delay = d
-		} else if errors.Is(s, ErrOutdated) {
-			kind = finishDelay
-		} else {
-			kind = finishFailure
 		}
+	case isSig:
+		kind = finishFailure
 	case hctx.Err() != nil:
 		kind = finishNeutral
 	default:
 		kind = finishFailure
 	}
-	res := e.queue.finish(id, kind, delay)
+	res := e.queue.finish(id, kind, delay, err)
 	if !res.settled {
 		return
 	}
 	if kind == finishNeutral {
 		return
 	}
-	e.record(kind)
+	e.record(kind, err)
+	outcome, oerr := converge.Retrying, err
+	switch {
+	case err == nil:
+		outcome, oerr = converge.Succeeded, nil
+	case isSig && isDeferralSignal(s):
+		outcome, oerr = converge.Deferred, nil
+	}
 	e.deps.Observer.Observe(converge.RunCompleted{
 		Job:      e.cfg.name,
-		Surface:  converge.SurfaceReconcile,
 		ID:       string(id),
 		Attempt:  res.attempt,
 		Duration: took,
-		Err:      runErr(kind, err),
+		Outcome:  outcome,
+		Err:      oerr,
 	})
-	if kind == finishForcePark {
-		e.deps.Observer.Observe(converge.WrongSurfaceSignal{Job: e.cfg.name, ID: string(id), Surface: wrong})
-	}
-	if res.fallback {
-		e.deps.Observer.Observe(converge.BackoffFallback{Job: e.cfg.name, ID: string(id), Consecutive: backoff.NoBackoffCap + 1})
-	}
-	if res.parked {
-		e.deps.Observer.Observe(converge.IDParked{Job: e.cfg.name, ID: string(id), Failures: res.attempt, Err: err})
-		if !res.revived {
-			e.parkOrRevive(hctx, id, snap)
-		}
-	}
-	if res.droppedHint {
-		e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardParked})
-	}
 }
 
 func checkAgainDelay(s sig.Signal) (time.Duration, bool) {
@@ -499,14 +454,14 @@ func checkAgainDelay(s sig.Signal) (time.Duration, bool) {
 	return 0, false
 }
 
-func runErr(kind finishKind, err error) error {
-	if kind == finishSuccess || kind == finishDelay {
-		return nil
+func isDeferralSignal(s sig.Signal) bool {
+	if _, ok := checkAgainDelay(s); ok {
+		return true
 	}
-	return err
+	return errors.Is(s, ErrOutdated)
 }
 
-func (e *engine) record(kind finishKind) {
+func (e *engine) record(kind finishKind, err error) {
 	now := e.deps.Clock.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -514,8 +469,10 @@ func (e *engine) record(kind finishKind) {
 	case finishSuccess, finishDelay:
 		e.lastSuccess = now
 		e.consecFails = 0
-	case finishFailure, finishForcePark:
+	case finishFailure:
 		e.consecFails++
+		e.lastErr = err
+		e.lastErrAt = now
 	}
 }
 
@@ -523,40 +480,63 @@ func (e *engine) key(parts ...string) string {
 	return keys.Reconcile(e.deps.Namespace, e.cfg.name, parts...)
 }
 
-func (e *engine) parkOrRevive(ctx context.Context, id ID, snap versionSnapshot) {
-	if !e.parks.enabled() {
-		return
-	}
-	if e.cfg.versions != nil && snap.known {
-		latest, err := e.cfg.versions.Latest(ctx, id)
-		if err == nil && latest > snap.v {
-			e.queue.wake(id, wakeVersion)
-			return
-		}
-	}
-	if e.cfg.versions != nil && snap.known && snap.v == 0 {
-		e.deps.Observer.Observe(converge.VersionZero{Job: e.cfg.name, ID: string(id)})
-	}
-	e.parks.mark(ctx, id, snap.v)
+func (e *engine) setState(s converge.State) {
+	e.mu.Lock()
+	e.state = s
+	e.mu.Unlock()
 }
 
-func (e *engine) loadParked(ctx context.Context) {
-	e.parks.scan(ctx, func(id ID) {
-		switch e.queue.restorePark(id) {
-		case restoreBusy:
-			e.clearPark(ctx, id)
-		case restoreOverflow:
-			e.deps.Observer.Observe(converge.WakeDiscarded{Job: e.cfg.name, ID: string(id), Reason: converge.DiscardOverflow})
-		}
+func (e *engine) destroyed(ctx context.Context) (converge.StopCondition, bool) {
+	if e.cfg.until.IsZero() || e.deps.KV == nil {
+		return converge.StopCondition{}, false
+	}
+	if at, ok := hook.StopConditionDeadline(e.cfg.until); ok && !e.deps.Clock.Now().Before(at) {
+		e.deps.KV.Set(ctx, keys.Tombstone(e.deps.Namespace, e.cfg.name), []byte("1"), 0)
+		return e.cfg.until, true
+	}
+	key := keys.Tombstone(e.deps.Namespace, e.cfg.name)
+	if k, ok := hook.StopConditionKey(e.cfg.until); ok {
+		key = k
+	}
+	if _, found, err := e.deps.KV.Get(ctx, key); err != nil || !found {
+		return converge.StopCondition{}, false
+	}
+	return converge.StopKey(key), true
+}
+
+func (e *engine) checkDestroy(ctx context.Context) bool {
+	cause, ok := e.destroyed(ctx)
+	if !ok {
+		return false
+	}
+	first := false
+	e.destroyOnce.Do(func() {
+		e.setState(converge.Destroyed)
+		close(e.stopCh)
+		first = true
 	})
+	if first {
+		e.deps.Observer.Observe(converge.JobDestroyed{Job: e.cfg.name, Cause: cause})
+	}
+	return true
+}
+
+func (e *engine) isDestroyed() bool {
+	select {
+	case <-e.stopCh:
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 	if err := e.bind(deps); err != nil {
 		return err
 	}
+	e.setState(converge.Active)
 	defer func() {
-		e.opsInFlight.Wait()
+		e.sweepsInFlight.Wait()
 		e.mu.Lock()
 		e.queue = nil
 		e.mu.Unlock()
@@ -573,16 +553,11 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	if e.cfg.runMode == converge.OnOneReplica && deps.Lease == nil {
 		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.name)
 	}
-	if e.cfg.versions != nil && deps.KV == nil {
-		return fmt.Errorf("reconcile: job %q: Versions needs Options.KV", e.cfg.name)
+	if !e.cfg.until.IsZero() && deps.KV == nil {
+		return fmt.Errorf("reconcile: job %q: Until needs Options.KV", e.cfg.name)
 	}
 	for _, t := range e.cfg.triggers {
-		switch tr := t.(type) {
-		case *scheduleTrigger:
-			if deps.KV == nil {
-				return fmt.Errorf("reconcile: job %q: Schedule needs Options.KV", e.cfg.name)
-			}
-		case *messageTrigger:
+		if tr, ok := t.(*notificationTrigger); ok {
 			if err := tr.bind(e); err != nil {
 				return err
 			}
@@ -598,14 +573,23 @@ func (e *engine) leaseInterval() time.Duration {
 func (e *engine) leaseLoop(ctx context.Context) error {
 	name := keys.ReconcileLease(e.deps.Namespace, e.cfg.name)
 	retry := e.leaseInterval()
+	e.markReady()
 	for {
+		if e.checkDestroy(ctx) {
+			return nil
+		}
 		h, ok, err := e.deps.Lease.TryAcquire(ctx, name, e.deps.LeaseTTL)
 		e.markReady()
 		if err == nil && ok {
-			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.name, Acquired: true})
+			e.setLeaseHeld(true)
+			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.name, Held: true})
 			e.runActive(ctx, h)
-			e.deps.Observer.Observe(converge.LeaseTransition{Job: e.cfg.name, Acquired: false})
+			e.setLeaseHeld(false)
+			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.name, Held: false})
 			if ctx.Err() != nil {
+				return nil
+			}
+			if e.isDestroyed() {
 				return nil
 			}
 			e.queue.reset()
@@ -634,6 +618,17 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 	hctx, stopHandlers := context.WithCancel(context.WithoutCancel(ctx))
 	defer stopHandlers()
 
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-e.stopCh:
+			stopIntake()
+			stopHandlers()
+		case <-stopWatch:
+		}
+	}()
+
 	hbStop := make(chan struct{})
 	var hb sync.WaitGroup
 	if h != nil {
@@ -644,7 +639,9 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 		}()
 	}
 
-	e.loadParked(intake)
+	backlogStop := make(chan struct{})
+	defer close(backlogStop)
+	go e.pollBacklog(ctx, backlogStop)
 
 	var aux sync.WaitGroup
 	for i, t := range e.cfg.triggers {
@@ -691,6 +688,89 @@ func (e *engine) runActive(ctx context.Context, h converge.LeaseHandle) {
 	}
 }
 
+func (e *engine) backlogReaders() []func(context.Context) (int, error) {
+	var out []func(context.Context) (int, error)
+	for _, t := range e.cfg.triggers {
+		tr, ok := t.(*notificationTrigger)
+		if !ok {
+			continue
+		}
+		read := e.triggerBacklogReader(tr)
+		if read == nil {
+			return nil
+		}
+		out = append(out, read)
+	}
+	return out
+}
+
+func (e *engine) triggerBacklogReader(t *notificationTrigger) func(context.Context) (int, error) {
+	if t.mq == nil {
+		return nil
+	}
+	switch e.cfg.runMode {
+	case converge.OnAllReplicas:
+		return nil
+	case converge.OnOneReplica:
+		br, ok := t.mq.(converge.BacklogReporter)
+		if !ok {
+			return nil
+		}
+		return func(ctx context.Context) (int, error) { return br.Backlog(ctx, t.queue) }
+	default:
+		gr, ok := t.mq.(converge.GroupBacklogReporter)
+		if !ok {
+			return nil
+		}
+		group := e.key("notifications")
+		return func(ctx context.Context) (int, error) { return gr.BacklogForGroup(ctx, t.queue, group) }
+	}
+}
+
+func (e *engine) pollBacklog(ctx context.Context, stop <-chan struct{}) {
+	defer e.forgetBacklog()
+	readers := e.backlogReaders()
+	if len(readers) == 0 {
+		return
+	}
+	interval := e.leaseInterval()
+	e.refreshBacklog(ctx, readers, interval)
+	for {
+		select {
+		case <-stop:
+			return
+		case <-e.deps.Clock.After(interval):
+			e.refreshBacklog(ctx, readers, interval)
+		}
+	}
+}
+
+func (e *engine) refreshBacklog(ctx context.Context, readers []func(context.Context) (int, error), timeout time.Duration) {
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	total := 0
+	for _, read := range readers {
+		n, err := read(bctx)
+		if err != nil {
+			return
+		}
+		total += n
+	}
+	now := e.deps.Clock.Now()
+	e.mu.Lock()
+	e.backlog = total
+	e.backlogKnown = true
+	e.backlogAt = now
+	e.mu.Unlock()
+}
+
+func (e *engine) forgetBacklog() {
+	e.mu.Lock()
+	e.backlogKnown = false
+	e.backlogAt = time.Time{}
+	e.mu.Unlock()
+}
+
 func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stop <-chan struct{}, stopIntake, stopHandlers func()) {
 	interval := e.leaseInterval()
 	for {
@@ -702,6 +782,9 @@ func (e *engine) heartbeat(ctx context.Context, h converge.LeaseHandle, stop <-c
 			stopIntake()
 			return
 		case <-e.deps.Clock.After(interval):
+			if e.checkDestroy(ctx) {
+				return
+			}
 			extendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), interval)
 			err := h.Extend(extendCtx, e.deps.LeaseTTL)
 			cancel()

@@ -3,17 +3,18 @@ package worker
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
-	"github.com/GareArc/converge/internal/pausegate"
 )
 
 const (
 	DefaultConcurrency = 4
-	DefaultVisibility  = 5 * time.Minute
+	defaultVisibility  = 5 * time.Minute
+	visibilityMargin   = time.Minute
 	DefaultMaxAttempts = 25
 	DefaultMinBackoff  = time.Second
 	DefaultMaxBackoff  = 15 * time.Minute
@@ -31,11 +32,10 @@ type HandleOpts struct {
 	Concurrency int
 	RunMode     converge.RunMode
 	Retry       RetryPolicy
-	Visibility  time.Duration
-	MQ          converge.MQ
+	Timeout     time.Duration
 	RateLimit   converge.Rate
 	Middleware  []converge.Middleware
-	Paused      bool
+	Until       converge.StopCondition
 }
 
 type decodeError struct{ err error }
@@ -58,7 +58,7 @@ func Handle[T any](rt *converge.Runtime, t Task[T], fn func(ctx context.Context,
 		}
 		return fn(ctx, p)
 	}
-	e, err := newEngine(taskInfo{name: t.name, queue: t.queue, version: t.version}, run, o)
+	e, err := newEngine(taskInfo{name: t.name, version: t.version}, run, o)
 	if err != nil {
 		return err
 	}
@@ -70,8 +70,8 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 	if o.Concurrency < 0 {
 		return nil, fail("Concurrency must not be negative")
 	}
-	if o.Visibility < 0 {
-		return nil, fail("Visibility must not be negative")
+	if o.Timeout < 0 {
+		return nil, fail("Timeout must not be negative")
 	}
 	r := o.Retry
 	if r.MaxAttempts < 0 || r.MinBackoff < 0 || r.MaxBackoff < 0 || r.MaxAge < 0 {
@@ -89,16 +89,20 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 		concurrency: o.Concurrency,
 		runMode:     o.RunMode,
 		retry:       r,
-		visibility:  o.Visibility,
-		mq:          o.MQ,
+		timeout:     o.Timeout,
 		rateLimit:   o.RateLimit,
 		middleware:  slices.Clone(o.Middleware),
+		until:       o.Until,
 	}
 	if cfg.concurrency == 0 {
 		cfg.concurrency = DefaultConcurrency
 	}
-	if cfg.visibility == 0 {
-		cfg.visibility = DefaultVisibility
+	cfg.visibility = defaultVisibility
+	if o.Timeout > 0 {
+		if o.Timeout > math.MaxInt64-visibilityMargin {
+			return nil, fmt.Errorf("worker: task %q: Timeout leaves no room for the redelivery margin", t.name)
+		}
+		cfg.visibility = o.Timeout + visibilityMargin
 	}
 	if cfg.retry.MaxAttempts == 0 {
 		cfg.retry.MaxAttempts = DefaultMaxAttempts
@@ -116,10 +120,10 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 		return nil, fail("Retry.MinBackoff must not exceed Retry.MaxBackoff")
 	}
 	if cfg.runMode.IsZero() {
-		cfg.runMode = converge.SplitAcrossReplicas
+		cfg.runMode = converge.Competing
 	}
 	if cfg.runMode == converge.OnAllReplicas && o.Retry != (RetryPolicy{}) {
 		return nil, fail("OnAllReplicas cannot use Retry")
 	}
-	return &engine{cfg: cfg, ready: make(chan struct{}), gate: pausegate.New(o.Paused)}, nil
+	return &engine{cfg: cfg, ready: make(chan struct{}), state: converge.NotStarted}, nil
 }

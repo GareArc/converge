@@ -1,496 +1,391 @@
-# 6. Going to production
+# Taking it to production
 
-Every chapter so far has kept converge's bookkeeping in memory. That was the
-right trade for learning — nothing to install, nothing to clean up — and it
-is the wrong trade for a deployment, because in-memory bookkeeping is
-private to one process. Two replicas each keep their own, so each one
-believes it is in charge and each one runs the job.
+Everything so far ran on `inmem`, which lives in one process and forgets
+everything when that process exits. This chapter swaps it for Redis, adds
+logs and an endpoint you can curl, and tells you which numbers converge will
+report and which it will honestly refuse to.
 
-This chapter is the other end of that. It is not a two-line swap dressed up
-as a service: it is the whole composition root of something you could
-actually deploy — configuration from the environment, all three ports
-backed by Redis, metrics, a middleware that logs every run, an HTTP
-endpoint to inspect it with, and a shutdown that finishes what it started.
-By the end you will have run it, restarted it mid-interval and watched it
-refuse to double-fire, and looked inside it while it was running.
+## Wiring Redis
 
-It is longer than the chapters before it. That length is the point: this is
-what the previous five chapters were building toward, and nothing in it is
-decoration.
+One `converge.Options` per binary, and no job changes:
 
-## The code
+```go
+rt, err := converge.New(converge.Options{
+    Namespace: namespace,
+    MQ:        convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{Retention: 7 * 24 * time.Hour}),
+    Lease:     convredis.NewLease(rdb),
+    KV:        convredis.NewKV(rdb),
+    Observer:  converge.LogObserver(slog.Default()),
+})
+```
 
-Configuration first, in its own file, because a service that hardcodes its
-Redis address is a service you cannot deploy twice:
+`convredis` lives in its own module, so the core stays dependency-free:
 
-```go title=examples/guide/06-production/config.go
-package main
+```sh
+go get github.com/GareArc/converge/adapters/redis
+```
 
-import (
-	"fmt"
-	"os"
-	"time"
-)
+It gives you all three backends over one `*redis.Client`: messages over
+Redis Streams, leases and `KV` over plain keys. Nothing about your jobs
+changes — the [reconcile](../glossary.md#reconcile) and
+[worker](../glossary.md#worker) declarations from chapters 1 to 5 run
+against this unmodified.
 
-type Config struct {
-	RedisAddr    string
-	Namespace    string
-	DebugAddr    string
-	SyncEvery    time.Duration
-	DrainTimeout time.Duration
-}
+**`StreamsOpts.Retention` has no default, and zero does not mean "an hour"
+or "a day" — it means never trim.** Every other queue product you have used
+has a default here, so this is the field to be deliberate about.
 
-func env(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
+converge trims by age, when it publishes: entries older than `Retention` are
+dropped from the stream whether or not anybody read them. Leave it at zero
+and nothing is ever dropped — a Redis stream keeps an entry after it has
+been acknowledged, so the stream grows for as long as the job runs. Set it
+too short and a message can vanish before a replica that was down comes back
+for it. Seven days, above, reads as "survive a week-long outage, then give
+up"; choose yours the same way.
 
-func envDuration(key string, fallback time.Duration) (time.Duration, error) {
-	v := os.Getenv(key)
-	if v == "" {
-		return fallback, nil
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return 0, fmt.Errorf("%s: %w", key, err)
-	}
-	return d, nil
-}
+`convredis.NewListMQ(rdb)` is the other one, for reading a Redis list some
+other system pushes onto. That is a [chapter 3](03-notifications.md)
+concern, and it is the only place a raw queue name appears.
 
-func configFromEnv() (Config, error) {
-	syncEvery, err := envDuration("SYNC_EVERY", 10*time.Second)
-	if err != nil {
-		return Config{}, err
-	}
-	drainTimeout, err := envDuration("DRAIN_TIMEOUT", 20*time.Second)
-	if err != nil {
-		return Config{}, err
-	}
-	return Config{
-		RedisAddr:    env("REDIS_ADDR", "localhost:6379"),
-		Namespace:    env("CONVERGE_NAMESPACE", "shop"),
-		DebugAddr:    env("DEBUG_ADDR", "localhost:6060"),
-		SyncEvery:    syncEvery,
-		DrainTimeout: drainTimeout,
-	}, nil
+## Logs, for free
+
+`converge.LogObserver(slog.Default())` turns the five things converge
+observes into `slog` records:
+
+| Event | Logged when | Level |
+| --- | --- | --- |
+| `RunCompleted` | every run of your function ends | by outcome |
+| `LeaseChanged` | a replica takes or loses a job's [lease](../glossary.md#lease) | info |
+| `ScheduleOverrun` | a [sweep](../glossary.md#sweep) was still running when the next fell due | warn |
+| `NotificationDropped` | a [notification](../glossary.md#notification) could not be decoded, or the queue of pending IDs was full | warn |
+| `JobDestroyed` | a job reached the end of its life | info |
+
+`RunCompleted` is levelled by how the run ended: succeeded and discarded are
+info, retrying and deferred are warn, shelved is error. That mapping is the
+one you want in an alert rule — a
+[shelved message](../glossary.md#shelved-message) is the only one of the
+five that means a person has to do something.
+
+`converge.Observer` is a one-method interface, so `LogObserver` is a
+starting point rather than a ceiling.
+`convotel.NewObserver(meter)` maps the same five events onto OpenTelemetry
+metrics, and `convotel.RegisterGauges(meter, rt)` adds five gauges read
+from `rt.Stats()` at collection time.
+
+## Readiness and a page to look at
+
+`rt.Ready()` closes when every registered job has started. It is a channel,
+so a readiness probe is a `select` with a `default`:
+
+```go
+jobs := debughttp.ReadOnlyHandler(rt)
+mux := http.NewServeMux()
+mux.Handle(readyPath, readyWhen(rt.Ready()))
+mux.Handle(statsPath, jobs)
+mux.Handle(statsPath+"/", jobs)
+```
+
+`debughttp.ReadOnlyHandler(rt)` serves `/debug/jobs` and
+`/debug/jobs/{job}`. Those routes are **absolute**: the handler is its own
+mux and it matches on the full path, so mounting it under a prefix of your
+own will not work. `statsPath` in the program above is exactly
+`"/debug/jobs"`, and both patterns are registered so that the trailing-slash
+form reaches the single-job route.
+
+`/debug/jobs` answers with a `jobs` array, one object each: everything
+`rt.Stats()` carries, plus the queue the job reads and the settings it was
+registered with. `/debug/jobs/{job}` answers with that one object plus one
+thing the list leaves out — and which one depends on the kind of job. A
+reconcile job gets `failing_ids`: the IDs currently in backoff, each with
+its last error. A worker job gets `shelved_messages` instead. Neither route
+returns both, because neither kind of job has both: a reconcile job has no
+[shelf](../glossary.md#shelf), and the worker engine keeps a count of the
+messages it is retrying but not a list of them.
+
+## The numbers, and when converge refuses to give you one
+
+`rt.Stats()` returns a `converge.JobStats` per job. Two of its fields do not
+come with a number attached, and understanding why will save you filing a
+bug:
+
+```go
+func describe(s converge.JobStats) string {
+    return fmt.Sprintf("%s surface=%s state=%s in_flight=%d backlog=%s shelved=%s",
+        s.Job, s.Surface, s.State, s.InFlight,
+        countOrUnknown(s.Backlog, s.BacklogKnown),
+        countOrUnknown(s.Shelved, s.ShelvedKnown))
 }
 ```
 
-Every value has a working default, so the program runs with no environment
-set at all — and every value can be overridden, so the same binary runs in
-staging and production. `REDIS_ADDR`, `CONVERGE_NAMESPACE` and `DEBUG_ADDR`
-are strings; `SYNC_EVERY` and `DRAIN_TIMEOUT` are Go durations, so `30s`,
-`5m` and `1h30m` all parse. That is the whole trick, and it is the reason
-this is a separate file rather than a literal in the middle of `main`.
+**`Backlog` travels with `BacklogKnown`.** The **backlog** is the real depth
+of a job's [inbox](../glossary.md#inbox), read from the message queue rather
+than counted inside your process — and not every backend can answer that
+question. When it cannot, `BacklogKnown` is false and `Backlog` is
+meaningless. Not zero: *unknown*. converge does not invent the number, the
+metrics do not publish it, and a dashboard that shows a gap there is telling
+you the truth.
 
-`configFromEnv` returns an error rather than falling back quietly, because
-a duration it cannot parse is not a value it can guess. `SYNC_EVERY=10x`
-stops the process at startup with `SYNC_EVERY: time: unknown unit "x" in
-duration "10x"` — before the [lease](../glossary.md#lease), before the
-first sweep. A service that
-started anyway would sweep on a schedule nobody chose, and you would find
-out from a graph rather than from a crash.
+One case is unknown on every backend, no matter how capable: **a job running
+on all replicas has no backlog.** Both engines decline to read one for that
+[run mode](../glossary.md#run-mode), and they are right to — every replica reads every message, so
+there is no shared depth that would mean anything. Expect a blank there on
+the newest Redis as surely as on the in-memory backend.
 
-Then the composition root:
+On Redis Streams specifically: **backlog needs Redis 7.0 or newer.** converge
+reads it from the `lag` field of `XINFO GROUPS`, which 7.0 added. Against
+Redis 6.2 the field is absent, converge reports the backlog as not known
+rather than guessing, and that is what you will see. If you expected a
+number and got a blank, check the server version before you check anything
+else.
 
-```go title=examples/guide/06-production/main.go
+**`Shelved` travels with `ShelvedKnown`, and it is a depth.** It is how many
+messages are on that job's shelf *right now*, not how many runs have ever
+been shelved. It falls when somebody requeues or
+purges, which is exactly what you want from something you are going to
+alert on. It is known only for a worker job with a `KV` and a run mode that
+can shelve at all — a reconcile job never reports it, and neither does a
+broadcast worker job, because neither has a shelf.
+
+`Failing` is the third number and it always has a value: how many
+[IDs](../glossary.md#id) or messages on *this replica* are currently waiting
+out a backoff. A **failing ID** is not a lost one — it keeps being retried
+at a floor rate — but a `Failing` count that grows and never falls is worth
+a look.
+
+Where you look depends on the kind of job, for the reason above. On a
+reconcile job, `/debug/jobs/{job}` names the failing IDs and gives you the
+last error for each. On a worker job it will not: converge counts the
+messages it is retrying and does not keep them, so what you have is
+`last_error`, `last_error_at` and `consecutive_fails` in the same response,
+and the warn-level `RunCompleted` log lines — each one carries the message
+ID of the message being retried, which is the thread to pull.
+
+Run
+[`examples/scenarios/a15-operations/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a15-operations/main.go)
+to see all of it end to end — a readiness probe, a message that fails its
+way onto the shelf, the shelf depth appearing in the stats, and a requeue:
+
+```sh
+cd examples
+go run ./scenarios/a15-operations
+```
+
+```text
+http://127.0.0.1:62657/healthz/ready -> 200 OK, 6 bytes
+shelved message: 26782515c4adbd3c71abdf9c355c45f9
+http://127.0.0.1:62657/debug/jobs -> 200 OK, 548 bytes
+deliver-webhook surface=worker state=active in_flight=0 backlog=0 shelved=1
+delivered after requeue: 1
+```
+
+That requeue is the operator loop in full:
+
+```go
+shelf, err := worker.ShelfFrom(rt, deliverWebhook.Name())
+if err != nil {
+    return err
+}
+
+hooks.repair()
+if err := shelf.Requeue(ctx, messageID); err != nil {
+    return err
+}
+```
+
+Fix the cause, then put the message back. Never the other way round: a
+requeue starts the retry budget over, so requeueing into a still-broken
+endpoint just spends it again.
+
+## Time limits, and the two that are not per-run
+
+`Timeout` — the **time limit** — is per run and belongs to the job. Two
+others belong to the runtime, in `converge.Options`:
+
+- **`LeaseTTL`** (default 30s) is how long a lease survives without being
+  renewed, so it is also how long a job can be stalled after a replica dies
+  before another picks it up. converge renews at a third of it.
+- **`DrainTimeout`** (default 30s) is how long a job waits for its in-flight
+  runs to finish after the context is cancelled; when it elapses converge
+  cancels them and waits for them to return. Make it longer than your
+  longest `Timeout` if you care about clean shutdowns, and make your
+  orchestrator's grace period longer than it.
+
+## Jobs that are supposed to end
+
+Most jobs run forever. A migration does not. Declare that where you register
+it, with `Until`:
+
+```go title=examples/scenarios/a12-legacy-migration/main.go
 package main
 
 import (
 	"context"
-	"errors"
-	"log"
-	"net/http"
+	"fmt"
+	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/GareArc/converge"
-	convotel "github.com/GareArc/converge/adapters/otel"
-	convredis "github.com/GareArc/converge/adapters/redis"
-	"github.com/GareArc/converge/debughttp"
+	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/reconcile"
-	"github.com/GareArc/converge/worker"
-	"github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
-type ChargeOrder struct {
-	OrderID string `json:"order_id"`
+const (
+	demoWindow = 10 * time.Second
+	leaseTTL   = 3 * time.Second
+	cutoverIn  = 2 * time.Second
+
+	targetAlgorithm = "argon2id"
+)
+
+type credentialTable struct {
+	mu       sync.Mutex
+	legacy   map[reconcile.ID]string
+	migrated []string
 }
 
-var chargeOrder = worker.NewTask[ChargeOrder]("charge-order", worker.TaskOpts{Queue: "payments"})
-
-func logRuns(next converge.Handler) converge.Handler {
-	return func(ctx context.Context, run converge.Run) error {
-		start := time.Now()
-		err := next(ctx, run)
-		log.Printf("%s/%s id=%q took=%s err=%v",
-			run.Surface, run.Job, run.ID, time.Since(start).Round(time.Millisecond), err)
-		return err
-	}
+func newCredentialTable(legacy map[reconcile.ID]string) *credentialTable {
+	return &credentialTable{legacy: legacy}
 }
 
-func newObserver() (converge.Observer, func(), error) {
-	exporter, err := stdoutmetric.New()
-	if err != nil {
-		return nil, nil, err
+func (t *credentialTable) unmigrated(_ context.Context, _ string) ([]reconcile.ID, string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	pending := make([]reconcile.ID, 0, len(t.legacy))
+	for id := range t.legacy {
+		pending = append(pending, id)
 	}
-	reader := sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(time.Minute))
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	observer, err := convotel.NewObserver(provider.Meter("shop"))
-	if err != nil {
-		return nil, nil, err
-	}
-	return observer, func() {
-		if err := provider.Shutdown(context.Background()); err != nil {
-			log.Println("metrics shutdown:", err)
-		}
-	}, nil
+	slices.Sort(pending)
+	return pending, "", nil
 }
 
-func registerJobs(rt *converge.Runtime, rdb *redis.Client, cfg Config) error {
-	skus := func(ctx context.Context) ([]string, error) {
-		return []string{"SKU-1001", "SKU-1002"}, nil
-	}
-
-	err := reconcile.Register(rt, reconcile.Spec{
-		Name: "sync-inventory",
-		Reconciler: reconcile.Func(func(ctx context.Context, id reconcile.ID) error {
-			inbound, err := rdb.Get(ctx, "warehouse:"+string(id)+":inbound").Int()
-			if err != nil && !errors.Is(err, redis.Nil) {
-				return err
-			}
-			if inbound > 0 {
-				if err := rdb.Decr(ctx, "warehouse:"+string(id)+":inbound").Err(); err != nil {
-					return err
-				}
-				return reconcile.CheckAgain{In: time.Second}
-			}
-			return nil
-		}),
-		Triggers: []reconcile.Trigger{
-			reconcile.OnMessage("stock-events", reconcile.IDFromJSONField("sku"), reconcile.OnMessageOpts{}),
-			reconcile.Schedule(reconcile.StringIDs(skus), reconcile.Every(cfg.SyncEvery)),
-		},
-	})
-	if err != nil {
-		return err
-	}
-
-	return worker.Handle(rt, chargeOrder, func(ctx context.Context, p ChargeOrder) error {
+func (t *credentialTable) migrateOne(_ context.Context, id reconcile.ID) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	algorithm, ok := t.legacy[id]
+	if !ok {
 		return nil
-	}, worker.HandleOpts{
-		Concurrency: 4,
-		Retry:       worker.RetryPolicy{MaxAttempts: 5},
-	})
+	}
+	delete(t.legacy, id)
+	t.migrated = append(t.migrated, fmt.Sprintf("%s %s->%s", id, algorithm, targetAlgorithm))
+	return nil
+}
+
+func (t *credentialTable) report() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	migrated := slices.Clone(t.migrated)
+	slices.Sort(migrated)
+	return []string{
+		fmt.Sprintf("migrated: %v", migrated),
+		fmt.Sprintf("still legacy: %d", len(t.legacy)),
+	}
 }
 
 func main() {
-	cfg, err := configFromEnv()
-	if err != nil {
-		log.Fatal(err)
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
+}
 
-	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer rdb.Close()
-
-	observer, shutdownMetrics, err := newObserver()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer shutdownMetrics()
-
+func run() error {
 	rt, err := converge.New(converge.Options{
-		Namespace:    cfg.Namespace,
-		MQ:           convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{}),
-		Lease:        convredis.NewLease(rdb),
-		KV:           convredis.NewKV(rdb),
-		Observer:     observer,
-		Middleware:   []converge.Middleware{logRuns},
-		DrainTimeout: cfg.DrainTimeout,
+		Namespace: "identity",
+		MQ:        inmem.NewMQ(),
+		Lease:     inmem.NewLease(),
+		KV:        inmem.NewKV(),
+		Observer:  converge.LogObserver(slog.Default()),
+		LeaseTTL:  leaseTTL,
 	})
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	if err := registerJobs(rt, rdb, cfg); err != nil {
-		log.Fatal(err)
+	creds := newCredentialTable(map[reconcile.ID]string{
+		"cred-3001": "sha1",
+		"cred-3002": "sha1",
+		"cred-3003": "md5",
+	})
+	cutover := time.Now().Add(cutoverIn)
+
+	err = reconcile.Register(rt, reconcile.Spec{
+		Name:      "legacy-credential-migration",
+		Reconcile: creds.migrateOne,
+		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.IDsByPage(creds.unmigrated), reconcile.Every(time.Minute))},
+		Until:     converge.Deadline(cutover),
+	})
+	if err != nil {
+		return err
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("/debug/jobs/", debughttp.ReadOnlyHandler(rt))
-	debug := &http.Server{
-		Addr:              cfg.DebugAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-	go func() {
-		if err := debug.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Println("debug server:", err)
-		}
-	}()
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	log.Printf("converge starting: namespace=%q redis=%s debug=%s", cfg.Namespace, cfg.RedisAddr, cfg.DebugAddr)
+	ctx, cancel := context.WithTimeout(context.Background(), demoWindow)
+	defer cancel()
 	if err := rt.Run(ctx); err != nil {
-		log.Fatal(err)
+		return err
 	}
-	log.Println("converge stopped cleanly")
 
-	if err := debug.Shutdown(context.Background()); err != nil {
-		log.Println("debug shutdown:", err)
+	for _, line := range creds.report() {
+		fmt.Println(line)
 	}
+	for _, s := range rt.Stats() {
+		fmt.Printf("%s state=%s\n", s.Job, s.State)
+	}
+	fmt.Printf("cutover: %s\n", cutover.Format(time.RFC3339))
+	return nil
 }
 ```
 
-Read it as four groups rather than a hundred and fifty lines.
-
-**The ports.** `MQ`, `Lease` and `KV` are all `convredis` now, pointed at
-one client. These are the three lines chapters 1 through 5 kept in memory,
-and swapping them is what makes every promise this guide has made hold
-across a deployment rather than inside a process.
-
-**What watches it.** `Observer` is `convotel`, turning converge's events
-into OpenTelemetry instruments — [chapter 10](10-observability.md) is
-entirely about this, and here it is simply in place. `Middleware` wraps
-every run of every job on both surfaces; `logRuns` is fifteen lines and
-gives you a line per run with the job, the ID, the duration and the error.
-
-**The jobs.** One of each. `sync-inventory` is chapter 3's job, triggered
-both ways — a message for latency, a schedule for certainty. `charge-order`
-is chapter 4's, with a real retry budget. `registerJobs` takes the runtime
-and returns an error, so the wiring is testable without `main`.
-
-**Getting in and out.** `debughttp.ReadOnlyHandler` exposes what the
-runtime knows over HTTP. `signal.NotifyContext` turns SIGINT and SIGTERM
-into the cancellation `rt.Run` already understands, and `DrainTimeout` is
-how long converge will wait for in-flight work before giving up on it.
-
-The four timeouts on that `http.Server` are not decoration. Every one of
-them defaults to zero, and zero means no timeout, so a debug server left at
-the defaults will hold a connection open forever for a client that opens
-one and then says nothing. It is bound to localhost here, but "it's only
-the debug port" is how debug ports end up exposed, and a handler that
-answers `/debug/jobs/` is worth exactly as much uptime as the service it
-reports on.
-
-## Run it
-
 ```sh
-docker run --rm --name converge-guide -p 6379:6379 redis:7-alpine
+cd examples
+go run ./scenarios/a12-legacy-migration
 ```
 
-```sh
-cd examples && go run ./guide/06-production
-```
+Timestamps and run durations are trimmed from the log lines below; nothing
+else is.
 
 ```text
-2026/08/25 16:30:49 converge starting: namespace="shop" redis=localhost:6379 debug=localhost:6060
-2026/08/25 16:30:49 reconcile/sync-inventory id="SKU-1001" took=1ms err=<nil>
-2026/08/25 16:30:49 reconcile/sync-inventory id="SKU-1002" took=0s err=<nil>
-2026/08/25 16:30:59 reconcile/sync-inventory id="SKU-1001" took=0s err=<nil>
-2026/08/25 16:30:59 reconcile/sync-inventory id="SKU-1002" took=0s err=<nil>
-^C
-2026/08/25 16:31:02 converge stopped cleanly
+INFO converge: lease changed job=legacy-credential-migration held=true
+INFO converge: run completed job=legacy-credential-migration id=cred-3001 attempt=1 outcome=succeeded
+INFO converge: run completed job=legacy-credential-migration id=cred-3002 attempt=1 outcome=succeeded
+INFO converge: run completed job=legacy-credential-migration id=cred-3003 attempt=1 outcome=succeeded
+INFO converge: job destroyed job=legacy-credential-migration cause="deadline 2026-08-27T05:47:31-07:00"
+INFO converge: lease changed job=legacy-credential-migration held=false
+migrated: [cred-3001 sha1->argon2id cred-3002 sha1->argon2id cred-3003 md5->argon2id]
+still legacy: 0
+legacy-credential-migration state=destroyed
+cutover: 2026-08-27T05:47:31-07:00
 ```
 
-One report from the metrics exporter also prints at exit, when the deferred
-shutdown flushes it. It is a page of JSON and it is
-[chapter 10](10-observability.md)'s subject, so it is left out above.
+The job kept the lease while it worked, was destroyed the moment the cutover
+passed, and gave the lease back — after which nothing runs it again, on this
+replica or any other.
 
-## What happened
+A **stop condition** comes in two forms:
 
-1. `configFromEnv` read nothing from the environment and fell back to every
-   default, so the service came up against `localhost:6379` in the `shop`
-   namespace.
-2. The runtime took the [lease](../glossary.md#lease) and the schedule
-   fired at once, sweeping both SKUs. Every one of those runs went through
-   `logRuns` on the way, which is where those lines come from — the
-   reconciler itself prints nothing.
-3. Ten seconds later the schedule came round again. Nothing else did
-   anything: no message arrived on `stock-events`, and no order was
-   enqueued, so `charge-order` sat idle with nothing to do. An idle worker
-   job is not a broken one.
-4. Ctrl-C cancelled the context `signal.NotifyContext` owns. `rt.Run`
-   returned `nil` — a clean stop, not a failure — the lease was released,
-   and `converge stopped cleanly` printed.
+- `converge.Deadline(t)` — the job ends at a moment you already know, like a
+  cutover.
+- `converge.StopKey("migration/finished")` — the job ends when somebody sets
+  that key in `KV`. That somebody is a person with the `KV`, not an API
+  converge exposes.
 
-## Surviving a restart
+A job has three states and no others: not started, active, destroyed. Only
+the last of them is cluster-wide, and the
+[tombstone](../glossary.md#tombstone) below is what makes it
+so; the first two are what one replica reports about itself in `Stats()`.
+Destruction is terminal and needs no cooperation from your function — it
+just stops being called. There is no pausing a job and no
+resuming one; if a job is ever going to finish, you say so where you
+register it.
 
-[Chapter 1](01-first-job.md) mentioned that converge keeps a record of when
-each schedule last fired, and that it lives somewhere durable only once you
-get here. This is what that record buys: restart the service mid-interval,
-and converge works out that the interval has not elapsed instead of firing
-again because the process is new. Now there is a Redis to remember it in,
-so it can be tested.
+Destruction survives restarts because converge writes a **tombstone** into
+`KV` when it happens, and every replica checks for it before taking a lease,
+at each renewal, and at the start of each sweep. Redeploy the same binary
+and the job stays destroyed. It goes away for good when you delete its code.
 
-Start it, let the first sweep happen, and stop it three seconds in:
+## Next
 
-```text
-2026/08/25 16:31:52 converge starting: namespace="shop" redis=localhost:6379 debug=localhost:6060
-2026/08/25 16:31:52 reconcile/sync-inventory id="SKU-1001" took=1ms err=<nil>
-2026/08/25 16:31:52 reconcile/sync-inventory id="SKU-1002" took=0s err=<nil>
-^C
-2026/08/25 16:31:55 converge stopped cleanly
-```
-
-Start it again straight away. It comes up, says so — and then does nothing
-at all for seven seconds:
-
-```text
-2026/08/25 16:31:55 converge starting: namespace="shop" redis=localhost:6379 debug=localhost:6060
-2026/08/25 16:32:02 reconcile/sync-inventory id="SKU-1001" took=3ms err=<nil>
-2026/08/25 16:32:02 reconcile/sync-inventory id="SKU-1002" took=0s err=<nil>
-```
-
-`16:31:52` plus ten seconds is `16:32:02`. The restart did not reset the
-clock and did not earn an extra sweep: converge read the schedule's record
-on the way up, saw that three of the ten seconds had been used, and waited
-out the other seven. Do this with a deployment that restarts every pod in
-sequence and the difference is a job that fires once per interval instead
-of once per pod.
-
-The record it read is one key:
-
-```sh
-docker exec converge-guide redis-cli --scan --pattern '*sched*'
-```
-
-```text
-shop/converge/reconcile/sync-inventory/sched/1/last
-```
-
-The `1` is the trigger's index in the `Triggers` list, and the schedule is
-the second entry — `OnMessage` is the first. Change the order of that list
-and the key changes with it.
-
-## Looking inside it
-
-While it is running, in another terminal:
-
-```sh
-curl -s localhost:6060/debug/jobs/ | python3 -m json.tool
-```
-
-```json
-{
-    "jobs": [
-        {
-            "job": "sync-inventory",
-            "surface": "reconcile",
-            "run_mode": "OnOneReplica",
-            "queue": "",
-            "paused": false,
-            "settings": {
-                "concurrency": "1",
-                "schedule": "every 10s",
-                "triggers": "on-message stock-events + schedule"
-            },
-            "queue_depth": 0,
-            "parked": 0,
-            "last_success": "2026-08-25T23:33:49.74309Z",
-            "consecutive_fails": 0
-        },
-        {
-            "job": "charge-order",
-            "surface": "worker",
-            "run_mode": "SplitAcrossReplicas",
-            "queue": "payments",
-            "paused": false,
-            "settings": {
-                "concurrency": "4",
-                "retry": "5 attempts, backoff 1s..15m, max-age 24h",
-                "schema-version": "1",
-                "visibility": "5m"
-            },
-            "queue_depth": 0,
-            "parked": 0,
-            "last_success": "",
-            "consecutive_fails": 0
-        }
-    ]
-}
-```
-
-Both jobs are listed, each reporting what it actually is rather than what
-the config said — the [run mode](../glossary.md#run-mode) it resolved to,
-the triggers that are
-attached, when it last succeeded. `ReadOnlyHandler` is exactly what its
-name says; the handler that can *change* a running job is
-[chapter 9](09-operations.md).
-
-## The principle
-
-converge asks for four things — an `MQ`, a `Lease`, a `KV`, and optionally
-an `Observer` — and has opinions about none of them. Everything in this
-file that is not those four lines is yours: which Redis, which metrics
-backend, what your middleware logs, where the debug endpoint listens,
-whether config comes from the environment or a file or a flag.
-
-That is why the swap from chapter 1 to here is a swap and not a rewrite.
-The jobs did not change. `sync-inventory` is the same reconciler with the
-same triggers; `charge-order` is the same handler. What changed is where
-the bookkeeping lives, and the bookkeeping was never something your code
-touched.
-
-The corollary is worth saying plainly: **a converge job is not coupled to
-Redis.** It is coupled to three interfaces. Chapters 1 through 5 satisfied
-them from memory, this chapter satisfies them from Redis, and
-[chapter 8](08-testing.md) satisfies them from a test harness with a fake
-clock — the same jobs, unmodified, in all three.
-
-## Try breaking it
-
-Point it at a Redis that is not there:
-
-```sh
-REDIS_ADDR=localhost:6399 go run ./guide/06-production
-```
-
-```text
-2026/08/25 16:32:28 converge starting: namespace="shop" redis=localhost:6399 debug=localhost:6060
-2026/08/25 16:32:28 dial tcp [::1]:6399: connect: connection refused
-exit status 1
-```
-
-It refuses to run. That is the good outcome, and it is worth dwelling on
-for a second, because the alternative would be much worse: a service that
-came up, could not reach its lease, and therefore quietly believed it was
-in charge. Every replica would believe the same thing. The failure you want
-from a misconfigured lease is the loud one at startup, and `log.Fatal` on
-`rt.Run`'s return is what gives it to you.
-
-Note where it failed. `converge.New` succeeded — building the adapters
-does not talk to Redis — and so did `registerJobs`. The connection is not
-attempted until `rt.Run` tries to take the lease, so the error arrives from
-`Run`, not from construction.
-
-## A caveat
-
-`DrainTimeout` is a deadline, not a promise. On shutdown converge stops
-taking new work and waits up to that long for what is already running to
-finish; a handler still going when it expires is abandoned, not killed —
-the goroutine keeps running, and the process exits underneath it.
-
-This matters most for the worker surface, where an abandoned handler is
-also an unacked message: it goes back on the queue and is delivered again,
-to whichever replica is still up. That is at-least-once doing exactly what
-[chapter 4](04-worker.md) said it would, and it is the second reason that
-chapter asked for an idempotency key. Set `DrainTimeout` from how long your
-slowest handler actually takes, and make sure your deployment's own
-termination grace period is longer — Kubernetes' default is 30 seconds, so
-a `DrainTimeout` above that is a number that never gets used.
-
-Next: [7. When something else changed it first](07-versions.md) — what
-happens when the thing you are reconciling moves while you are reconciling
-it.
+[Chapter 7](07-testing.md) tests all of this without Redis, without sleeping,
+and without flakes.

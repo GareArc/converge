@@ -6,30 +6,19 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/GareArc/converge/internal/ctl"
 	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/keys"
 )
 
 type job interface {
 	Name() string
 	Run(ctx context.Context, d JobDeps) error
 	Ready() <-chan struct{}
-	Poke(id string) error
 	Stats() JobStats
 	Info() JobInfo
 	Quiet() bool
-	Hint(id string) error
-	RunPassNow(ctx context.Context) error
-	SetPaused(paused bool)
-}
-
-type queueBound interface {
-	QueueBinding() (queue string, mq MQ)
-}
-
-type queueBinding struct {
-	job string
-	mq  MQ
+	Notify(id string) error
+	Sweep(ctx context.Context) error
 }
 
 type Runtime struct {
@@ -40,7 +29,6 @@ type Runtime struct {
 	mu     sync.Mutex
 	jobs   map[string]job
 	order  []string
-	queues map[string]queueBinding
 	frozen bool
 }
 
@@ -55,17 +43,6 @@ func init() {
 			return fmt.Errorf("converge: register: %T does not satisfy the engine job contract", j)
 		}
 		return r.register(jj)
-	}
-	hook.ProducerDeps = func(rt any) (hook.ProducerWiring, error) {
-		r, ok := rt.(*Runtime)
-		if !ok || r == nil {
-			return hook.ProducerWiring{}, fmt.Errorf("converge: producer: %T is not a usable *converge.Runtime", rt)
-		}
-		return hook.ProducerWiring{
-			MQ:      r.opts.MQ,
-			Clock:   r.opts.Clock,
-			QueueMQ: r.queueMQ,
-		}, nil
 	}
 	hook.Inspect = func(rt any) (any, error) {
 		r, ok := rt.(*Runtime)
@@ -84,24 +61,23 @@ func init() {
 		}
 		return out, nil
 	}
-	hook.OpsDeps = func(rt any) (hook.OpsWiring, error) {
+	hook.RuntimeDepsOf = func(rt any) (hook.RuntimeDeps, error) {
 		r, ok := rt.(*Runtime)
 		if !ok || r == nil {
-			return hook.OpsWiring{}, fmt.Errorf("converge: ops: %T is not a usable *converge.Runtime", rt)
+			return hook.RuntimeDeps{}, fmt.Errorf("converge: runtime deps: %T is not a usable *converge.Runtime", rt)
 		}
-		return hook.OpsWiring{
+		return hook.RuntimeDeps{
 			KV:        r.opts.KV,
 			MQ:        r.opts.MQ,
 			Clock:     r.opts.Clock,
 			Namespace: r.opts.Namespace,
 			Replica:   r.replica,
-			QueueMQ:   r.queueMQ,
 		}, nil
 	}
-	hook.Hint = func(rt any, jobName, id string) error {
+	hook.Notify = func(rt any, jobName, id string) error {
 		r, ok := rt.(*Runtime)
 		if !ok || r == nil {
-			return fmt.Errorf("converge: hint: %T is not a usable *converge.Runtime", rt)
+			return fmt.Errorf("converge: notify: %T is not a usable *converge.Runtime", rt)
 		}
 		r.mu.Lock()
 		j, ok := r.jobs[jobName]
@@ -109,12 +85,12 @@ func init() {
 		if !ok {
 			return fmt.Errorf("converge: unknown job %q", jobName)
 		}
-		return j.Hint(id)
+		return j.Notify(id)
 	}
-	hook.RunPassNow = func(rt any, ctx context.Context, jobName string) error {
+	hook.Sweep = func(rt any, ctx context.Context, jobName string) error {
 		r, ok := rt.(*Runtime)
 		if !ok || r == nil {
-			return fmt.Errorf("converge: run-pass-now: %T is not a usable *converge.Runtime", rt)
+			return fmt.Errorf("converge: sweep: %T is not a usable *converge.Runtime", rt)
 		}
 		r.mu.Lock()
 		j, ok := r.jobs[jobName]
@@ -122,7 +98,7 @@ func init() {
 		if !ok {
 			return fmt.Errorf("converge: unknown job %q", jobName)
 		}
-		return j.RunPassNow(ctx)
+		return j.Sweep(ctx)
 	}
 	hook.Quiet = func(rt any) bool {
 		r, ok := rt.(*Runtime)
@@ -142,13 +118,6 @@ func init() {
 		}
 		return true
 	}
-	hook.ControlDispatch = func(rt any, ctx context.Context, req ctl.Request) ([]ctl.Response, error) {
-		r, ok := rt.(*Runtime)
-		if !ok || r == nil {
-			return nil, fmt.Errorf("converge: control: %T is not a usable *converge.Runtime", rt)
-		}
-		return r.controlDispatch(ctx, req)
-	}
 	hook.AttachOptions = func(o any, attach func(rt any)) any {
 		opts, ok := o.(Options)
 		if !ok {
@@ -157,27 +126,27 @@ func init() {
 		opts.attach = func(rt *Runtime) { attach(rt) }
 		return opts
 	}
-}
-
-func (rt *Runtime) queueMQ(queue string) any {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	b, ok := rt.queues[queue]
-	if !ok || b.mq == nil {
-		return nil
+	hook.FailingIDs = func(rt any, jobName string) (any, error) {
+		r, ok := rt.(*Runtime)
+		if !ok || r == nil {
+			return nil, fmt.Errorf("converge: failing: %T is not a usable *converge.Runtime", rt)
+		}
+		r.mu.Lock()
+		j, ok := r.jobs[jobName]
+		r.mu.Unlock()
+		if !ok {
+			return nil, fmt.Errorf("converge: unknown job %q", jobName)
+		}
+		fl, ok := j.(interface{ FailingIDs() []FailingID })
+		if !ok {
+			return nil, nil
+		}
+		return fl.FailingIDs(), nil
 	}
-	return b.mq
 }
 
 func (rt *Runtime) register(j job) error {
 	name := j.Name()
-	var queue string
-	var binding *queueBinding
-	if qb, ok := j.(queueBound); ok {
-		q, mq := qb.QueueBinding()
-		queue = q
-		binding = &queueBinding{job: name, mq: mq}
-	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	if rt.frozen {
@@ -189,16 +158,8 @@ func (rt *Runtime) register(j job) error {
 	if _, dup := rt.jobs[name]; dup {
 		return fmt.Errorf("converge: duplicate job name %q", name)
 	}
-	if binding != nil {
-		if existing, ok := rt.queues[queue]; ok {
-			return fmt.Errorf("converge: job %q: queue %q is already handled by job %q", name, queue, existing.job)
-		}
-	}
 	rt.jobs[name] = j
 	rt.order = append(rt.order, name)
-	if binding != nil {
-		rt.queues[queue] = *binding
-	}
 	return nil
 }
 
@@ -241,15 +202,12 @@ func (rt *Runtime) Run(ctx context.Context) error {
 		Middleware:   rt.opts.Middleware,
 	}
 
+	if err := rt.probeKV(ctx); err != nil {
+		return err
+	}
+
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-
-	if rt.opts.KV != nil {
-		if err := rt.applyPausedFlags(runCtx, jobs); err != nil {
-			return err
-		}
-	}
-	rt.startControlListener(runCtx)
 
 	go func() {
 		for _, j := range jobs {
@@ -282,14 +240,15 @@ func (rt *Runtime) Run(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-func (rt *Runtime) Ready() <-chan struct{} { return rt.ready }
-
-func (rt *Runtime) Poke(jobName, id string) error {
-	rt.mu.Lock()
-	j, ok := rt.jobs[jobName]
-	rt.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("converge: unknown job %q", jobName)
+func (rt *Runtime) probeKV(ctx context.Context) error {
+	if rt.opts.KV == nil {
+		return nil
 	}
-	return j.Poke(id)
+	_, _, err := rt.opts.KV.Get(ctx, keys.Probe(rt.opts.Namespace))
+	if err == nil || ctx.Err() != nil {
+		return nil
+	}
+	return fmt.Errorf("converge: KV is unreachable: %w", err)
 }
+
+func (rt *Runtime) Ready() <-chan struct{} { return rt.ready }

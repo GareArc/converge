@@ -12,10 +12,12 @@ import (
 )
 
 var (
-	_ converge.MQ                = (*MQ)(nil)
-	_ converge.GroupConsumer     = (*MQ)(nil)
-	_ converge.BroadcastConsumer = (*MQ)(nil)
-	_ converge.DelayedPublisher  = (*MQ)(nil)
+	_ converge.MQ                   = (*MQ)(nil)
+	_ converge.GroupConsumer        = (*MQ)(nil)
+	_ converge.BroadcastConsumer    = (*MQ)(nil)
+	_ converge.DelayedPublisher     = (*MQ)(nil)
+	_ converge.BacklogReporter      = (*MQ)(nil)
+	_ converge.GroupBacklogReporter = (*MQ)(nil)
 )
 
 type MQ struct {
@@ -61,6 +63,14 @@ func (m *MQ) ConsumeGroup(ctx context.Context, queue, group string, deliver func
 
 func (m *MQ) ConsumeBroadcast(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
 	return m.base.ConsumeBroadcast(ctx, queue, deliver)
+}
+
+func (m *MQ) Backlog(ctx context.Context, queue string) (int, error) {
+	return m.base.Backlog(ctx, queue)
+}
+
+func (m *MQ) BacklogForGroup(ctx context.Context, queue, group string) (int, error) {
+	return m.base.BacklogForGroup(ctx, queue, group)
 }
 
 func (m *MQ) FailNextPublish(err error) {
