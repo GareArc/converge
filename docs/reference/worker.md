@@ -149,9 +149,9 @@ And at `Run`, once the runtime's wiring is visible:
 - `worker: job %q: Snooze needs the DelayedPublisher capability`
 - `worker: job %q: Until needs Options.KV`
 
-The third and fourth are asked of every job that is **not** `OnAllReplicas`,
+The fifth and sixth are asked of every job that is **not** `OnAllReplicas`,
 whether or not it ever snoozes or shelves, because both are part of what
-makes a durable worker job durable. The fifth is asked of any job that sets
+makes a durable worker job durable. The seventh is asked of any job that sets
 `Until`, broadcast included — a self-destruct needs somewhere to record that
 it fired.
 

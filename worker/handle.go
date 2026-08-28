@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"math"
 	"slices"
 	"time"
 
@@ -98,6 +99,9 @@ func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {
 	}
 	cfg.visibility = defaultVisibility
 	if o.Timeout > 0 {
+		if o.Timeout > math.MaxInt64-visibilityMargin {
+			return nil, fmt.Errorf("worker: task %q: Timeout leaves no room for the redelivery margin", t.name)
+		}
 		cfg.visibility = o.Timeout + visibilityMargin
 	}
 	if cfg.retry.MaxAttempts == 0 {

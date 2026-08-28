@@ -320,7 +320,11 @@ func TestGuideMountingAliasServesBareJobsPath(t *testing.T) {
 	srv := httptest.NewServer(outer)
 	t.Cleanup(srv.Close)
 
-	resp, err := http.Get(srv.URL + "/debug/jobs")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/debug/jobs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := srv.Client().Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +395,7 @@ func TestReadOnlyHandlerNamesFailingIDs(t *testing.T) {
 	h.Drain(t)
 
 	rr := httptest.NewRecorder()
-	debughttp.ReadOnlyHandler(rt).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/debug/jobs/flaky", nil))
+	debughttp.ReadOnlyHandler(rt).ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/debug/jobs/flaky", nil))
 	body := rr.Body.String()
 	if !strings.Contains(body, `"bad"`) || !strings.Contains(body, "upstream refused") {
 		t.Fatalf("failing ID not reported: %s", body)

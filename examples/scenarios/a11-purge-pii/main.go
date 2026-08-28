@@ -56,8 +56,8 @@ func (v *vault) report() []string {
 	purged := slices.Clone(v.purged)
 	slices.Sort(purged)
 	kept := make([]string, 0, len(v.records))
-	for id, rec := range v.records {
-		kept = append(kept, id+" <"+rec.email+">")
+	for id := range v.records {
+		kept = append(kept, id)
 	}
 	slices.Sort(kept)
 	return []string{

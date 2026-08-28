@@ -3,7 +3,7 @@
 # and exit 0. Compiling them is not enough — they are the acceptance criteria and
 # the source of the documentation's tagged snippets, so they must still work.
 set -uo pipefail
-cd "$(dirname "$0")/../examples"
+cd "$(dirname "$0")/../examples" || exit 1
 
 log=$(mktemp -d)
 trap 'rm -rf "$log"' EXIT
