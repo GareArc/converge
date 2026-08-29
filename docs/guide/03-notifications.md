@@ -63,23 +63,30 @@ already gave `converge.New`.
 
 The process that notices a change is usually not the process that runs the
 job. An API handler onboards a merchant; a separate binary runs the
-reconcile job. They share three things and nothing else: the `MQ` backend,
-the job's name, and — for worker jobs — the payload shape.
+reconcile job. They share two things and nothing else: the `MQ` backend
+with its namespace, and the job value itself — declared once, in a package
+both binaries import.
 
-The producer side needs no `Runtime` at all:
+The producer side needs no `Runtime` at all, only a `converge.Scope`:
 
 ```go
-p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+var merchantStripe = reconcile.NewJob("merchant-stripe", reconcile.JobOpts{})
+
+p, err := merchantStripe.NewProducer(converge.Scope{MQ: mq, Namespace: namespace})
 if err != nil {
     return err
 }
 
-p.Notify(ctx, "merchant-stripe", string(newMerchant))
+p.Notify(ctx, newMerchant)
 ```
 
-`Namespace` has to match the one the `Runtime` was built with, because the
-namespace and the job name together are what name the inbox. That is the
-whole coupling.
+A producer is built *from* the job, so there is no call site where the job's
+name is a string that could be misspelt into a channel nothing reads.
+`Namespace` has to match the one the `Runtime` was built with — in the
+process that runs the job, `rt.Scope()` is that scope — because the
+namespace and the job's name together derive the channel. That is the whole
+coupling. `p.NotifyAll(ctx)` says *look at everything*: a sweep, now, for
+a job with many IDs, or a run for a job with one.
 
 Here is both halves in one runnable program: the reconcile job, and a
 goroutine standing in for the API binary that onboards a merchant *after*
@@ -112,6 +119,8 @@ const (
 	merchantPageSize = 2
 	newMerchant      = reconcile.ID("m-1004")
 )
+
+var merchantStripe = reconcile.NewJob("merchant-stripe", reconcile.JobOpts{})
 
 type merchantDirectory struct {
 	mu     sync.Mutex
@@ -222,7 +231,7 @@ func run() error {
 	merchants := newMerchantDirectory("m-1001", "m-1002", "m-1003")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Job:       reconcile.NewJob("merchant-stripe", reconcile.JobOpts{}),
+		Job:       merchantStripe,
 		Reconcile: stripe.syncMerchant,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDsByPage(merchants.page), reconcile.Every(15*time.Minute)),
@@ -235,7 +244,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := merchantStripe.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -250,7 +259,7 @@ func run() error {
 			return
 		}
 		merchants.add(newMerchant)
-		onboarded <- p.Notify(ctx, "merchant-stripe", string(newMerchant))
+		onboarded <- p.Notify(ctx, newMerchant)
 	}()
 
 	if err := rt.Run(ctx); err != nil {
@@ -290,11 +299,13 @@ them all off and the job still converges.
 
 ## What a producer cannot do
 
-A producer has two verbs — `Notify` and `Enqueue` — and no control
-authority. It cannot make a job run now, pause it, change how often it
-sweeps, or ask it how it is doing. Everything about a job's life is declared
-where the job is registered. This is not an oversight to be worked around;
-it is what keeps a job's behaviour readable from one file.
+A producer has three verbs — `Notify` and `NotifyAll` on a reconcile job,
+`Enqueue` on a worker task — and no control authority. It can say *look at
+this now*; it cannot say when the job runs next. It cannot pause a job,
+change how often it sweeps, or ask it how it is doing. Everything about a
+job's life is declared where the job is registered. This is not an oversight
+to be worked around; it is what keeps a job's behaviour readable from one
+file.
 
 ## Reading a queue another system writes
 

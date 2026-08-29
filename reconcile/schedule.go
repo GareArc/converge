@@ -70,10 +70,18 @@ func (c Cadence) next(anchor, after time.Time) time.Time {
 type scheduleTrigger struct {
 	source IDSource
 	cad    Cadence
+	wakeCh chan struct{}
 }
 
 func Schedule(ids IDSource, c Cadence) PeriodicTrigger {
-	return &scheduleTrigger{source: ids, cad: c}
+	return &scheduleTrigger{source: ids, cad: c, wakeCh: make(chan struct{}, 1)}
+}
+
+func (s *scheduleTrigger) wake() {
+	select {
+	case s.wakeCh <- struct{}{}:
+	default:
+	}
 }
 
 func (s *scheduleTrigger) Run(ctx context.Context, notify func(ID)) error {

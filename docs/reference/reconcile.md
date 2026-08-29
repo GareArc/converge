@@ -8,6 +8,7 @@ The [guide's chapters 2 and 3](../guide/02-ids.md) teach the model. This page
 is the surface, its defaults, and its refusals.
 
 - [Job](#job)
+- [Notifier](#notifier)
 - [Spec and Register](#spec-and-register)
 - [Periodic](#periodic)
 - [Triggers](#triggers)
@@ -57,6 +58,40 @@ invalid: an empty name (`reconcile: job name is required`) and a name
 containing `/` (`reconcile: job %q: name must not contain "/"`). A zero
 `Job` handed to `Spec` is `reconcile: Spec.Job is required; build one with
 NewJob`.
+
+## Notifier
+
+```go
+type Notifier struct { /* sealed */ }
+
+func (j Job) NewProducer(s converge.Scope) (*Notifier, error)
+func (n *Notifier) Notify(ctx context.Context, id ID) error
+func (n *Notifier) NotifyAll(ctx context.Context) error
+func (n *Notifier) Notifications() string
+```
+
+The sending side of a reconcile job, built from the job value so it can
+address nothing else. It needs a [`converge.Scope`](kernel.md#scope) —
+`rt.Scope()` in the process that runs the job, a struct literal with the
+same `MQ` and `Namespace` anywhere else.
+
+- `NewProducer` fails on a misconstructed job (`reconcile: NewProducer:
+  ...`) and on a nil `Scope.MQ` (`reconcile: job %q: NewProducer needs
+  Scope.MQ`).
+- `Notify` publishes `{"id":"<id>"}` to the job's channel. An empty `id` is
+  refused: `reconcile: job %q: Notify needs an id; NotifyAll addresses the
+  whole job`.
+- `NotifyAll` publishes `{"all":true}`. On a `SingleID` job that runs the
+  job's one ID as a notification would; on any other job it starts a sweep
+  of every `Schedule` trigger now, without moving the cadence. It exists
+  for the producer that just changed many IDs at once — a bulk import, a
+  migration — and would otherwise have to notify each.
+- `Notifications` is the resolved channel name, declared or derived.
+
+A nil or zero-value `Notifier` returns `reconcile: notifier has no MQ; build
+it with Job.NewProducer` from every verb rather than panicking. Both payload
+forms, and what a producer in another language writes, are in the
+[wire reference](wire.md).
 
 ## Spec and Register
 

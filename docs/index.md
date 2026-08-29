@@ -63,7 +63,7 @@ and almost none of them need Redis, a database, or a container.
 
 The reference covers every exported name, its defaults, and what it costs.
 
-- [Kernel](reference/kernel.md) — `Options`, `Runtime`, `Producer`, the
+- [Kernel](reference/kernel.md) — `Options`, `Runtime`, `Scope`, the
   ports, the events, and the stats types.
 - [Reconcile](reference/reconcile.md) — `Spec`, `Register`, `Periodic`,
   triggers, cadences, ID sources, and versions.

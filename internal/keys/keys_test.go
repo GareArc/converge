@@ -13,8 +13,6 @@ func TestLayout(t *testing.T) {
 	}{
 		{"probe", Probe("ns"), "ns/converge/probe"},
 		{"probe no namespace", Probe(""), "converge/probe"},
-		{"inbox", Inbox("ns", "job"), "ns/converge/inbox/job"},
-		{"inbox no namespace", Inbox("", "job"), "converge/inbox/job"},
 		{"notifications", Notifications("ns", "job"), "ns/converge/notifications/job"},
 		{"notifications no namespace", Notifications("", "job"), "converge/notifications/job"},
 		{"queue", Queue("ns", "task"), "ns/converge/queue/task"},

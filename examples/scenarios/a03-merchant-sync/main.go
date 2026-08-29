@@ -24,6 +24,8 @@ const (
 	newMerchant      = reconcile.ID("m-1004")
 )
 
+var merchantStripe = reconcile.NewJob("merchant-stripe", reconcile.JobOpts{})
+
 type merchantDirectory struct {
 	mu     sync.Mutex
 	ids    []reconcile.ID
@@ -133,7 +135,7 @@ func run() error {
 	merchants := newMerchantDirectory("m-1001", "m-1002", "m-1003")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Job:       reconcile.NewJob("merchant-stripe", reconcile.JobOpts{}),
+		Job:       merchantStripe,
 		Reconcile: stripe.syncMerchant,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDsByPage(merchants.page), reconcile.Every(15*time.Minute)),
@@ -146,7 +148,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := merchantStripe.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -161,7 +163,7 @@ func run() error {
 			return
 		}
 		merchants.add(newMerchant)
-		onboarded <- p.Notify(ctx, "merchant-stripe", string(newMerchant))
+		onboarded <- p.Notify(ctx, newMerchant)
 	}()
 
 	if err := rt.Run(ctx); err != nil {

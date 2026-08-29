@@ -274,6 +274,18 @@ func (e *engine) notify(ctx context.Context, id ID) {
 	e.notifyVia(ctx, e.idQueueRef(), id, causeSweep)
 }
 
+func (e *engine) notifyAll(ctx context.Context) {
+	if e.cfg.single {
+		e.notifyVia(ctx, e.idQueueRef(), "", causeNotification)
+		return
+	}
+	for _, t := range e.cfg.triggers {
+		if st, ok := t.(*scheduleTrigger); ok {
+			st.wake()
+		}
+	}
+}
+
 func (e *engine) notifyVia(ctx context.Context, q *idQueue, id ID, class queueCause) {
 	if id == "" && !e.cfg.single {
 		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), Err: converge.ErrNotificationEmptyID})

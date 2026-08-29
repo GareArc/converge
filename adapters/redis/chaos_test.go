@@ -59,7 +59,7 @@ func chaosHandler(kv converge.KV, key string, sleep time.Duration) func(context.
 
 type chaosElectionObserver struct {
 	job string
-	p   *converge.Producer
+	p   *reconcile.Notifier
 }
 
 func (o *chaosElectionObserver) Observe(e converge.Event) {
@@ -67,12 +67,13 @@ func (o *chaosElectionObserver) Observe(e converge.Event) {
 	if !ok || !lt.Held || lt.Job != o.job {
 		return
 	}
-	o.p.Notify(context.Background(), o.job, "")
+	o.p.NotifyAll(context.Background())
 }
 
 func newChaosRuntime(t testing.TB, mq converge.MQ, lease converge.Lease, kv converge.KV, ns string, fn func(context.Context, reconcile.ID) error) *converge.Runtime {
 	t.Helper()
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: ns})
+	job := reconcile.NewJob(chaosJobName, reconcile.JobOpts{})
+	p, err := job.NewProducer(converge.Scope{MQ: mq, Namespace: ns})
 	if err != nil {
 		t.Fatalf("convredis: chaos producer: %v", err)
 	}
@@ -89,7 +90,7 @@ func newChaosRuntime(t testing.TB, mq converge.MQ, lease converge.Lease, kv conv
 		t.Fatalf("convredis: chaos runtime: %v", err)
 	}
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Job:       reconcile.NewJob(chaosJobName, reconcile.JobOpts{}),
+		Job:       job,
 		Reconcile: fn,
 		RunMode:   converge.OnOneReplica,
 		Triggers: []reconcile.Trigger{

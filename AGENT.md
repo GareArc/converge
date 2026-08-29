@@ -141,14 +141,14 @@ URLs). Never push without explicit maintainer approval.
 /               kernel: ports (mq.go, lease.go, kv.go, clock.go, observer.go),
                 value types (message.go, runmode.go, rate.go, lifecycle.go),
                 runtime (converge.go, runtime.go, jobdeps.go, middleware.go,
-                stats.go), producer (producer.go), slog Observer
-                (logobserver.go)
+                stats.go), slog Observer (logobserver.go)
 internal/sig    sealed control-signal detection
 internal/hook   registration seam between kernel and surface engines
 internal/wiring the one crossing of hook's any-typed seam: typed runtime
                 dependencies, job listing, failing IDs, and option attachment
 internal/keys   the KV and queue key layout — every key string is built here
-internal/notice the envelope on a reconcile notification: one ID, encoded once
+internal/notice the envelope on a reconcile notification: one ID, or the
+                whole job
 internal/clockctx
                 run deadlines derived from converge.Clock, not the wall clock
 internal/mw     middleware chain composition

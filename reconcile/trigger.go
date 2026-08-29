@@ -48,15 +48,12 @@ func (t *notificationTrigger) Run(ctx context.Context, notify func(ID)) error {
 	return ctx.Err()
 }
 
-func (t *notificationTrigger) decode(payload []byte) (ID, error) {
+func (t *notificationTrigger) decode(payload []byte) (notice.Notification, error) {
 	if t.foreign {
-		return t.id(payload)
+		id, err := t.id(payload)
+		return notice.Notification{ID: string(id)}, err
 	}
-	n, err := notice.Decode(payload)
-	if err != nil {
-		return "", err
-	}
-	return ID(n.ID), nil
+	return notice.Decode(payload)
 }
 
 func (t *notificationTrigger) bind(e *engine) error {
@@ -138,11 +135,14 @@ func (e *engine) supervise(ctx context.Context, run func()) {
 }
 
 func (e *engine) deliverNotification(ctx context.Context, t *notificationTrigger, d converge.Delivery) {
-	id, err := t.decode(d.Message().Payload)
-	if err != nil {
+	n, err := t.decode(d.Message().Payload)
+	switch {
+	case err != nil:
 		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), Err: converge.ErrNotificationUndecodable})
-	} else {
-		e.notifyVia(ctx, e.idQueueRef(), id, causeNotification)
+	case n.All:
+		e.notifyAll(ctx)
+	default:
+		e.notifyVia(ctx, e.idQueueRef(), ID(n.ID), causeNotification)
 	}
 	d.Ack(ctx)
 }

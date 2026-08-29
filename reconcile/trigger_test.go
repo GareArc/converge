@@ -277,7 +277,7 @@ func TestNotificationsForwardCompatibleFieldsStillDecode(t *testing.T) {
 	})
 }
 
-func TestNotificationsEmptyIDAddressesSingleIDJob(t *testing.T) {
+func TestAllNotificationRunsTheSingleID(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnOneReplica, single: true}, func(ctx context.Context, id ID) error { return nil })
 	mq := inmem.NewMQWithClock(te.clock)
 	te.e.deps.MQ = mq

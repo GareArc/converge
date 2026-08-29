@@ -49,8 +49,10 @@ is back to being one call to one system.
 Then a small reconcile job drains it. Its IDs are the unsent rows:
 
 ```go
+var outboxDrain = reconcile.NewJob("outbox-drain", reconcile.JobOpts{})
+
 err = reconcile.Register(rt, reconcile.Spec{
-    Job:       reconcile.NewJob("outbox-drain", reconcile.JobOpts{}),
+    Job:       outboxDrain,
     Reconcile: outbox.sendOne,
     Triggers: []reconcile.Trigger{
         reconcile.Schedule(reconcile.IDsByPage(outbox.unsent), reconcile.Every(2*time.Second)),
@@ -70,15 +72,17 @@ func (o *outboxTable) sendOne(ctx context.Context, id reconcile.ID) error {
     if err != nil || !ok || row.Sent {
         return err
     }
-    if err := o.producer.Enqueue(ctx, row.Receipt, worker.EnqueueOpts{}); err != nil {
+    if err := o.receipts.Enqueue(ctx, row.Receipt, worker.EnqueueOpts{}); err != nil {
         return err
     }
     return o.markSent(ctx, string(id))
 }
 ```
 
-`Enqueue` is typed on the task's payload, so whatever form the table holds a
-row in, the drain is where it becomes a `ReceiptPayload` again.
+`o.receipts` is `jobs.SendReceipt.NewProducer(rt.Scope())`, built once when
+the drain is constructed. `Enqueue` is typed on the task's payload, so
+whatever form the table holds a row in, the drain is where it becomes a
+`ReceiptPayload` again.
 
 Marking sent before enqueueing would turn a crash between the two into a lost
 message. Enqueueing first turns the same crash into a duplicate, which the
@@ -92,8 +96,12 @@ never before:
 if err := tx.Commit(); err != nil {
     return err
 }
-p.Notify(ctx, "outbox-drain", row.ID)
+p.Notify(ctx, reconcile.ID(row.ID))
 ```
+
+`p` is `outboxDrain.NewProducer(rt.Scope())` — the same job value the drain
+registered, so the row is announced on the channel that job is reading and
+nowhere else.
 
 The [notification](../glossary.md#notification) is the right tool here for
 exactly the reason it is a cheap one: it is allowed to be lost. Nothing

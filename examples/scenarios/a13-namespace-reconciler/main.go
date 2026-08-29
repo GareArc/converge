@@ -24,6 +24,8 @@ const (
 	newCustomer      = reconcile.ID("c-5004")
 )
 
+var customerNamespace = reconcile.NewJob("customer-namespace", reconcile.JobOpts{})
+
 type namespaceSpec struct {
 	Name     string
 	Replicas int
@@ -161,7 +163,7 @@ func run() error {
 	customers := newCustomerList("c-5001", "c-5002", "c-5003")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Job: reconcile.NewJob("customer-namespace", reconcile.JobOpts{}),
+		Job: customerNamespace,
 		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			ready, err := k8s.apply(ctx, desired.of(id))
 			if err != nil || ready {
@@ -180,7 +182,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := customerNamespace.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -195,7 +197,7 @@ func run() error {
 			return
 		}
 		customers.add(newCustomer)
-		onboarded <- p.Notify(ctx, "customer-namespace", string(newCustomer))
+		onboarded <- p.Notify(ctx, newCustomer)
 	}()
 
 	if err := rt.Run(ctx); err != nil {

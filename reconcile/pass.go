@@ -53,6 +53,7 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 	q := e.queue
 	lastKey := e.key("sched", strconv.Itoa(idx), "last")
 	cursorKey := e.key("sched", strconv.Itoa(idx), "cursor")
+	wakeKey := e.key("sched", strconv.Itoa(idx), "wake")
 	readLast := func(ctx context.Context) (time.Time, bool) { return e.readTime(ctx, lastKey) }
 	writeLast := func(ctx context.Context, t time.Time) { e.writeTime(ctx, lastKey, t) }
 	if e.cfg.runMode == converge.OnAllReplicas || e.deps.KV == nil {
@@ -81,6 +82,14 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 			case <-ctx.Done():
 				return
 			case <-e.deps.Clock.After(next.Sub(now)):
+			case <-st.wakeCh:
+				release := e.markBusy()
+				e.deleteKey(ctx, wakeKey)
+				if !e.runPass(ctx, q, st, wakeKey) {
+					release()
+					return
+				}
+				release()
 			}
 			continue
 		}
