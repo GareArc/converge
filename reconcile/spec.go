@@ -2,10 +2,8 @@ package reconcile
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/GareArc/converge"
@@ -13,7 +11,7 @@ import (
 )
 
 type Spec struct {
-	Name        string
+	Job         Job
 	Reconcile   func(ctx context.Context, id ID) error
 	Triggers    []Trigger
 	Concurrency int
@@ -25,13 +23,10 @@ type Spec struct {
 }
 
 func newEngine(s Spec) (*engine, error) {
-	if s.Name == "" {
-		return nil, errors.New("reconcile: Spec.Name is required")
+	if err := s.Job.check(); err != nil {
+		return nil, err
 	}
-	fail := func(msg string) error { return fmt.Errorf("reconcile: job %q: %s", s.Name, msg) }
-	if strings.Contains(s.Name, "/") {
-		return nil, fail(`Name must not contain "/"`)
-	}
+	fail := func(msg string) error { return fmt.Errorf("reconcile: job %q: %s", s.Job.name, msg) }
 	if s.Reconcile == nil {
 		return nil, fail("Spec.Reconcile is required")
 	}
@@ -42,7 +37,7 @@ func newEngine(s Spec) (*engine, error) {
 		return nil, fail("Timeout must not be negative")
 	}
 	cfg := config{
-		name:        s.Name,
+		job:         s.Job,
 		fn:          s.Reconcile,
 		triggers:    slices.Clone(s.Triggers),
 		concurrency: s.Concurrency,
@@ -73,7 +68,7 @@ func newEngine(s Spec) (*engine, error) {
 				return nil, fail("Schedule needs an IDSource")
 			}
 			if tr.cad.err != nil {
-				return nil, fmt.Errorf("reconcile: job %q: %w", s.Name, tr.cad.err)
+				return nil, fmt.Errorf("reconcile: job %q: %w", s.Job.name, tr.cad.err)
 			}
 			if tr.cad.every == 0 && tr.cad.sched == nil {
 				return nil, fail("Schedule needs a Cadence; use Every or Cron")
@@ -83,16 +78,12 @@ func newEngine(s Spec) (*engine, error) {
 			}
 		case *notificationTrigger:
 			if tr.foreign {
-				if tr.queue == "" {
-					return nil, fail("NotificationsFrom needs a queue name")
+				if tr.source == "" {
+					return nil, fail("NotificationsFrom needs a source name")
 				}
-				if tr.opts.ID == nil {
+				if tr.id == nil {
 					return nil, fail("NotificationsFrom needs an ID function")
 				}
-			} else if tr.opts.MQ != nil {
-				return nil, fail("Notifications always reads Options.MQ; MQ is NotificationsFrom only")
-			} else if tr.opts.ID != nil {
-				return nil, fail("Notifications decodes converge notifications; ID is NotificationsFrom only")
 			}
 		default:
 			if _, ok := t.(PeriodicTrigger); ok {

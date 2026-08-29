@@ -87,7 +87,7 @@ func released(rec *convergetest.Recorder) int {
 
 func specWithSchedule() Spec {
 	return Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}
@@ -106,7 +106,7 @@ func TestRunRejectsOnOneReplicaWithoutALease(t *testing.T) {
 
 func TestRunRejectsUntilWithoutKV(t *testing.T) {
 	spec := Spec{
-		Name:      "cache",
+		Job:       NewJob("cache", JobOpts{}),
 		RunMode:   converge.OnAllReplicas,
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
@@ -233,7 +233,7 @@ func TestShutdownReleasesLease(t *testing.T) {
 
 func TestAllReplicasRunsWithoutLease(t *testing.T) {
 	spec := Spec{
-		Name:      "cache",
+		Job:       NewJob("cache", JobOpts{}),
 		RunMode:   converge.OnAllReplicas,
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
@@ -299,7 +299,7 @@ func TestRegisterThroughRuntime(t *testing.T) {
 		t.Fatal("duplicate name must be rejected by the runtime")
 	}
 	bad := okSpec()
-	bad.Name = ""
+	bad.Job = Job{}
 	if err := Register(rt, bad); err == nil {
 		t.Fatal("invalid spec must be rejected")
 	}
@@ -332,7 +332,7 @@ func TestStandbyNotifySurvivesIntoLeadership(t *testing.T) {
 	var mu sync.Mutex
 	var got []ID
 	spec := Spec{
-		Name: "job",
+		Job: NewJob("job", JobOpts{}),
 		Reconcile: func(_ context.Context, id ID) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -638,7 +638,7 @@ func TestFailingIDKeepsRetryingForever(t *testing.T) {
 	rt := h.Build(t)
 	var calls atomic.Int64
 	if err := Register(rt, Spec{
-		Name:      "always-fails",
+		Job:       NewJob("always-fails", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { calls.Add(1); return errors.New("boom") },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}); err != nil {
@@ -678,7 +678,7 @@ func TestDeadlineDestroysTheJob(t *testing.T) {
 	var runs atomic.Int64
 	cutover := h.Clock().Now().Add(time.Hour)
 	if err := Register(rt, Spec{
-		Name:      "migration",
+		Job:       NewJob("migration", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { runs.Add(1); return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
 		Until:     converge.Deadline(cutover),
@@ -710,7 +710,7 @@ func TestStopKeyDestroysTheJob(t *testing.T) {
 	var runs atomic.Int64
 	stopKey := keys.Tombstone("test", "migration")
 	if err := Register(rt, Spec{
-		Name:      "migration",
+		Job:       NewJob("migration", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { runs.Add(1); return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
 		Until:     converge.StopKey(stopKey),
@@ -744,7 +744,7 @@ func TestJobDestroyedReportsTheConditionThatFired(t *testing.T) {
 	rt := h.Build(t)
 	stopKey := keys.Tombstone("test", "migration")
 	if err := Register(rt, Spec{
-		Name:      "migration",
+		Job:       NewJob("migration", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
 		Until:     converge.StopKey(stopKey),
@@ -793,7 +793,7 @@ func TestAlreadyPastDeadlineStillBecomesReadyThenStopsCleanly(t *testing.T) {
 
 func TestOnAllReplicasAlreadyPastDeadlineStillBecomesReadyThenStopsCleanly(t *testing.T) {
 	spec := Spec{
-		Name:      "cache",
+		Job:       NewJob("cache", JobOpts{}),
 		RunMode:   converge.OnAllReplicas,
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
@@ -850,7 +850,7 @@ func TestBacklogIsZeroOnceNotificationsAreConsumed(t *testing.T) {
 		reconciled <- id
 		return nil
 	}
-	spec.Triggers = append(spec.Triggers, Notifications(NotificationsOpts{}))
+	spec.Triggers = append(spec.Triggers, Notifications())
 	e, err := newEngine(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -877,7 +877,7 @@ func TestBacklogIsZeroOnceNotificationsAreConsumed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mq.Publish(context.Background(), keys.Inbox("", "job"), converge.Message{Payload: payload}); err != nil {
+	if err := mq.Publish(context.Background(), keys.Notifications("", "job"), converge.Message{Payload: payload}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -898,8 +898,8 @@ func TestBacklogIsZeroOnceNotificationsAreConsumed(t *testing.T) {
 func TestBacklogSumsEveryNotificationTrigger(t *testing.T) {
 	spec := specWithSchedule()
 	spec.Triggers = append(spec.Triggers,
-		NotificationsFrom("first", NotificationsOpts{MQ: countingMQ{backlog: 2}, ID: firstPayloadID}),
-		NotificationsFrom("second", NotificationsOpts{MQ: countingMQ{backlog: 1}, ID: firstPayloadID}),
+		NotificationsFrom("first", countingMQ{backlog: 2}, firstPayloadID),
+		NotificationsFrom("second", countingMQ{backlog: 1}, firstPayloadID),
 	)
 	le, _ := startRun(t, spec, nil)
 	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })
@@ -908,15 +908,15 @@ func TestBacklogSumsEveryNotificationTrigger(t *testing.T) {
 		return s.BacklogKnown && s.Backlog == 3
 	})
 	if s := le.e.Stats(); s.Backlog != 3 || s.BacklogAt.IsZero() {
-		t.Fatalf("Stats = %+v, want a dated backlog of 3: the total is every notification inbox, not the first", s)
+		t.Fatalf("Stats = %+v, want a dated backlog of 3: the total is every notifications source, not the first", s)
 	}
 }
 
 func TestBacklogUnknownWhenOneNotificationTriggerCannotReport(t *testing.T) {
 	spec := specWithSchedule()
 	spec.Triggers = append(spec.Triggers,
-		NotificationsFrom("first", NotificationsOpts{MQ: countingMQ{backlog: 2}, ID: firstPayloadID}),
-		NotificationsFrom("second", NotificationsOpts{MQ: silentMQ{}, ID: firstPayloadID}),
+		NotificationsFrom("first", countingMQ{backlog: 2}, firstPayloadID),
+		NotificationsFrom("second", silentMQ{}, firstPayloadID),
 	)
 	le, _ := startRun(t, spec, nil)
 	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })

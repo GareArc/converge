@@ -200,14 +200,11 @@ func TestListMQNotificationsFromDrivesReconcileJobUnderOnOneReplica(t *testing.T
 		t.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "member-sync",
+		Job:       reconcile.NewJob("member-sync", reconcile.JobOpts{}),
 		Reconcile: func(ctx context.Context, id reconcile.ID) error { return nil },
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
-			reconcile.NotificationsFrom("enterprise:member:sync", reconcile.NotificationsOpts{
-				ID: reconcile.IDFromJSON("workspace_id"),
-				MQ: convredis.NewListMQ(client),
-			}),
+			reconcile.NotificationsFrom("enterprise:member:sync", convredis.NewListMQ(client), reconcile.IDFromJSON("workspace_id")),
 		},
 	})
 	if err != nil {
@@ -230,15 +227,12 @@ func TestListMQNotificationsFromFailsUnderOnAllReplicasNamingBroadcastConsumer(t
 		t.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "member-sync",
+		Job:       reconcile.NewJob("member-sync", reconcile.JobOpts{}),
 		RunMode:   converge.OnAllReplicas,
 		Reconcile: func(ctx context.Context, id reconcile.ID) error { return nil },
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
-			reconcile.NotificationsFrom("enterprise:member:sync", reconcile.NotificationsOpts{
-				ID: reconcile.IDFromJSON("workspace_id"),
-				MQ: convredis.NewListMQ(client),
-			}),
+			reconcile.NotificationsFrom("enterprise:member:sync", convredis.NewListMQ(client), reconcile.IDFromJSON("workspace_id")),
 		},
 	})
 	if err != nil {
@@ -259,15 +253,12 @@ func TestListMQNotificationsFromRejectedUnderCompetingAtRegister(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "member-sync",
+		Job:       reconcile.NewJob("member-sync", reconcile.JobOpts{}),
 		RunMode:   converge.Competing,
 		Reconcile: func(ctx context.Context, id reconcile.ID) error { return nil },
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
-			reconcile.NotificationsFrom("enterprise:member:sync", reconcile.NotificationsOpts{
-				ID: reconcile.IDFromJSON("workspace_id"),
-				MQ: convredis.NewListMQ(client),
-			}),
+			reconcile.NotificationsFrom("enterprise:member:sync", convredis.NewListMQ(client), reconcile.IDFromJSON("workspace_id")),
 		},
 	})
 	if err == nil {

@@ -37,7 +37,7 @@ direction and wasted calls in the other, and nothing worse.
 ```go
 Triggers: []reconcile.Trigger{
     reconcile.Schedule(reconcile.IDsByPage(customers.page), reconcile.Every(30*time.Minute)),
-    reconcile.Notifications(reconcile.NotificationsOpts{}),
+    reconcile.Notifications(),
 },
 ```
 

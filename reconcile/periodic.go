@@ -20,7 +20,7 @@ func Periodic(rt *converge.Runtime, name string, c Cadence, fn func(ctx context.
 		return fmt.Errorf("reconcile: job %q: Periodic needs a function", name)
 	}
 	return Register(rt, Spec{
-		Name:       name,
+		Job:        NewJob(name, JobOpts{}),
 		Reconcile:  func(ctx context.Context, _ ID) error { return fn(ctx) },
 		Triggers:   []Trigger{Schedule(SingleID(), c)},
 		Timeout:    o.Timeout,

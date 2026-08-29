@@ -21,10 +21,7 @@ of its triggers:
 ```go
 Triggers: []reconcile.Trigger{
     reconcile.Schedule(reconcile.IDsByPage(workspaces.page), reconcile.Every(5*time.Minute)),
-    reconcile.NotificationsFrom(foreignQueue, reconcile.NotificationsOpts{
-        ID: reconcile.IDFromJSON("workspace_id"),
-        MQ: convredis.NewListMQ(rdb),
-    }),
+    reconcile.NotificationsFrom(foreignQueue, convredis.NewListMQ(rdb), reconcile.IDFromJSON("workspace_id")),
 },
 ```
 

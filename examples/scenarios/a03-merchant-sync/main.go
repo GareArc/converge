@@ -133,11 +133,11 @@ func run() error {
 	merchants := newMerchantDirectory("m-1001", "m-1002", "m-1003")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "merchant-stripe",
+		Job:       reconcile.NewJob("merchant-stripe", reconcile.JobOpts{}),
 		Reconcile: stripe.syncMerchant,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDsByPage(merchants.page), reconcile.Every(15*time.Minute)),
-			reconcile.Notifications(reconcile.NotificationsOpts{}),
+			reconcile.Notifications(),
 		},
 		Concurrency: 8,
 		Timeout:     20 * time.Second,

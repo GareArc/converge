@@ -110,7 +110,7 @@ func (b *orderBook) cancelIfUnpaid(_ context.Context, id string) error {
 
 func expireUnpaidOrders(orders *orderBook) reconcile.Spec {
 	return reconcile.Spec{
-		Name:      "expire-unpaid-orders",
+		Job:       reconcile.NewJob("expire-unpaid-orders", reconcile.JobOpts{}),
 		Reconcile: func(ctx context.Context, id reconcile.ID) error { return orders.cancelIfUnpaid(ctx, string(id)) },
 		Triggers: []reconcile.Trigger{reconcile.Schedule(
 			reconcile.StringIDs(orders.unpaidOlderThan(30*time.Minute)), reconcile.Every(time.Minute))},
@@ -217,7 +217,7 @@ with a paged source and a slow remote call per tenant:
 
 ```go
 err = reconcile.Register(rt, reconcile.Spec{
-    Name:        "scim-provision",
+    Job:         reconcile.NewJob("scim-provision", reconcile.JobOpts{}),
     Reconcile:   scim.reconcileTenant,
     Triggers:    []reconcile.Trigger{reconcile.Schedule(reconcile.IDsByPage(tenants.withSCIM), reconcile.Every(5*time.Minute))},
     Concurrency: 16,

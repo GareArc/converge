@@ -97,7 +97,7 @@ func run() error {
 	}}
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:        "scim-provision",
+		Job:         reconcile.NewJob("scim-provision", reconcile.JobOpts{}),
 		Reconcile:   scim.reconcileTenant,
 		Triggers:    []reconcile.Trigger{reconcile.Schedule(reconcile.IDsByPage(tenants.withSCIM), reconcile.Every(5*time.Minute))},
 		Concurrency: 16,

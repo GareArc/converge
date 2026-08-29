@@ -50,11 +50,11 @@ Then a small reconcile job drains it. Its IDs are the unsent rows:
 
 ```go
 err = reconcile.Register(rt, reconcile.Spec{
-    Name:      "outbox-drain",
+    Job:       reconcile.NewJob("outbox-drain", reconcile.JobOpts{}),
     Reconcile: outbox.sendOne,
     Triggers: []reconcile.Trigger{
         reconcile.Schedule(reconcile.IDsByPage(outbox.unsent), reconcile.Every(2*time.Second)),
-        reconcile.Notifications(reconcile.NotificationsOpts{}),
+        reconcile.Notifications(),
     },
     Concurrency: 8,
     Timeout:     30 * time.Second,

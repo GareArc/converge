@@ -41,7 +41,7 @@ func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 	workspaces := []string{"ws_1", "ws_2", "ws_3"}
 	synced := map[reconcile.ID]int{}
 	err := reconcile.Register(rt, reconcile.Spec{
-		Name: "workspace-credentials",
+		Job: reconcile.NewJob("workspace-credentials", reconcile.JobOpts{}),
 		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -121,14 +121,14 @@ func TestNotifyFromAnotherBinaryReconcilesTheID(t *testing.T) {
 	rt := h.Build(t)
 	seen := make(chan string, 4)
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name: "merchants",
+		Job: reconcile.NewJob("merchants", reconcile.JobOpts{}),
 		Reconcile: func(_ context.Context, id reconcile.ID) error {
 			seen <- string(id)
 			return nil
 		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
-			reconcile.Notifications(reconcile.NotificationsOpts{}),
+			reconcile.Notifications(),
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -156,11 +156,11 @@ func TestNotificationsFromRequiresAnIDFunction(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	err := reconcile.Register(rt, reconcile.Spec{
-		Name:      "workspaces",
+		Job:       reconcile.NewJob("workspaces", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error { return nil },
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
-			reconcile.NotificationsFrom("legacy:queue", reconcile.NotificationsOpts{}),
+			reconcile.NotificationsFrom("legacy:queue", nil, nil),
 		},
 	})
 	if err == nil {
@@ -174,7 +174,7 @@ func TestMalformedNotificationsCountedAndDropped(t *testing.T) {
 	var mu sync.Mutex
 	var got []reconcile.ID
 	err := reconcile.Register(rt, reconcile.Spec{
-		Name: "member-sync",
+		Job: reconcile.NewJob("member-sync", reconcile.JobOpts{}),
 		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -183,7 +183,7 @@ func TestMalformedNotificationsCountedAndDropped(t *testing.T) {
 		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
-			reconcile.NotificationsFrom("member-events", reconcile.NotificationsOpts{ID: reconcile.IDFromJSON("workspace_id")}),
+			reconcile.NotificationsFrom("member-events", nil, reconcile.IDFromJSON("workspace_id")),
 		},
 	})
 	if err != nil {

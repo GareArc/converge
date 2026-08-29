@@ -170,14 +170,11 @@ func run() error {
 	workspaces := newWorkspaceRegistry("ws-9001", "ws-9002", "ws-9003")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "workspace-credentials",
+		Job:       reconcile.NewJob("workspace-credentials", reconcile.JobOpts{}),
 		Reconcile: workspaces.syncCredentials,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDsByPage(workspaces.page), reconcile.Every(5*time.Minute)),
-			reconcile.NotificationsFrom(foreignQueue, reconcile.NotificationsOpts{
-				ID: reconcile.IDFromJSON("workspace_id"),
-				MQ: convredis.NewListMQ(rdb),
-			}),
+			reconcile.NotificationsFrom(foreignQueue, convredis.NewListMQ(rdb), reconcile.IDFromJSON("workspace_id")),
 		},
 	})
 	if err != nil {

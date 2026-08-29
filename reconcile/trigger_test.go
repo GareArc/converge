@@ -133,92 +133,106 @@ func TestCustomTriggerStopsOnCancel(t *testing.T) {
 	}
 }
 
-func TestNotificationsBindResolvesOwnInboxAndCapabilities(t *testing.T) {
+func TestNotificationsBindResolvesOwnChannelAndCapabilities(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	mq := inmem.NewMQWithClock(clock)
-	e := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
+	e := &engine{cfg: config{job: NewJob("job", JobOpts{}), runMode: converge.OnOneReplica}}
 	e.deps = converge.JobDeps{MQ: mq, Namespace: "acme", Clock: clock, Observer: &convergetest.Recorder{}}
-	trig := Notifications(NotificationsOpts{}).(*notificationTrigger)
+	trig := Notifications().(*notificationTrigger)
 	if err := trig.bind(e); err != nil {
 		t.Fatal(err)
 	}
 	if trig.broadcast || trig.mq != converge.MQ(mq) {
 		t.Fatalf("bind = %v %T", trig.broadcast, trig.mq)
 	}
-	if want := keys.Inbox("acme", "job"); trig.queue != want {
-		t.Fatalf("queue = %q, want %q", trig.queue, want)
+	if want := keys.Notifications("acme", "job"); trig.source != want {
+		t.Fatalf("source = %q, want %q", trig.source, want)
 	}
-	all := &engine{cfg: config{name: "job", runMode: converge.OnAllReplicas}}
+	all := &engine{cfg: config{job: NewJob("job", JobOpts{}), runMode: converge.OnAllReplicas}}
 	all.deps = e.deps
-	bTrig := Notifications(NotificationsOpts{}).(*notificationTrigger)
+	bTrig := Notifications().(*notificationTrigger)
 	if err := bTrig.bind(all); err != nil {
 		t.Fatal(err)
 	}
 	if !bTrig.broadcast {
 		t.Fatalf("OnAllReplicas default broadcast = %v", bTrig.broadcast)
 	}
-	noMQ := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
+	noMQ := &engine{cfg: config{job: NewJob("job", JobOpts{}), runMode: converge.OnOneReplica}}
 	noMQ.deps = converge.JobDeps{Clock: clock, Observer: &convergetest.Recorder{}}
-	if err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(noMQ); err == nil {
+	if err := (Notifications().(*notificationTrigger)).bind(noMQ); err == nil {
 		t.Fatal("bind without an MQ must error")
 	}
 	bare := bareMQ{}
-	e2 := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
+	e2 := &engine{cfg: config{job: NewJob("job", JobOpts{}), runMode: converge.OnOneReplica}}
 	e2.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &convergetest.Recorder{}}
-	if err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(e2); err != nil {
+	if err := (Notifications().(*notificationTrigger)).bind(e2); err != nil {
 		t.Fatalf("OnOneReplica binds through base Consume; no capability is required: %v", err)
 	}
-	e3 := &engine{cfg: config{name: "job", runMode: converge.OnAllReplicas}}
+	e3 := &engine{cfg: config{job: NewJob("job", JobOpts{}), runMode: converge.OnAllReplicas}}
 	e3.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &convergetest.Recorder{}}
-	if err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(e3); err == nil {
+	if err := (Notifications().(*notificationTrigger)).bind(e3); err == nil {
 		t.Fatal("OnAllReplicas without BroadcastConsumer must error")
 	}
-	e4 := &engine{cfg: config{name: "job", runMode: converge.Competing}}
+	e4 := &engine{cfg: config{job: NewJob("job", JobOpts{}), runMode: converge.Competing}}
 	e4.deps = converge.JobDeps{MQ: bare, Clock: clock, Observer: &convergetest.Recorder{}}
-	if err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(e4); err == nil {
+	if err := (Notifications().(*notificationTrigger)).bind(e4); err == nil {
 		t.Fatal("Competing without GroupConsumer must error")
 	}
 }
 
-func TestNotificationsFromBindKeepsGivenQueue(t *testing.T) {
+func TestNotificationsFromBindKeepsTheGivenSource(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	mq := inmem.NewMQWithClock(clock)
-	e := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
+	e := &engine{cfg: config{job: NewJob("job", JobOpts{}), runMode: converge.OnOneReplica}}
 	e.deps = converge.JobDeps{MQ: mq, Namespace: "acme", Clock: clock, Observer: &convergetest.Recorder{}}
-	trig := NotificationsFrom("legacy:queue", NotificationsOpts{ID: RawID()}).(*notificationTrigger)
+	trig := NotificationsFrom("legacy:queue", nil, RawID()).(*notificationTrigger)
 	if err := trig.bind(e); err != nil {
 		t.Fatal(err)
 	}
-	if trig.queue != "legacy:queue" {
-		t.Fatalf("queue = %q, want the foreign name unchanged", trig.queue)
+	if trig.source != "legacy:queue" {
+		t.Fatalf("source = %q, want the foreign name unchanged", trig.source)
+	}
+}
+
+func TestNotificationsBindUsesADeclaredName(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	mq := inmem.NewMQWithClock(clock)
+	e := &engine{cfg: config{job: NewJob("job", JobOpts{Notifications: "dify:workspace-credentials"}), runMode: converge.OnOneReplica}}
+	e.deps = converge.JobDeps{MQ: mq, Namespace: "acme", Clock: clock, Observer: &convergetest.Recorder{}}
+	trig := Notifications().(*notificationTrigger)
+	if err := trig.bind(e); err != nil {
+		t.Fatal(err)
+	}
+	if trig.source != "dify:workspace-credentials" {
+		t.Fatalf("source = %q, want the declared name verbatim", trig.source)
 	}
 }
 
 func TestMissingMQErrorNamesTheTriggerConstructor(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	bareEngine := func() *engine {
-		e := &engine{cfg: config{name: "job", runMode: converge.OnOneReplica}}
+		e := &engine{cfg: config{job: NewJob("job", JobOpts{}), runMode: converge.OnOneReplica}}
 		e.deps = converge.JobDeps{Clock: clock, Observer: &convergetest.Recorder{}}
 		return e
 	}
-	err := (Notifications(NotificationsOpts{}).(*notificationTrigger)).bind(bareEngine())
+	err := (Notifications().(*notificationTrigger)).bind(bareEngine())
 	if err == nil || !strings.Contains(err.Error(), "Notifications needs Options.MQ") {
 		t.Fatalf("Notifications bind error = %v, want it to name Notifications", err)
 	}
 	if strings.Contains(err.Error(), "NotificationsFrom") {
 		t.Fatalf("Notifications bind error = %v, must not name NotificationsFrom", err)
 	}
-	err = (NotificationsFrom("legacy:queue", NotificationsOpts{ID: RawID()}).(*notificationTrigger)).bind(bareEngine())
+	err = (NotificationsFrom("legacy:queue", nil, RawID()).(*notificationTrigger)).bind(bareEngine())
 	if err == nil || !strings.Contains(err.Error(), `NotificationsFrom("legacy:queue")`) {
 		t.Fatalf(`NotificationsFrom bind error = %v, want it to name NotificationsFrom("legacy:queue")`, err)
 	}
 }
 
-func TestNotificationsQueueFromOwnInbox(t *testing.T) {
+func TestNotificationsReadsTheJobsOwnChannel(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
 	mq := inmem.NewMQWithClock(te.clock)
 	te.e.deps.MQ = mq
-	trig := Notifications(NotificationsOpts{}).(*notificationTrigger)
+	trig := Notifications().(*notificationTrigger)
 	if err := trig.bind(te.e); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +243,7 @@ func TestNotificationsQueueFromOwnInbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mq.Publish(context.Background(), trig.queue, converge.Message{Kind: notice.Kind, Payload: payload}); err != nil {
+	if err := mq.Publish(context.Background(), trig.source, converge.Message{Kind: notice.Kind, Payload: payload}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -244,7 +258,7 @@ func TestNotificationsForwardCompatibleFieldsStillDecode(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
 	mq := inmem.NewMQWithClock(te.clock)
 	te.e.deps.MQ = mq
-	trig := Notifications(NotificationsOpts{}).(*notificationTrigger)
+	trig := Notifications().(*notificationTrigger)
 	if err := trig.bind(te.e); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +266,7 @@ func TestNotificationsForwardCompatibleFieldsStillDecode(t *testing.T) {
 	t.Cleanup(cancel)
 	go te.e.runNotifications(ctx, trig)
 	future := []byte(`{"id":"ws_9","schema":"v3-not-yet-invented"}`)
-	if err := mq.Publish(context.Background(), trig.queue, converge.Message{Kind: notice.Kind, Payload: future}); err != nil {
+	if err := mq.Publish(context.Background(), trig.source, converge.Message{Kind: notice.Kind, Payload: future}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -267,7 +281,7 @@ func TestNotificationsEmptyIDAddressesSingleIDJob(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnOneReplica, single: true}, func(ctx context.Context, id ID) error { return nil })
 	mq := inmem.NewMQWithClock(te.clock)
 	te.e.deps.MQ = mq
-	trig := Notifications(NotificationsOpts{}).(*notificationTrigger)
+	trig := Notifications().(*notificationTrigger)
 	if err := trig.bind(te.e); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +292,7 @@ func TestNotificationsEmptyIDAddressesSingleIDJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := mq.Publish(context.Background(), trig.queue, converge.Message{Kind: notice.Kind, Payload: payload}); err != nil {
+	if err := mq.Publish(context.Background(), trig.source, converge.Message{Kind: notice.Kind, Payload: payload}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -293,14 +307,14 @@ func TestNotificationsUndecodablePayloadCountedAndDropped(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
 	mq := inmem.NewMQWithClock(te.clock)
 	te.e.deps.MQ = mq
-	trig := Notifications(NotificationsOpts{}).(*notificationTrigger)
+	trig := Notifications().(*notificationTrigger)
 	if err := trig.bind(te.e); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go te.e.runNotifications(ctx, trig)
-	if err := mq.Publish(context.Background(), trig.queue, converge.Message{Payload: []byte(`garbage`)}); err != nil {
+	if err := mq.Publish(context.Background(), trig.source, converge.Message{Payload: []byte(`garbage`)}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -321,7 +335,7 @@ func TestNotificationsFromQueuesUsingIDFunc(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
 	mq := inmem.NewMQWithClock(te.clock)
 	te.e.deps.MQ = mq
-	trig := NotificationsFrom("app-events", NotificationsOpts{ID: IDFromJSON("workspace_id")}).(*notificationTrigger)
+	trig := NotificationsFrom("app-events", nil, IDFromJSON("workspace_id")).(*notificationTrigger)
 	if err := trig.bind(te.e); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +357,7 @@ func TestNotificationsFromUndecodablePayloadCountedAndDropped(t *testing.T) {
 	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
 	mq := inmem.NewMQWithClock(te.clock)
 	te.e.deps.MQ = mq
-	trig := NotificationsFrom("app-events", NotificationsOpts{ID: RawID()}).(*notificationTrigger)
+	trig := NotificationsFrom("app-events", nil, RawID()).(*notificationTrigger)
 	if err := trig.bind(te.e); err != nil {
 		t.Fatal(err)
 	}

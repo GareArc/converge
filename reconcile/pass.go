@@ -103,7 +103,7 @@ func (e *engine) checkOverrun(ctx context.Context, st *scheduleTrigger, writeLas
 		return
 	}
 	for _, due := range over {
-		e.deps.Observer.Observe(converge.ScheduleOverrun{Job: e.cfg.name, Due: due, Late: now.Sub(due)})
+		e.deps.Observer.Observe(converge.ScheduleOverrun{Job: e.cfg.job.Name(), Due: due, Late: now.Sub(due)})
 	}
 	writeLast(ctx, latestBoundary(st.cad, over[len(over)-1], now))
 }

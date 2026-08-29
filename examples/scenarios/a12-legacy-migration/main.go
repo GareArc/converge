@@ -94,7 +94,7 @@ func run() error {
 	cutover := time.Now().Add(cutoverIn)
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "legacy-credential-migration",
+		Job:       reconcile.NewJob("legacy-credential-migration", reconcile.JobOpts{}),
 		Reconcile: creds.migrateOne,
 		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.IDsByPage(creds.unmigrated), reconcile.Every(time.Minute))},
 		Until:     converge.Deadline(cutover),

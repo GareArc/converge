@@ -29,7 +29,7 @@ func (r appReconciler) Reconcile(ctx context.Context, id reconcile.ID) error {
 
 func NewReconciler(rt *converge.Runtime, repo Repo) (struct{}, error) {
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:      "workspace-credentials",
+		Job:       reconcile.NewJob("workspace-credentials", reconcile.JobOpts{}),
 		Reconcile: workspaceReconciler{repo: repo}.Reconcile,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.StringIDs(repo.WorkspaceIDs), reconcile.Every(24*time.Hour)),
@@ -38,7 +38,7 @@ func NewReconciler(rt *converge.Runtime, repo Repo) (struct{}, error) {
 		return struct{}{}, err
 	}
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:      "app-runner",
+		Job:       reconcile.NewJob("app-runner", reconcile.JobOpts{}),
 		Reconcile: appReconciler{repo: repo}.Reconcile,
 		RunMode:   converge.OnOneReplica,
 		Triggers: []reconcile.Trigger{

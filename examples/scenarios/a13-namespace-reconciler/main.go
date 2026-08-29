@@ -161,7 +161,7 @@ func run() error {
 	customers := newCustomerList("c-5001", "c-5002", "c-5003")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "customer-namespace",
+		Job: reconcile.NewJob("customer-namespace", reconcile.JobOpts{}),
 		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			ready, err := k8s.apply(ctx, desired.of(id))
 			if err != nil || ready {
@@ -171,7 +171,7 @@ func run() error {
 		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDsByPage(customers.page), reconcile.Every(30*time.Minute)),
-			reconcile.Notifications(reconcile.NotificationsOpts{}),
+			reconcile.Notifications(),
 		},
 		Concurrency: 4,
 		Timeout:     2 * time.Minute,

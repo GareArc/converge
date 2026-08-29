@@ -379,7 +379,7 @@ func TestReadOnlyHandlerNamesFailingIDs(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name: "flaky",
+		Job: reconcile.NewJob("flaky", reconcile.JobOpts{}),
 		Reconcile: func(_ context.Context, id reconcile.ID) error {
 			if id == "bad" {
 				return errors.New("upstream refused")

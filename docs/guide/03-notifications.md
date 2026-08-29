@@ -49,15 +49,15 @@ with a second [trigger](../glossary.md#trigger):
 ```go
 Triggers: []reconcile.Trigger{
     reconcile.Schedule(reconcile.IDsByPage(merchants.page), reconcile.Every(15*time.Minute)),
-    reconcile.Notifications(reconcile.NotificationsOpts{}),
+    reconcile.Notifications(),
 },
 ```
 
 Triggers all feed one deduplicated queue of pending IDs, so a schedule and a
 stream of notifications for the same ID collapse into one run rather than
-racing. `reconcile.Notifications` takes no configuration in the common case
-because there is nothing to configure: it reads the job's own inbox, over
-the `MQ` you already gave `converge.New`.
+racing. `reconcile.Notifications` takes no configuration because there is
+nothing to configure: it reads the job's own inbox, over the `MQ` you
+already gave `converge.New`.
 
 ## Notifying from another binary
 
@@ -222,11 +222,11 @@ func run() error {
 	merchants := newMerchantDirectory("m-1001", "m-1002", "m-1003")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "merchant-stripe",
+		Job:       reconcile.NewJob("merchant-stripe", reconcile.JobOpts{}),
 		Reconcile: stripe.syncMerchant,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDsByPage(merchants.page), reconcile.Every(15*time.Minute)),
-			reconcile.Notifications(reconcile.NotificationsOpts{}),
+			reconcile.Notifications(),
 		},
 		Concurrency: 8,
 		Timeout:     20 * time.Second,
@@ -306,23 +306,20 @@ list; you want that to hurry a reconcile job along.
 raw queue name appears, and it is used exactly as given:
 
 ```go
-reconcile.NotificationsFrom(foreignQueue, reconcile.NotificationsOpts{
-    ID: reconcile.IDFromJSON("workspace_id"),
-    MQ: convredis.NewListMQ(rdb),
-}),
+reconcile.NotificationsFrom(foreignQueue, convredis.NewListMQ(rdb), reconcile.IDFromJSON("workspace_id")),
 ```
 
 Three things are different from `Notifications`:
 
-- **The queue is named.** `foreignQueue` here is the literal string
+- **The source is named.** `foreignQueue` here is the literal string
   `"enterprise:workspace:sync:queue"`. converge does not namespace it,
   prefix it, or own it.
-- **You supply the `ID` function**, because converge has no idea what shape
+- **You supply the `id` function**, because converge has no idea what shape
   that system's messages are. `reconcile.IDFromJSON("workspace_id")` reads
   one string field out of a JSON object; `reconcile.RawID()` takes the whole
   payload as the ID. Anything that fails to decode is dropped and reported,
   never guessed at.
-- **You supply the `MQ`**, because a foreign queue is usually not the
+- **You supply the `mq`**, because a foreign queue is usually not the
   transport your own jobs use. Here it is a Redis list rather than the
   stream the runtime is wired to.
 

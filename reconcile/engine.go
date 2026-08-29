@@ -25,7 +25,7 @@ const (
 )
 
 type config struct {
-	name        string
+	job         Job
 	fn          func(ctx context.Context, id ID) error
 	triggers    []Trigger
 	concurrency int
@@ -63,7 +63,7 @@ type engine struct {
 	destroyOnce sync.Once
 }
 
-func (e *engine) Name() string { return e.cfg.name }
+func (e *engine) Name() string { return e.cfg.job.Name() }
 
 func (e *engine) Ready() <-chan struct{} { return e.ready }
 
@@ -110,10 +110,10 @@ func (e *engine) Quiet() bool {
 func (e *engine) Notify(id string) error {
 	q := e.idQueueRef()
 	if q == nil {
-		return fmt.Errorf("reconcile: job %q is not running", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q is not running", e.cfg.job.Name())
 	}
 	if id == "" && !e.cfg.single {
-		return fmt.Errorf("reconcile: job %q: notify needs an id", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: notify needs an id", e.cfg.job.Name())
 	}
 	if e.cfg.single {
 		id = ""
@@ -141,7 +141,7 @@ func (e *engine) isActive() bool {
 func (e *engine) Sweep(ctx context.Context) error {
 	q, ok := e.admitSweep()
 	if !ok {
-		return fmt.Errorf("reconcile: job %q: sweep needs the engine to be active", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: sweep needs the engine to be active", e.cfg.job.Name())
 	}
 	defer e.sweepsInFlight.Done()
 	found := false
@@ -151,7 +151,7 @@ func (e *engine) Sweep(ctx context.Context) error {
 			continue
 		}
 		if !e.isActive() {
-			return fmt.Errorf("reconcile: job %q: sweep needs the engine to be active", e.cfg.name)
+			return fmt.Errorf("reconcile: job %q: sweep needs the engine to be active", e.cfg.job.Name())
 		}
 		found = true
 		cursorKey := e.key("sweep", strconv.Itoa(idx))
@@ -161,7 +161,7 @@ func (e *engine) Sweep(ctx context.Context) error {
 		}
 	}
 	if !found {
-		return fmt.Errorf("reconcile: job %q: sweep needs a Schedule trigger", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: sweep needs a Schedule trigger", e.cfg.job.Name())
 	}
 	return nil
 }
@@ -170,7 +170,7 @@ func (e *engine) Stats() converge.JobStats {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	s := converge.JobStats{
-		Job:              e.cfg.name,
+		Job:              e.cfg.job.Name(),
 		Surface:          converge.SurfaceReconcile,
 		RunMode:          e.cfg.runMode,
 		State:            e.state,
@@ -221,7 +221,7 @@ func (e *engine) Info() converge.JobInfo {
 		settings["versions"] = v
 	}
 	return converge.JobInfo{
-		Job:      e.cfg.name,
+		Job:      e.cfg.job.Name(),
 		Surface:  converge.SurfaceReconcile,
 		RunMode:  e.cfg.runMode,
 		Settings: settings,
@@ -234,10 +234,10 @@ func (e *engine) triggerLabel(t Trigger) string {
 		return "schedule"
 	case *notificationTrigger:
 		e.mu.Lock()
-		queue := tr.queue
+		source := tr.source
 		e.mu.Unlock()
 		if tr.foreign {
-			return "notifications-from " + queue
+			return "notifications-from " + source
 		}
 		return "notifications"
 	default:
@@ -276,7 +276,7 @@ func (e *engine) notify(ctx context.Context, id ID) {
 
 func (e *engine) notifyVia(ctx context.Context, q *idQueue, id ID, class queueCause) {
 	if id == "" && !e.cfg.single {
-		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, Err: converge.ErrNotificationEmptyID})
+		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), Err: converge.ErrNotificationEmptyID})
 		return
 	}
 	if q == nil {
@@ -289,7 +289,7 @@ func (e *engine) report(id ID, res queueResult) {
 	if res != resultDroppedOverflow {
 		return
 	}
-	e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, ID: string(id), Err: converge.ErrInboxOverflow})
+	e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), ID: string(id), Err: converge.ErrInboxOverflow})
 }
 
 func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.WaitGroup) {
@@ -363,7 +363,7 @@ func (e *engine) versionAdvanced(ctx context.Context, id ID, snap versionSnapsho
 func (e *engine) runOne(hctx context.Context, id ID) {
 	start := e.deps.Clock.Now()
 	snap := e.preRunVersion(hctx, id)
-	run := converge.Run{Job: e.cfg.name, Surface: converge.SurfaceReconcile, ID: string(id)}
+	run := converge.Run{Job: e.cfg.job.Name(), Surface: converge.SurfaceReconcile, ID: string(id)}
 	runCtx := hctx
 	if e.cfg.timeout > 0 {
 		var cancel context.CancelFunc
@@ -377,7 +377,7 @@ func (e *engine) runOne(hctx context.Context, id ID) {
 func (e *engine) invokeChain(ctx context.Context, run converge.Run) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = panicErr(e.cfg.name, r)
+			err = panicErr(e.cfg.job.Name(), r)
 		}
 	}()
 	return e.handler(ctx, run)
@@ -390,7 +390,7 @@ func panicErr(name string, r any) error {
 func (e *engine) invoke(ctx context.Context, id ID) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = panicErr(e.cfg.name, r)
+			err = panicErr(e.cfg.job.Name(), r)
 		}
 	}()
 	return e.cfg.fn(ctx, id)
@@ -435,7 +435,7 @@ func (e *engine) settle(hctx context.Context, id ID, err error, took time.Durati
 		outcome, oerr = converge.Deferred, nil
 	}
 	e.deps.Observer.Observe(converge.RunCompleted{
-		Job:      e.cfg.name,
+		Job:      e.cfg.job.Name(),
 		ID:       string(id),
 		Attempt:  res.attempt,
 		Duration: took,
@@ -477,7 +477,7 @@ func (e *engine) record(kind finishKind, err error) {
 }
 
 func (e *engine) key(parts ...string) string {
-	return keys.Reconcile(e.deps.Namespace, e.cfg.name, parts...)
+	return keys.Reconcile(e.deps.Namespace, e.cfg.job.Name(), parts...)
 }
 
 func (e *engine) setState(s converge.State) {
@@ -491,10 +491,10 @@ func (e *engine) destroyed(ctx context.Context) (converge.StopCondition, bool) {
 		return converge.StopCondition{}, false
 	}
 	if at, ok := hook.StopConditionDeadline(e.cfg.until); ok && !e.deps.Clock.Now().Before(at) {
-		e.deps.KV.Set(ctx, keys.Tombstone(e.deps.Namespace, e.cfg.name), []byte("1"), 0)
+		e.deps.KV.Set(ctx, keys.Tombstone(e.deps.Namespace, e.cfg.job.Name()), []byte("1"), 0)
 		return e.cfg.until, true
 	}
-	key := keys.Tombstone(e.deps.Namespace, e.cfg.name)
+	key := keys.Tombstone(e.deps.Namespace, e.cfg.job.Name())
 	if k, ok := hook.StopConditionKey(e.cfg.until); ok {
 		key = k
 	}
@@ -516,7 +516,7 @@ func (e *engine) checkDestroy(ctx context.Context) bool {
 		first = true
 	})
 	if first {
-		e.deps.Observer.Observe(converge.JobDestroyed{Job: e.cfg.name, Cause: cause})
+		e.deps.Observer.Observe(converge.JobDestroyed{Job: e.cfg.job.Name(), Cause: cause})
 	}
 	return true
 }
@@ -551,10 +551,10 @@ func (e *engine) Run(ctx context.Context, deps converge.JobDeps) error {
 func (e *engine) bind(deps converge.JobDeps) error {
 	e.deps = deps
 	if e.cfg.runMode == converge.OnOneReplica && deps.Lease == nil {
-		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: OnOneReplica needs Options.Lease", e.cfg.job.Name())
 	}
 	if !e.cfg.until.IsZero() && deps.KV == nil {
-		return fmt.Errorf("reconcile: job %q: Until needs Options.KV", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: Until needs Options.KV", e.cfg.job.Name())
 	}
 	for _, t := range e.cfg.triggers {
 		if tr, ok := t.(*notificationTrigger); ok {
@@ -571,7 +571,7 @@ func (e *engine) leaseInterval() time.Duration {
 }
 
 func (e *engine) leaseLoop(ctx context.Context) error {
-	name := keys.ReconcileLease(e.deps.Namespace, e.cfg.name)
+	name := keys.ReconcileLease(e.deps.Namespace, e.cfg.job.Name())
 	retry := e.leaseInterval()
 	e.markReady()
 	for {
@@ -582,10 +582,10 @@ func (e *engine) leaseLoop(ctx context.Context) error {
 		e.markReady()
 		if err == nil && ok {
 			e.setLeaseHeld(true)
-			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.name, Held: true})
+			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.job.Name(), Held: true})
 			e.runActive(ctx, h)
 			e.setLeaseHeld(false)
-			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.name, Held: false})
+			e.deps.Observer.Observe(converge.LeaseChanged{Job: e.cfg.job.Name(), Held: false})
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -716,14 +716,14 @@ func (e *engine) triggerBacklogReader(t *notificationTrigger) func(context.Conte
 		if !ok {
 			return nil
 		}
-		return func(ctx context.Context) (int, error) { return br.Backlog(ctx, t.queue) }
+		return func(ctx context.Context) (int, error) { return br.Backlog(ctx, t.source) }
 	default:
 		gr, ok := t.mq.(converge.GroupBacklogReporter)
 		if !ok {
 			return nil
 		}
 		group := e.key("notifications")
-		return func(ctx context.Context) (int, error) { return gr.BacklogForGroup(ctx, t.queue, group) }
+		return func(ctx context.Context) (int, error) { return gr.BacklogForGroup(ctx, t.source, group) }
 	}
 }
 

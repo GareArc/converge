@@ -74,7 +74,7 @@ func (b *orderBook) cancelIfUnpaid(_ context.Context, id string) error {
 
 func expireUnpaidOrders(orders *orderBook) reconcile.Spec {
 	return reconcile.Spec{
-		Name:      "expire-unpaid-orders",
+		Job:       reconcile.NewJob("expire-unpaid-orders", reconcile.JobOpts{}),
 		Reconcile: func(ctx context.Context, id reconcile.ID) error { return orders.cancelIfUnpaid(ctx, string(id)) },
 		Triggers: []reconcile.Trigger{reconcile.Schedule(
 			reconcile.StringIDs(orders.unpaidOlderThan(30*time.Minute)), reconcile.Every(time.Minute))},

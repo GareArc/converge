@@ -57,7 +57,7 @@ func TestVersionAheadOfSnapshotDefersInsteadOfFailing(t *testing.T) {
 
 func TestVersionsDoNotNeedKV(t *testing.T) {
 	e, err := newEngine(Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 		Versions:  fakeVersions{},

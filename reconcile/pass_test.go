@@ -66,7 +66,7 @@ func TestMissedTicksRunOnceOnReturn(t *testing.T) {
 	rt := h.Build(t)
 	var sweeps atomic.Int64
 	if err := Register(rt, Spec{
-		Name: "hourly",
+		Job: NewJob("hourly", JobOpts{}),
 		Reconcile: func(context.Context, ID) error {
 			sweeps.Add(1)
 			return nil
@@ -159,7 +159,7 @@ func TestAllReplicasScheduleIsReplicaLocal(t *testing.T) {
 	calls := map[int]int{}
 	boot := func(replica int) *engine {
 		e := &engine{cfg: config{
-			name:        "job",
+			job:         NewJob("job", JobOpts{}),
 			concurrency: 1,
 			single:      true,
 			runMode:     converge.OnAllReplicas,
@@ -420,7 +420,7 @@ func TestRunPassNowInactiveErrors(t *testing.T) {
 
 func TestRunPassNowWithoutScheduleTriggerErrors(t *testing.T) {
 	spec := Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 		RunMode:   converge.OnAllReplicas,
@@ -453,7 +453,7 @@ func TestRunPassNowEnumeratesFullIDSource(t *testing.T) {
 	var mu sync.Mutex
 	counts := map[ID]int{}
 	spec := Spec{
-		Name: "job",
+		Job: NewJob("job", JobOpts{}),
 		Reconcile: func(_ context.Context, id ID) error {
 			mu.Lock()
 			counts[id]++
@@ -494,7 +494,7 @@ func TestRunPassNowDoesNotDisturbScheduledLastFireOrCursor(t *testing.T) {
 	var mu sync.Mutex
 	scheduledRuns := 0
 	spec := Spec{
-		Name: "job",
+		Job: NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error {
 			mu.Lock()
 			scheduledRuns++
@@ -550,7 +550,7 @@ func TestRunPassNowCtxCancellationAbortsAndReturnsCtxErr(t *testing.T) {
 		return nil, errors.New("db hiccup")
 	})
 	spec := Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(src, Every(time.Hour))},
 	}
@@ -599,7 +599,7 @@ func TestRunPassNowDoesNotPanicWhenQueueNilsMidPass(t *testing.T) {
 		return []ID{"a"}, nil
 	})
 	spec := Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(src, Every(time.Hour))},
 	}

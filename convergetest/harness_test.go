@@ -25,7 +25,7 @@ func TestReconcileRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "workspace-credentials",
+		Job: reconcile.NewJob("workspace-credentials", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
 		},
@@ -52,7 +52,7 @@ func TestScheduleBoundaryDrivesReconcile(t *testing.T) {
 	var mu sync.Mutex
 	runs := 0
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "app-runner",
+		Job: reconcile.NewJob("app-runner", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error {
 			mu.Lock()
 			runs++
@@ -93,7 +93,7 @@ func TestSweepImmediateWithoutClockMovement(t *testing.T) {
 	var mu sync.Mutex
 	runs := 0
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "backfill",
+		Job: reconcile.NewJob("backfill", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error {
 			mu.Lock()
 			runs++
@@ -259,7 +259,7 @@ func TestLargeClockAdvanceDoesNotDropLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "steady-runner",
+		Job: reconcile.NewJob("steady-runner", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
 		},
@@ -296,7 +296,7 @@ func TestNotifyBypassesBackoff(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "flaky-job",
+		Job: reconcile.NewJob("flaky-job", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -564,7 +564,7 @@ func TestEventsReadableAfterStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "steady",
+		Job: reconcile.NewJob("steady", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
 		},
@@ -773,7 +773,7 @@ func TestDrainWithCustomMQDegradesToHookQuietWithoutPanicking(t *testing.T) {
 		t.Fatal(err)
 	}
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name: "steady",
+		Job: reconcile.NewJob("steady", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error {
 			return nil
 		},

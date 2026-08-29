@@ -155,7 +155,7 @@ func run() error {
 	)
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "account-plan-tier",
+		Job:       reconcile.NewJob("account-plan-tier", reconcile.JobOpts{}),
 		Reconcile: accounts.computePlanTier,
 		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.IDsByPage(accounts.page), reconcile.Every(time.Hour))},
 		Versions:  accounts,

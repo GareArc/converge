@@ -55,5 +55,5 @@ func (p *Producer) Notify(ctx context.Context, job, id string) error {
 	if err != nil {
 		return fmt.Errorf("converge: notify %q: %w", job, err)
 	}
-	return p.mq.Publish(ctx, keys.Inbox(p.namespace, job), Message{Kind: notice.Kind, Payload: payload})
+	return p.mq.Publish(ctx, keys.Notifications(p.namespace, job), Message{Kind: notice.Kind, Payload: payload})
 }

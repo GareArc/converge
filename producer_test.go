@@ -32,7 +32,7 @@ func TestNewProducerDefaultsToTheSystemClock(t *testing.T) {
 	}
 }
 
-func TestNotifyPublishesToTheNamespacedInbox(t *testing.T) {
+func TestNotifyPublishesToTheNamespacedNotificationsChannel(t *testing.T) {
 	mq := &recordingMQ{}
 	p := mustProducer(t, mq, ProducerOpts{Namespace: "svc"})
 	if err := p.Notify(context.Background(), "merchants", "m-42"); err != nil {
@@ -42,8 +42,8 @@ func TestNotifyPublishesToTheNamespacedInbox(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("published %d messages, want 1", len(sent))
 	}
-	if sent[0].queue != "svc/converge/inbox/merchants" {
-		t.Fatalf("queue = %q, want %q", sent[0].queue, "svc/converge/inbox/merchants")
+	if sent[0].queue != "svc/converge/notifications/merchants" {
+		t.Fatalf("queue = %q, want %q", sent[0].queue, "svc/converge/notifications/merchants")
 	}
 	if sent[0].msg.Kind != notice.Kind {
 		t.Fatalf("Kind = %q, want %q", sent[0].msg.Kind, notice.Kind)
@@ -64,8 +64,8 @@ func TestNotifyWithNoNamespaceStillNamespacesTheLibrary(t *testing.T) {
 		t.Fatalf("Notify: %v", err)
 	}
 	sent := mq.sent()
-	if len(sent) != 1 || sent[0].queue != "converge/inbox/merchants" {
-		t.Fatalf("published = %+v, want one message on converge/inbox/merchants", sent)
+	if len(sent) != 1 || sent[0].queue != "converge/notifications/merchants" {
+		t.Fatalf("published = %+v, want one message on converge/notifications/merchants", sent)
 	}
 	n, err := notice.Decode(sent[0].msg.Payload)
 	if err != nil || !n.All {

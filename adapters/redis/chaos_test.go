@@ -89,12 +89,12 @@ func newChaosRuntime(t testing.TB, mq converge.MQ, lease converge.Lease, kv conv
 		t.Fatalf("convredis: chaos runtime: %v", err)
 	}
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:      chaosJobName,
+		Job:       reconcile.NewJob(chaosJobName, reconcile.JobOpts{}),
 		Reconcile: fn,
 		RunMode:   converge.OnOneReplica,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
-			reconcile.Notifications(reconcile.NotificationsOpts{}),
+			reconcile.Notifications(),
 		},
 	}); err != nil {
 		t.Fatalf("convredis: chaos job register: %v", err)
