@@ -39,12 +39,17 @@ that is not a limitation to work around: it is what makes losing one free.
 
 ## A second trigger
 
-Every job has one **inbox**: one place it receives things, named after the
-job and namespaced by the library. You never name it and nobody routes
-anything to it — senders address the job by the name you registered.
+Every reconcile job has one channel for **notifications**: the place a
+notification lands, named after the job and derived from your namespace
+unless you give the job a name of its own. It carries pointers — *look at
+this ID* — and never the work, which is why it may be lost, trimmed, or
+flushed. A worker task has a different channel with a different word, its
+**queue**, because that one carries the only copy of the work and may not
+be. Keeping the two words apart is how you know, reading a key name in
+Redis, whether deleting it loses anything.
 
-A reconcile job does not read its inbox unless you say so, and you say so
-with a second [trigger](../glossary.md#trigger):
+A reconcile job does not read its notifications unless you say so, and you
+say so with a second [trigger](../glossary.md#trigger):
 
 ```go
 Triggers: []reconcile.Trigger{
@@ -55,9 +60,9 @@ Triggers: []reconcile.Trigger{
 
 Triggers all feed one deduplicated queue of pending IDs, so a schedule and a
 stream of notifications for the same ID collapse into one run rather than
-racing. `reconcile.Notifications` takes no configuration because there is
-nothing to configure: it reads the job's own inbox, over the `MQ` you
-already gave `converge.New`.
+racing. `reconcile.Notifications()` takes nothing because there is nothing
+to configure: it reads the job's own channel, over the `MQ` you already gave
+`converge.New`.
 
 ## Notifying from another binary
 
@@ -307,14 +312,13 @@ job's life is declared where the job is registered. This is not an oversight
 to be worked around; it is what keeps a job's behaviour readable from one
 file.
 
-## Reading a queue another system writes
+## Reading a source another system writes
 
 Sometimes the thing that knows an ID changed is not yours, and it is not
 going to learn your conventions. A Python service pushes JSON onto a Redis
 list; you want that to hurry a reconcile job along.
 
-`reconcile.NotificationsFrom` is the one place in the whole surface where a
-raw queue name appears, and it is used exactly as given:
+`reconcile.NotificationsFrom` takes that name and uses it exactly as given:
 
 ```go
 reconcile.NotificationsFrom(foreignQueue, convredis.NewListMQ(rdb), reconcile.IDFromJSON("workspace_id")),
@@ -324,15 +328,21 @@ Three things are different from `Notifications`:
 
 - **The source is named.** `foreignQueue` here is the literal string
   `"enterprise:workspace:sync:queue"`. converge does not namespace it,
-  prefix it, or own it.
-- **You supply the `id` function**, because converge has no idea what shape
-  that system's messages are. `reconcile.IDFromJSON("workspace_id")` reads
-  one string field out of a JSON object; `reconcile.RawID()` takes the whole
-  payload as the ID. Anything that fails to decode is dropped and reported,
-  never guessed at.
-- **You supply the `mq`**, because a foreign queue is usually not the
-  transport your own jobs use. Here it is a Redis list rather than the
-  stream the runtime is wired to.
+  prefix it, or own it — and it is called a *source*, not a queue, because
+  from this job's side that is all it is: where notifications come from,
+  whatever the other system calls it.
+- **You supply the `MQ`**, because it is not "which Redis" but "how to read
+  this source": a list and a stream on the same server are different
+  readers. Here it is a Redis list rather than the stream the runtime is
+  wired to.
+- **You supply the ID function.** It is an open function,
+  `func(payload []byte) (reconcile.ID, error)`, and converge ships two
+  conveniences for the common shapes — `reconcile.IDFromJSON("workspace_id")`
+  reads one string field out of a JSON object, `reconcile.RawID()` takes the
+  whole payload — but a composite ID or a field buried one level down is a
+  four-line function of your own. Returning `reconcile.Skip` says *this entry
+  is not for this job*; anything else that fails to decode is dropped and
+  reported, never guessed at.
 
 Everything downstream is identical: a decoded ID goes into the same
 deduplicated queue as a sweep or a plain notification, and the schedule

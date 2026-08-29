@@ -32,9 +32,9 @@ Every chapter below either teaches that distinction or builds on it.
 2. **[One job, many things](02-ids.md)** — a single job responsible for ten
    thousand customers, one [ID](../glossary.md#id) at a time, and where the
    list of IDs comes from.
-3. **[Telling a job to look sooner](03-notifications.md)** — the
-   [inbox](../glossary.md#inbox), `Notify` from a different binary, and
-   reading a queue some other system already writes.
+3. **[Telling a job to look sooner](03-notifications.md)** — the job's
+   [notifications](../glossary.md#notifications), `Notify` from a different
+   binary, and reading a source some other system already writes.
 4. **[When the message is the work](04-worker.md)** — tasks, retries, the
    three ways to stop early, and the shelf.
 5. **[Where a job runs](05-run-modes.md)** — three values, one rule, and

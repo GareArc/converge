@@ -6,7 +6,9 @@ project's canonical language. Every exported name, error string, event
 field, and page of documentation is written in these words and no others,
 and the _Avoid_ lines are binding — a word listed there is wrong in code, in
 prose, and in messages, except in a sentence whose job is to say that the
-concept is gone.
+concept is gone. One name on this page is not converge's to change: the
+*inbox table* in the outbox pattern is another system's table, and it keeps
+the name the literature gives it.
 
 ## Language
 
@@ -44,12 +46,12 @@ budget is spent.
 _Avoid_: consumer, job queue
 
 **Task**:
-A typed worker contract — name, payload type, schema version — shared
-between the producer and the consumer, so the two cannot drift without the
-compiler noticing. A task's inbox is the task; there is nothing to route
-and no transport to name.
-_Avoid_: job (that is the umbrella term), queue (a task names a job, not a
-transport)
+A typed worker contract — name, payload type, schema version, and the queue
+its messages travel on — shared between the producer and the consumer, so
+the two cannot drift without the compiler noticing. The queue is derived
+from the name unless the task declares one; either way it is a property of
+the task, printable for a producer that cannot import it.
+_Avoid_: job (that is the umbrella term)
 
 ### Reconcile concepts
 
@@ -169,24 +171,31 @@ _Avoid_: shelf entry, failed message
 
 ### Kernel concepts
 
-**Inbox**:
-The one queue a job reads, named after the job and namespaced by the
-library. Producers address the job by name; nobody names an inbox. The only
-raw queue name anywhere in the surface is a foreign queue handed to
-`NotificationsFrom` — a queue some other system already writes — and that
-one is used exactly as given.
-_Avoid_: topic, stream, channel
+**Notifications**:
+A reconcile job's channel: where its notifications arrive. It carries
+pointers — an ID, or "all" — and never the work, so it may be lost, flushed,
+or trimmed and the sweep covers it. Declared on the job as
+`JobOpts.Notifications`, otherwise derived as
+`<namespace>/converge/notifications/<job>`; the verb is `Notify`, the
+trigger is `Notifications()`, and a source some other system writes is read
+with `NotificationsFrom`. *Channel* is the umbrella word for this and for a
+queue; it names no third thing.
+_Avoid_: inbox, topic, stream, queue (that word is the worker's)
 
 **Queue**:
-A named transport queue on the MQ port. A job's inbox is a queue the
-library names and owns; the only queue a caller names is one that belongs
-to another system.
-_Avoid_: topic, list, stream (transport-specific words)
+A worker task's channel: where its messages wait. It carries the only copy
+of the work, so it may not be lost — pending until acknowledged, retried,
+shelved when the retries run out. Declared on the task as `TaskOpts.Queue`,
+otherwise derived as `<namespace>/converge/queue/<task>`; the verb is
+`Enqueue`. The `MQ` port's `queue` parameter is the transport underneath
+both channels and is not this word.
+_Avoid_: inbox, topic, list, stream (transport-specific words),
+notifications (that word is reconcile's)
 
 **Run mode**:
 Who runs a job across replicas: `OnOneReplica` (one replica holds a lease
 and runs it), `OnAllReplicas` (every replica runs it, no lease), or
-`Competing` (replicas share the inbox and split its messages). There is one
+`Competing` (replicas share the queue and split its messages). There is one
 rule: `Competing` is a worker mode.
 _Avoid_: posture, delivery mode, leader election (that names one
 implementation)
@@ -228,10 +237,10 @@ removed.
 _Avoid_: kill switch, disable flag, soft delete
 
 **Backlog**:
-The real depth of a job's inbox, read from the MQ rather than counted in
-process. Only some adapters can report it, so it always travels with a
-known flag: not known is not the same as zero, and neither the stats nor
-the metrics invent a number for it.
+The real depth of a job's channel — its notifications or its queue — read
+from the MQ rather than counted in process. Only some adapters can report
+it, so it always travels with a known flag: not known is not the same as
+zero, and neither the stats nor the metrics invent a number for it.
 _Avoid_: queue depth, lag
 
 **Replica ID**:

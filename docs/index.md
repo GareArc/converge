@@ -29,9 +29,9 @@ and almost none of them need Redis, a database, or a container.
    complete converge program.
 2. [One job, many things](guide/02-ids.md) — one job responsible for ten
    thousand customers, one [ID](glossary.md#id) at a time.
-3. [Telling a job to look sooner](guide/03-notifications.md) — the
-   [inbox](glossary.md#inbox), `Notify` from another binary, and reading a
-   queue some other system already writes.
+3. [Telling a job to look sooner](guide/03-notifications.md) — the job's
+   [notifications](glossary.md#notifications), `Notify` from another binary,
+   and reading a source some other system already writes.
 4. [When the message is the work](guide/04-worker.md) — tasks, retries, the
    three ways to stop early, and the shelf.
 5. [Where a job runs](guide/05-run-modes.md) — three values, one rule, and
@@ -44,7 +44,7 @@ and almost none of them need Redis, a database, or a container.
 
 ## When you have a specific problem
 
-**[The cookbook](cookbook/index.md)** works six of them end to end.
+**[The cookbook](cookbook/index.md)** works seven of them end to end.
 
 - [Work that takes a while](cookbook/durable-work.md) — half an hour of
   transcoding on a surface built for half a second of work.
@@ -58,6 +58,8 @@ and almost none of them need Redis, a database, or a container.
   a message agree about what happened.
 - [The safety net](cookbook/safety-net.md) — the job nobody sends anything
   to, which exists so nothing is ever permanently wrong.
+- [Credential sync from a Python service](cookbook/python-producer.md) — a
+  producer that cannot import your package, and the one `XADD` it writes.
 
 ## When you want the exact signature
 
@@ -71,6 +73,9 @@ The reference covers every exported name, its defaults, and what it costs.
   three outcomes, and the shelf.
 - [Operations](reference/operations.md) — the debug routes, the JSON, how
   stale each number is, requeueing a shelved message, and destroying a job.
+- [Wire](reference/wire.md) — what a producer in any language writes: channel
+  names, the two payload shapes, the headers, and the Redis Streams
+  encoding.
 - [Adapters and test support](reference/adapters.md) — `inmem`, convredis,
   convotel, convkratos, `portcheck`, and `convergetest`.
 - [Converge terms in other systems](reference/prior-art.md) — the same ideas

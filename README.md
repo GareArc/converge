@@ -142,9 +142,9 @@ and when the retries run out it is set aside on the
 [shelf](docs/glossary.md#shelf) for a person rather than dropped. This one
 also shows two of the three ways a handler stops early on purpose: it shelves
 an address it can never deliver to, and discards one it should not. Note too
-that the producer names the task and never a queue: converge gives every job
-one [inbox](docs/glossary.md#inbox) and builds its name from the namespace
-and the job's own name.
+that the producer is built from the task and never from a queue name:
+converge derives the task's [queue](docs/glossary.md#queue) from the
+namespace and the task's own name unless the task declares one.
 
 ```go title=examples/scenarios/a06-transactional-email/main.go
 package main
@@ -351,19 +351,21 @@ came for:
   [where a job runs](docs/guide/05-run-modes.md),
   [taking it to production](docs/guide/06-production.md), and
   [testing a job](docs/guide/07-testing.md).
-- **[The cookbook](docs/cookbook/index.md)** — six problems people bring to a
-  background-work library, answered end to end:
+- **[The cookbook](docs/cookbook/index.md)** — seven problems people bring to
+  a background-work library, answered end to end:
   [work that takes a while](docs/cookbook/durable-work.md),
   [waiting for something to become true](docs/cookbook/event-driven.md),
   [a queue somebody else owns](docs/cookbook/foreign-queue.md),
   [jobs that end](docs/cookbook/lifecycle.md),
-  [outbox and inbox](docs/cookbook/outbox-inbox.md), and
-  [the safety net](docs/cookbook/safety-net.md).
-- **The reference** — every exported name, in six pages:
+  [outbox and inbox](docs/cookbook/outbox-inbox.md),
+  [the safety net](docs/cookbook/safety-net.md), and
+  [credential sync from a Python service](docs/cookbook/python-producer.md).
+- **The reference** — every exported name, in seven pages:
   [kernel](docs/reference/kernel.md),
   [reconcile](docs/reference/reconcile.md),
   [worker](docs/reference/worker.md),
   [operations](docs/reference/operations.md),
+  [wire](docs/reference/wire.md),
   [adapters and test support](docs/reference/adapters.md), and
   [converge terms in other systems](docs/reference/prior-art.md).
 - **[The glossary](docs/glossary.md)** — every converge-specific word,

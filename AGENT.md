@@ -21,8 +21,8 @@ kernel owns the ports (MQ, Lease, KV, Clock, Observer), the runtime, and the
 shared value types; surfaces and adapters plug in around it.
 
 The prose that teaches this lives in `docs/`: the seven-chapter guide
-(`docs/guide/`), the six cookbook pages (`docs/cookbook/`), the six-page API
-reference (`docs/reference/`), and `docs/glossary.md`. `README.md` and
+(`docs/guide/`), the seven cookbook pages (`docs/cookbook/`), the seven-page
+API reference (`docs/reference/`), and `docs/glossary.md`. `README.md` and
 `docs/index.md` are the two front doors and link all of it.
 
 ## Verify

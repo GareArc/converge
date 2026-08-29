@@ -57,7 +57,7 @@ merged:
 
 | Field | From |
 | --- | --- |
-| `job`, `surface`, `run_mode`, `queue`, `settings` | `JobInfo`. `queue` is the inbox on a worker job and empty on a reconcile one. |
+| `job`, `surface`, `run_mode`, `queue`, `settings` | `JobInfo`. `queue` is the task's queue on a worker job and empty on a reconcile one. |
 | `state` | `JobStats.State`, rendered — `not started`, `active`, `destroyed` |
 | `lease_held`, `in_flight`, `failing`, `consecutive_fails` | `JobStats`, per replica |
 | `backlog`, `backlog_known`, `backlog_at` | `JobStats`. Read `backlog` only when `backlog_known` is true. |
@@ -132,7 +132,7 @@ job, in registration order. It takes no context and does no I/O.
 Both surfaces bound what feeds `Failing` at 65536 entries: the worker's
 retrying set, and the reconcile queue of pending IDs — beyond which a
 notification for an ID converge has never seen is dropped with
-`converge.ErrInboxOverflow`. A failing ID is not a lost one; it keeps being
+`converge.ErrNotificationOverflow`. A failing ID is not a lost one; it keeps being
 retried at the ceiling rate. But a `Failing` count that grows and never falls
 is worth a look.
 
@@ -152,7 +152,7 @@ Three things about the last-outcome fields will otherwise surprise you:
 
 | Field | Meaning |
 | --- | --- |
-| `Backlog` / `BacklogKnown` / `BacklogAt` | the real depth of the job's inbox, read from the MQ |
+| `Backlog` / `BacklogKnown` / `BacklogAt` | the real depth of the job's channel, read from the MQ |
 | `Shelved` / `ShelvedKnown` / `ShelvedAt` | how many messages are on the job's shelf **right now** — a depth, not a count of how many runs were ever shelved. It falls when somebody requeues or purges, which is what you want to alert on |
 
 **`*Known` false means unknown, not zero.** converge does not invent the
@@ -163,7 +163,7 @@ honest answer. The cases where it is unknown:
 | --- | --- |
 | the job is not active on this replica (standing by for a lease, stopped, or never started) | both |
 | an `OnAllReplicas` job, on every backend | `Backlog` — every replica reads every message, so there is no shared depth that would mean anything |
-| a reconcile job with no notifications trigger | `Backlog` — a schedule-only job has no inbox to be behind on |
+| a reconcile job with no notifications trigger | `Backlog` — a schedule-only job has no channel to be behind on |
 | a reconcile job with several notifications triggers, one of which cannot report | `Backlog` — it is all or nothing; a partial sum would be a lie |
 | the MQ has no `BacklogReporter` / `GroupBacklogReporter` capability | `Backlog` |
 | Redis Streams on **Redis 6.2 or older** | `Backlog` — the adapter reads `XINFO GROUPS`'s `lag`, added in 7.0, and reports `converge.ErrBacklogUnknown` rather than guessing |

@@ -118,8 +118,9 @@ func describe(s converge.JobStats) string {
 ```
 
 **`Backlog` travels with `BacklogKnown`.** The **backlog** is the real depth
-of a job's [inbox](../glossary.md#inbox), read from the message queue rather
-than counted inside your process — and not every backend can answer that
+of a job's channel — its [notifications](../glossary.md#notifications) or its
+[queue](../glossary.md#queue) — read from the message queue rather than
+counted inside your process, and not every backend can answer that
 question. When it cannot, `BacklogKnown` is false and `Backlog` is
 meaningless. Not zero: *unknown*. converge does not invent the number, the
 metrics do not publish it, and a dashboard that shows a gap there is telling

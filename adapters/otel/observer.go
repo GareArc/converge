@@ -101,7 +101,7 @@ func runStatus(err error) string {
 
 func RegisterGauges(meter metric.Meter, rt *converge.Runtime) error {
 	backlog, err := meter.Int64ObservableGauge("converge.backlog",
-		metric.WithDescription("Cluster-wide inbox depth as of this replica's last periodic poll (stale by up to one lease heartbeat); omitted when not known."))
+		metric.WithDescription("Cluster-wide backlog depth as of this replica's last periodic poll (stale by up to one lease heartbeat); omitted when not known."))
 	if err != nil {
 		return err
 	}

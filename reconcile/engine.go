@@ -301,7 +301,7 @@ func (e *engine) report(id ID, res queueResult) {
 	if res != resultDroppedOverflow {
 		return
 	}
-	e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), ID: string(id), Err: converge.ErrInboxOverflow})
+	e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), ID: string(id), Err: converge.ErrNotificationOverflow})
 }
 
 func (e *engine) dispatch(ctx context.Context, hctx context.Context, wg *sync.WaitGroup) {

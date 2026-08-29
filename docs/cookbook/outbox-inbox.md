@@ -9,11 +9,13 @@
 > [`a14-foreign-queue`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go),
 > which is what you write instead when their message only names something.
 
-One sentence on vocabulary first, because two words collide here. converge
-already uses **[inbox](../glossary.md#inbox)** for the queue a job reads —
-the one it names after the job. The *inbox table* on this page is the second
-half of the outbox pattern and is always spelled that way. They are unrelated
-things.
+One sentence on vocabulary first. converge has no "inbox" of its own: a
+[reconcile](../glossary.md#reconcile) job has
+[notifications](../glossary.md#notifications) and a worker
+task has a [queue](../glossary.md#queue), and those are the only two channels
+it names. So *inbox table* on this page is unambiguous — it is the second
+half of the outbox pattern, a table in your database, and it keeps the name
+the literature gives it.
 
 ## The problem both patterns solve
 

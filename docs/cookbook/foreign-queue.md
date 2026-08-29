@@ -82,7 +82,7 @@ Two more drops get the same treatment, with a different error: an ID that
 decodes to the empty string on a job whose source is not `SingleID`
 (`converge: notification: empty id`), and a notification naming an ID
 converge has never seen when the job is already tracking 65536 of them
-(`converge: notification: inbox overflow`). The second of those is the only
+(`converge: notification: overflow`). The second of those is the only
 drop that can tell you *which* ID it lost — the overflow line carries it,
 where the other two report `id=""` because there is no decoded ID to
 report.
@@ -125,8 +125,8 @@ list is in the [adapters reference](../reference/adapters.md#list-mq):
 ## What you cannot do
 
 **You cannot point a worker job at a foreign queue.** `worker.Handle` reads
-the [inbox](../glossary.md#inbox) converge names after the job, and there is
-no equivalent of `NotificationsFrom` on that surface. This is not an
+the [queue](../glossary.md#queue) the task declares or converge derives, and
+there is no equivalent of `NotificationsFrom` on that surface. This is not an
 oversight: a worker message has to arrive carrying an
 [envelope](../glossary.md#envelope), and a queue somebody else writes does
 not have one.
@@ -138,14 +138,17 @@ setting:
 - **The [inbox table pattern](outbox-inbox.md#the-inbox-table)**, which makes
   their message durable in a table of yours first, and is almost always the
   right answer.
-- **Ask them to publish onto converge's inbox directly.** The queue name is
-  visible in `/debug/jobs`, and a payload is all they have to write: no
-  `converge.*` header is required, and an absent one is no claim rather than
-  a mismatch. Without `converge.message-id` converge derives a synthetic
-  `anon-` identity from the message's kind and payload; without
-  `converge.schema-version` it makes no version claim and the payload goes
-  straight to your codec. It works, and it makes another team's release
-  schedule part of your wire format.
+- **Ask them to publish onto the task's queue directly.** Declare the queue
+  on the task so they have a name they can read, and hand them the
+  [wire reference](../reference/wire.md). On Redis Streams what they write is
+  a payload and an `enq` timestamp, and no `converge.*` header is required —
+  an absent one is no claim rather than a mismatch. **`enq` is not optional**:
+  an entry the adapter cannot read a timestamp from is acknowledged and
+  discarded, with no event and no shelf. Without `converge.message-id`
+  converge derives a synthetic `anon-` identity from the message's kind and
+  payload; without `converge.schema-version` it makes no version claim and
+  the payload goes straight to your codec. It works, and it makes another
+  team's release schedule part of your wire format.
 
 ## When the source is not a queue at all
 

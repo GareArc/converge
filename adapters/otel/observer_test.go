@@ -180,7 +180,7 @@ func TestLeaseChangedCounts(t *testing.T) {
 
 func TestNotificationDroppedCounts(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.NotificationDropped{Job: "sync", ID: "ws-1", Err: converge.ErrInboxOverflow})
+	obs.Observe(converge.NotificationDropped{Job: "sync", ID: "ws-1", Err: converge.ErrNotificationOverflow})
 
 	pts := sumPoints(t, collect(t, r), "converge.notifications.dropped")
 	if len(pts) != 1 || pts[0].Value != 1 {

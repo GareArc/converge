@@ -186,6 +186,15 @@ Other behaviour worth knowing:
   pending index, `convredis:a:<queue>:<group>` the attempt counters,
   `convredis:d:<queue>` the delayed set. None of them is subject to
   `Options.Namespace`; the namespace is already part of a derived queue name.
+  Those three prefixes are therefore reserved: a **declared** channel name
+  beginning `convredis:p:`, `convredis:a:` or `convredis:d:` lands in another
+  channel's bookkeeping space, and nothing will tell you.
+- **A stream entry carries `payload`, `enq`, and optionally `kind` and
+  `headers`.** `enq` is RFC 3339 with an offset, nanoseconds optional, and it
+  is required: an entry the adapter cannot decode — including one a foreign
+  producer wrote without `enq` — is acknowledged and discarded. The full
+  encoding, for producers that are not Go, is in the
+  [wire reference](wire.md).
 
 ### List MQ
 

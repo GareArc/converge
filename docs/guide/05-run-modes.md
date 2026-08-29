@@ -102,7 +102,7 @@ err = worker.Handle(rt, trackingEvent, shipments.applyEvent, worker.HandleOpts{C
 ```
 
 No `RunMode` here, so this is `Competing`: every replica reads the same
-[inbox](../glossary.md#inbox), each message goes to exactly one of them, and
+[queue](../glossary.md#queue), each message goes to exactly one of them, and
 adding replicas adds throughput. `Concurrency` is per replica on top of that
 — 32 in flight each, times however many replicas you run. That is
 [`examples/scenarios/a09-tracking-events/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a09-tracking-events/main.go).

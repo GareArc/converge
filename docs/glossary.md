@@ -39,10 +39,11 @@ aside rather than dropping it.
 ### Task
 
 One kind of worker message, described in one place: its name, the shape of
-its payload, and which version of that shape it is. The code that sends the
-message and the code that handles it both refer to that one description, so
-the two cannot drift apart without the compiler noticing. Nothing else has
-to be agreed between them — not a queue name, not a route.
+its payload, which version of that shape it is, and the queue it travels
+on. The code that sends the message and the code that handles it both refer
+to that one description, so the two cannot drift apart without the compiler
+noticing. Nothing else has to be agreed between them — not a route, and not
+a queue name unless you chose to give it one.
 
 ## Words for reconcile jobs
 
@@ -175,20 +176,23 @@ said when it asked for the message to be kept.
 
 ## Words for how converge runs your jobs
 
-### Inbox
+### Notifications
 
-The one place a job receives things: notifications for a reconcile job,
-work for a worker job. converge names it after the job and owns the name,
-so senders address a job rather than a queue and nobody has to agree on
-plumbing. The one exception is a queue some other system already writes to,
-which you name yourself when you point a job at it.
+Where a reconcile job receives things. A notification only says *look at
+this one* — or *look at everything* — so this channel can be flushed,
+trimmed, or lost and the job stays correct; the next sweep finds the same
+work. converge derives its name from your namespace and the job's name
+unless you give the job one yourself, which you do when a service in
+another language needs to write to it by a name it can read.
 
 ### Queue
 
-A named line that messages wait in, held by whatever you wired converge up
-to — Redis, say, or the in-memory one that tests use. A job's inbox is a
-queue converge names for you; the only queue you ever name is one that
-belongs to somebody else.
+Where a worker job's messages wait. Each message is the only copy of that
+piece of work, so this is the channel you must not flush: a message stays
+until your handler has acknowledged it, comes back if the handler fails,
+and is set aside on the shelf when the retries run out. converge derives
+its name from your namespace and the task's name unless the task declares
+one.
 
 ### Run mode
 
@@ -237,11 +241,11 @@ The note stays; the job itself only goes away when you delete its code.
 
 ### Backlog
 
-How much is actually waiting in a job's inbox, as reported by the queue
-itself rather than counted inside your process. Not every backend can
-answer that question, so the number always comes with a flag saying whether
-it is real — a job whose backend cannot tell you shows as unknown, never as
-zero.
+How much is actually waiting in a job's channel — its notifications or its
+queue — as reported by the queue itself rather than counted inside your
+process. Not every backend can answer that question, so the number always
+comes with a flag saying whether it is real — a job whose backend cannot
+tell you shows as unknown, never as zero.
 
 ### Replica ID
 

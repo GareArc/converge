@@ -195,9 +195,12 @@ can say exactly two things to a job, and nothing else:
   [Chapter 3](03-notifications.md).
 - **`Enqueue`** — *do this.* [Chapter 4](04-worker.md).
 
-Both address the job by the name you registered it under. The message lands
-in that job's **inbox**, which converge names and owns; you never name one
-and you never route anything. Nothing else about a job — how often it runs,
+Both address the job through the value you declared it with — a
+`reconcile.Job` or a `worker.Task` — never through a string. A
+[notification](../glossary.md#notification) lands on the job's
+**notifications**, which may be lost; a worker message
+lands on the task's **queue**, which may not. converge derives both names
+unless you declare one, and nothing else about a job — how often it runs,
 how long a run may take, when it stops — can be set from outside. All of it
 is declared where the job is registered, which is the file you just read.
 

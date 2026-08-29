@@ -530,15 +530,15 @@ ending. That is why a clean shutdown produces no final flurry of failures.
 var (
     ErrNotificationUndecodable = errors.New("converge: notification: undecodable")
     ErrNotificationEmptyID     = errors.New("converge: notification: empty id")
-    ErrInboxOverflow           = errors.New("converge: notification: inbox overflow")
+    ErrNotificationOverflow    = errors.New("converge: notification: overflow")
 )
 ```
 
 `NotificationDropped.Err` is one of these three. On `ErrNotificationUndecodable`
-the `ID` field is empty — the engine could not read one. `ErrInboxOverflow`
-means the job's in-memory queue of pending IDs was at its bound (65536
-distinct IDs) when a new one arrived; the schedule still covers that ID on the
-next sweep.
+the `ID` field is empty — the engine could not read one.
+`ErrNotificationOverflow` means the job's in-memory set of pending IDs was at
+its bound (65536 distinct IDs) when a new one arrived; the schedule still
+covers that ID on the next sweep.
 
 ```go
 type Outcome struct { /* sealed */ }
@@ -642,7 +642,7 @@ is reconcile-only — the worker engine counts the messages it is retrying but
 does not keep them.
 
 `JobInfo` is the static half: what a job was registered as. `Queue` is the
-job's inbox on a worker job and empty on a reconcile job. `Settings` is a
+task's queue on a worker job and empty on a reconcile job. `Settings` is a
 rendered, human-readable map — `concurrency`, `retry`, `schema-version`,
 `timeout` and `rate-limit` for a worker job; `concurrency`, `schedule`,
 `triggers` and `versions` for a reconcile one. It is for reading, not for

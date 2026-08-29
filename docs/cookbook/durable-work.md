@@ -152,9 +152,9 @@ So use the version for what it is good at, and not as a migration tool:
   field needs no version at all. Bump when an existing field changes meaning
   or type — when decoding an old message into the new struct would produce a
   plausible, wrong answer.
-- **When you do bump, prefer a new task name.** A name is an
-  [inbox](../glossary.md#inbox): `tracking-event-v2` gets its own queue and
-  its own handler, both run side by side, the old inbox drains to empty on
+- **When you do bump, prefer a new task name.** A name is a
+  [queue](../glossary.md#queue): `tracking-event-v2` gets its own queue and
+  its own handler, both run side by side, the old queue drains to empty on
   its own, and then you delete the old handler. Nothing is ever shelved for
   skew, because no message ever meets the wrong handler.
 - **Treat a `schema version` shelf as a report, not an outage.** Each record

@@ -5,6 +5,7 @@ var Stoplist = []string{
 	"Task",
 	"Version",
 	"Queue",
+	"Notifications",
 	"Surface",
 	"Schedule",
 	"Trigger",

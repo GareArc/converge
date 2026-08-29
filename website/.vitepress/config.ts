@@ -43,6 +43,7 @@ export default defineConfig({
           { text: 'Jobs that end', link: '/cookbook/lifecycle' },
           { text: 'Outbox and inbox', link: '/cookbook/outbox-inbox' },
           { text: 'The safety net', link: '/cookbook/safety-net' },
+          { text: 'Credential sync from a Python service', link: '/cookbook/python-producer' },
         ],
       },
       {
