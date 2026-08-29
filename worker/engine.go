@@ -202,11 +202,15 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	if deps.MQ == nil {
 		return fmt.Errorf("worker: job %q: needs Options.MQ", e.cfg.info.name)
 	}
-	switch e.cfg.runMode {
-	case converge.Competing:
-		if _, ok := deps.MQ.(converge.GroupConsumer); !ok {
-			return fmt.Errorf("worker: job %q: Competing needs the GroupConsumer capability", e.cfg.info.name)
+	if e.durable() {
+		if err := carriesWork(deps.MQ); err != nil {
+			return fmt.Errorf("worker: task %q: %w", e.cfg.info.name, err)
 		}
+		if deps.KV == nil {
+			return fmt.Errorf("worker: job %q: shelving needs Options.KV", e.cfg.info.name)
+		}
+	}
+	switch e.cfg.runMode {
 	case converge.OnAllReplicas:
 		if _, ok := deps.MQ.(converge.BroadcastConsumer); !ok {
 			return fmt.Errorf("worker: job %q: OnAllReplicas needs the BroadcastConsumer capability", e.cfg.info.name)
@@ -214,14 +218,6 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	case converge.OnOneReplica:
 		if deps.Lease == nil {
 			return fmt.Errorf("worker: job %q: OnOneReplica needs Options.Lease", e.cfg.info.name)
-		}
-	}
-	if e.durable() {
-		if deps.KV == nil {
-			return fmt.Errorf("worker: job %q: shelving needs Options.KV", e.cfg.info.name)
-		}
-		if _, ok := deps.MQ.(converge.DelayedPublisher); !ok {
-			return fmt.Errorf("worker: job %q: Snooze needs the DelayedPublisher capability", e.cfg.info.name)
 		}
 	}
 	if !e.cfg.until.IsZero() && deps.KV == nil {
@@ -239,6 +235,15 @@ func (e *engine) bind(deps converge.JobDeps) error {
 	e.handler = mw.Chain(mws, final)
 	e.limit = tokenbucket.New(e.cfg.rateLimit, deps.Clock)
 	return nil
+}
+
+func carriesWork(mq converge.MQ) error {
+	_, delayed := mq.(converge.DelayedPublisher)
+	_, grouped := mq.(converge.GroupConsumer)
+	if delayed && grouped {
+		return nil
+	}
+	return fmt.Errorf("%T cannot carry work: a worker's MQ needs DelayedPublisher and GroupConsumer", mq)
 }
 
 type invocation struct{ payload []byte }
@@ -484,7 +489,7 @@ func (e *engine) classify(d converge.Delivery, m converge.Message) (Meta, string
 	if !e.durable() {
 		return meta, ""
 	}
-	if env.schemaVersion() != strconv.Itoa(e.cfg.info.version) {
+	if v, present := env.schemaVersion(); present && v != strconv.Itoa(e.cfg.info.version) {
 		return meta, reasonSchemaVersion
 	}
 	if !ok {

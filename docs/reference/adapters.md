@@ -191,7 +191,10 @@ Other behaviour worth knowing:
 
 `NewListMQ` reads and writes a plain Redis list. It exists for exactly one
 job: [`reconcile.NotificationsFrom`](reconcile.md#triggers), pointed at a
-queue some other system already writes.
+source some other system already writes. It **cannot carry worker work**: a
+`BRPOP` deletes the element the instant it is read, so a durable task
+registered against it fails at `Run` with `cannot carry work`, naming the
+adapter type.
 
 It is deliberately minimal, and the limits matter if you point it anywhere
 else:

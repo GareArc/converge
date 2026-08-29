@@ -9,7 +9,9 @@ import (
 	"github.com/GareArc/converge"
 	convredis "github.com/GareArc/converge/adapters/redis"
 	"github.com/GareArc/converge/convergetest"
+	"github.com/GareArc/converge/inmem"
 	"github.com/GareArc/converge/reconcile"
+	"github.com/GareArc/converge/worker"
 )
 
 func TestListMQPublishConsumeAckRoundtrip(t *testing.T) {
@@ -274,5 +276,29 @@ func recvListDelivery(t *testing.T, ch chan converge.Delivery) converge.Delivery
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for a delivery")
 		return nil
+	}
+}
+
+func TestListMQCannotCarryWork(t *testing.T) {
+	client, _, _ := openMini(t)
+	rt, err := converge.New(converge.Options{
+		MQ:       convredis.NewListMQ(client),
+		Lease:    inmem.NewLease(),
+		KV:       inmem.NewKV(),
+		Observer: &convergetest.Recorder{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotate := worker.NewTask[string]("credential-rotate", worker.TaskOpts{Queue: "dify:credential:rotate"})
+	if err := worker.Handle(rt, rotate, func(context.Context, string) error { return nil }, worker.HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runErr := rt.Run(ctx)
+	want := `worker: task "credential-rotate": *convredis.listMQ cannot carry work: a worker's MQ needs DelayedPublisher and GroupConsumer`
+	if runErr == nil || !strings.Contains(runErr.Error(), want) {
+		t.Fatalf("Run() = %v, want %q", runErr, want)
 	}
 }

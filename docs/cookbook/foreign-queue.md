@@ -109,6 +109,11 @@ than a partial sum, because a partial sum would be a lie.
 `NewListMQ` exists for this one job and is honest about the rest — the full
 list is in the [adapters reference](../reference/adapters.md#list-mq):
 
+- A list cannot be a worker's queue. `worker.Handle` on a runtime whose `MQ`
+  is a list fails at `Run` with `cannot carry work` — the pop is destructive,
+  and making it safe means a processing list plus a recovery loop for entries
+  stranded by a dead process, which is exactly the half that never gets
+  written.
 - It has no consumer groups and no broadcast, so a job reading a foreign list
   runs under the default [run mode](../glossary.md#run-mode), `OnOneReplica`.
   Setting `OnAllReplicas` fails at `Run` with the missing capability named.
@@ -134,12 +139,13 @@ setting:
   their message durable in a table of yours first, and is almost always the
   right answer.
 - **Ask them to publish onto converge's inbox directly.** The queue name is
-  visible in `/debug/jobs`, and the one header they must set is
-  `converge.schema-version`; without it the message is set aside with reason
-  `schema version` before your handler is entered, and without
-  `converge.message-id` converge derives a synthetic `anon-` identity from
-  the message's kind and payload. It works, and it makes another team's
-  release schedule part of your wire format.
+  visible in `/debug/jobs`, and a payload is all they have to write: no
+  `converge.*` header is required, and an absent one is no claim rather than
+  a mismatch. Without `converge.message-id` converge derives a synthetic
+  `anon-` identity from the message's kind and payload; without
+  `converge.schema-version` it makes no version claim and the payload goes
+  straight to your codec. It works, and it makes another team's release
+  schedule part of your wire format.
 
 ## When the source is not a queue at all
 

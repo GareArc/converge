@@ -352,7 +352,6 @@ func TestReceiptGuardsShelving(t *testing.T) {
 		wantReason string
 	}
 	cases := []tc{
-		{"missing schema header", func(h map[string]string) { delete(h, converge.HeaderSchemaVersion) }, reasonSchemaVersion},
 		{"wrong schema version", func(h map[string]string) { h[converge.HeaderSchemaVersion] = "2" }, reasonSchemaVersion},
 		{"unparseable attempt", func(h map[string]string) { h[converge.HeaderAttempt] = "nope" }, reasonUndecodable},
 		{"attempt header overflow", func(h map[string]string) { h[converge.HeaderAttempt] = strconv.Itoa(math.MaxInt) }, reasonUndecodable},
@@ -2281,5 +2280,209 @@ func TestStatsBeforeRunReportsInsteadOfPanicking(t *testing.T) {
 	}
 	if stats[0].Failing != 0 {
 		t.Fatalf("failing is %d, want 0", stats[0].Failing)
+	}
+}
+
+func TestAPayloadOnlyMessageRuns(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: wns})
+	rt := w.Build(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	got := make(chan Meta, 1)
+	err := Handle(rt, tk, func(ctx context.Context, payload string) error {
+		m, _ := MetaFromContext(ctx)
+		got <- m
+		return nil
+	}, HandleOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), converge.Message{Payload: []byte(`"from python"`)}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-got:
+		if m.Attempt != 1 {
+			t.Fatalf("Attempt = %d, want 1: absent converge.attempt means base 0 plus the transport delivery", m.Attempt)
+		}
+		if !strings.HasPrefix(m.MessageID, "anon-") {
+			t.Fatalf("MessageID = %q, want a synthetic anon- id", m.MessageID)
+		}
+		if m.EnqueuedAt.IsZero() {
+			t.Fatal("EnqueuedAt must fall back to Delivery.EnqueuedAt()")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a message with no converge.* headers must run, not shelve")
+	}
+	if n := eventCount(w.Events(), func(e converge.Event) bool {
+		rc, ok := e.(converge.RunCompleted)
+		return ok && rc.Outcome == converge.Shelved
+	}); n != 0 {
+		t.Fatalf("Shelved count = %d, want 0", n)
+	}
+}
+
+func TestPresentMismatchedSchemaHeaderStillShelves(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: wns})
+	rt := w.Build(t)
+	tk := NewTask[string]("job", TaskOpts{Version: 2})
+	var ran int32
+	if err := Handle(rt, tk, func(context.Context, string) error {
+		atomic.AddInt32(&ran, 1)
+		return nil
+	}, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	h := map[string]string{converge.HeaderSchemaVersion: "1"}
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), converge.Message{Headers: h, Payload: []byte(`"x"`)}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool {
+		return eventCount(w.Events(), func(e converge.Event) bool {
+			rc, ok := e.(converge.RunCompleted)
+			return ok && rc.Outcome == converge.Shelved
+		}) == 1
+	})
+	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&ran) == 0 })
+	keys := shelfKeys(t, w.KV, "job")
+	if len(keys) != 1 || shelfRecordAt(t, w.KV, keys[0]).Reason != reasonSchemaVersion {
+		t.Fatalf("shelf = %v, want one record with reason %q", keys, reasonSchemaVersion)
+	}
+}
+
+func TestASchemaVersionClaimIsComparedAsWritten(t *testing.T) {
+	cases := []struct {
+		name    string
+		claim   string
+		wantRun bool
+	}{
+		{"the handler's own version", "1", true},
+		{"a version far ahead of the handler", "9999", false},
+		{"a version that is not a number", "v2", false},
+		{"a header present but empty", "", false},
+		{"a zero-padded version", "01", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := convergetest.NewWith(t, convergetest.Options{Namespace: wns})
+			rt := w.Build(t)
+			tk := NewTask[string]("job", TaskOpts{})
+			var ran int32
+			if err := Handle(rt, tk, func(context.Context, string) error {
+				atomic.AddInt32(&ran, 1)
+				return nil
+			}, HandleOpts{}); err != nil {
+				t.Fatal(err)
+			}
+			w.Runtime(t)
+			h := map[string]string{converge.HeaderSchemaVersion: c.claim}
+			if err := w.MQ.Publish(context.Background(), wQueue("job"), converge.Message{Headers: h, Payload: []byte(`"x"`)}); err != nil {
+				t.Fatal(err)
+			}
+			if c.wantRun {
+				convergetest.Await(t, func() bool { return atomic.LoadInt32(&ran) == 1 })
+				if n := len(shelfKeys(t, w.KV, "job")); n != 0 {
+					t.Fatalf("shelf holds %d records, want 0", n)
+				}
+				return
+			}
+			convergetest.Await(t, func() bool { return len(shelfKeys(t, w.KV, "job")) == 1 })
+			convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&ran) == 0 })
+			keys := shelfKeys(t, w.KV, "job")
+			if rec := shelfRecordAt(t, w.KV, keys[0]); rec.Reason != reasonSchemaVersion {
+				t.Fatalf("reason = %q, want %q", rec.Reason, reasonSchemaVersion)
+			}
+		})
+	}
+}
+
+func TestForeignConvergeHeadersAreTrusted(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: wns})
+	rt := w.Build(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	got := make(chan Meta, 1)
+	if err := Handle(rt, tk, func(ctx context.Context, _ string) error {
+		m, _ := MetaFromContext(ctx)
+		got <- m
+		return nil
+	}, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	theirs := w.Clock().Now().Add(-time.Hour).UTC().Truncate(time.Millisecond)
+	h := map[string]string{
+		converge.HeaderAttempt:    "3",
+		converge.HeaderMessageID:  "theirs-1",
+		converge.HeaderEnqueuedAt: theirs.Format(time.RFC3339Nano),
+	}
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), converge.Message{Headers: h, Payload: []byte(`"x"`)}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-got:
+		if m.Attempt != 4 || m.MessageID != "theirs-1" {
+			t.Fatalf("Meta = %+v, want Attempt 4 (3 + one delivery) and the foreign message id", m)
+		}
+		if !m.EnqueuedAt.Equal(theirs) {
+			t.Fatalf("EnqueuedAt = %s, want the header the producer wrote, %s", m.EnqueuedAt, theirs)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler never ran")
+	}
+}
+
+func TestAConvergeHeaderTheLibraryDoesNotDefineIsCarried(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: wns})
+	rt := w.Build(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	got := make(chan Meta, 1)
+	if err := Handle(rt, tk, func(ctx context.Context, _ string) error {
+		m, _ := MetaFromContext(ctx)
+		got <- m
+		return nil
+	}, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	unknown := converge.HeaderPrefix + "dispatch-hint"
+	h := map[string]string{unknown: "urgent"}
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), converge.Message{Headers: h, Payload: []byte(`"x"`)}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-got:
+		if m.Headers[unknown] != "urgent" {
+			t.Fatalf("Headers[%q] = %q, want it carried through as written", unknown, m.Headers[unknown])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("a %q header converge does not define must not stop the message", unknown)
+	}
+}
+
+func TestAForeignConvergeHeaderSurvivesOntoTheShelfRecord(t *testing.T) {
+	w := convergetest.NewWith(t, convergetest.Options{Namespace: wns})
+	rt := w.Build(t)
+	tk := NewTask[string]("job", TaskOpts{})
+	if err := Handle(rt, tk, func(context.Context, string) error { return nil }, HandleOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	w.Runtime(t)
+	unknown := converge.HeaderPrefix + "dispatch-hint"
+	h := map[string]string{
+		unknown:                      "urgent",
+		converge.HeaderSchemaVersion: "9999",
+		converge.HeaderMessageID:     "from-python",
+	}
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), converge.Message{Headers: h, Payload: []byte(`"x"`)}); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return len(shelfKeys(t, w.KV, "job")) == 1 })
+	rec := shelfRecordAt(t, w.KV, shelfKeys(t, w.KV, "job")[0])
+	if rec.Headers[unknown] != "urgent" {
+		t.Fatalf("shelf record Headers[%q] = %q, want it carried through as written", unknown, rec.Headers[unknown])
+	}
+	if rec.MessageID != "from-python" {
+		t.Fatalf("shelf record MessageID = %q, want the producer's own %q", rec.MessageID, "from-python")
 	}
 }
