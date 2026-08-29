@@ -374,6 +374,25 @@ For the `id` parameter of `NotificationsFrom`.
   reported — if the payload is not a JSON object, if the field is missing, if
   it is not a string, or if it is the empty string. Unknown extra fields are
   ignored.
+- **`Skip`** is a value your own ID function returns — `return "",
+  reconcile.Skip` — to say *this entry is not for this job*. The delivery is
+  acknowledged and a `NotificationSkipped` event is recorded; nothing is
+  dropped and nothing is logged as a fault. Two jobs reading one stream
+  through separate consumer groups need it. Two jobs cannot share one
+  **list** at all — a list pop is destructive — and must be fed two lists.
+
+These are conveniences, not the menu. The parameter is an open function,
+`func(payload []byte) (reconcile.ID, error)`: a composite ID is
+
+```go
+id := func(payload []byte) (reconcile.ID, error) {
+    var m struct{ Tenant, Workspace string }
+    if err := json.Unmarshal(payload, &m); err != nil {
+        return "", err
+    }
+    return reconcile.ID(m.Tenant + "/" + m.Workspace), nil
+}
+```
 
 Both return a function, so both are called at spec-construction time:
 `ID: reconcile.IDFromJSON("workspace_id")`.

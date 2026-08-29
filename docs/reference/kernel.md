@@ -470,10 +470,10 @@ type Observer interface {
 type Event interface{ event() }
 ```
 
-`Event` is a sealed interface: the five concrete events below are the only
+`Event` is a sealed interface: the six concrete events below are the only
 implementations, and a `switch` over them is exhaustive today. Handle the
-default case anyway — a later version may add a sixth, and an observer that
-panics or blocks does so on the engine's goroutine. `Observe` is called
+default case anyway — a later version may add a seventh, and an observer
+that panics or blocks does so on the engine's goroutine. `Observe` is called
 concurrently from multiple jobs; implementations must be safe for that.
 
 ```go
@@ -503,6 +503,10 @@ type NotificationDropped struct {
     Err error
 }
 
+type NotificationSkipped struct {
+    Job string
+}
+
 type JobDestroyed struct {
     Job   string
     Cause StopCondition
@@ -515,6 +519,7 @@ type JobDestroyed struct {
 | `LeaseChanged` | an `OnOneReplica` job takes or gives up its lease. Emitted only by jobs that take one. |
 | `ScheduleOverrun` | a scheduled sweep boundary passed while the previous sweep was still running. One event per missed boundary, with how late it is. |
 | `NotificationDropped` | a notification never reached the queue of pending IDs. |
+| `NotificationSkipped` | an ID function returned `reconcile.Skip`; the entry was acknowledged and not counted as a drop. |
 | `JobDestroyed` | a job's stop condition fired. Emitted once per replica, with the cause. |
 
 A run that ends because the engine is shutting down is **not** reported: the
@@ -568,7 +573,7 @@ worker control value returned from a reconcile function is an ordinary failure.
 func LogObserver(l *slog.Logger) Observer
 ```
 
-Maps the five events onto `slog` records. `LogObserver(nil)` returns the
+Maps the six events onto `slog` records. `LogObserver(nil)` returns the
 no-op observer rather than panicking.
 
 | Event | Level |
@@ -577,6 +582,7 @@ no-op observer rather than panicking.
 | `LeaseChanged` | info |
 | `ScheduleOverrun` | warn |
 | `NotificationDropped` | warn |
+| `NotificationSkipped` | info |
 | `JobDestroyed` | info |
 
 Attributes carry the event's fields under the names `job`, `id`, `attempt`,

@@ -30,6 +30,24 @@ func TestLogObserverReportsShelvedAtError(t *testing.T) {
 	}
 }
 
+func TestLogObserverReportsNotificationSkipped(t *testing.T) {
+	var buf bytes.Buffer
+	l := slog.New(slog.NewJSONHandler(&buf, nil))
+	obs := LogObserver(l)
+	obs.Observe(NotificationSkipped{Job: "sync"})
+
+	var rec map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rec); err != nil {
+		t.Fatalf("decode log line: %v", err)
+	}
+	if rec["msg"] != "converge: notification skipped" {
+		t.Fatalf("msg = %v, want %q", rec["msg"], "converge: notification skipped")
+	}
+	if rec["job"] != "sync" {
+		t.Fatalf("job = %v, want %q", rec["job"], "sync")
+	}
+}
+
 func TestLogObserverUnknownOutcomeStillLogs(t *testing.T) {
 	var buf bytes.Buffer
 	l := slog.New(slog.NewJSONHandler(&buf, nil))

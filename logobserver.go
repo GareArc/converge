@@ -44,6 +44,10 @@ func (o logObserver) Observe(e Event) {
 			slog.String("id", v.ID),
 			errAttr(v.Err),
 		)
+	case NotificationSkipped:
+		o.log.LogAttrs(context.Background(), slog.LevelInfo, "converge: notification skipped",
+			slog.String("job", v.Job),
+		)
 	case JobDestroyed:
 		o.log.LogAttrs(context.Background(), slog.LevelInfo, "converge: job destroyed",
 			slog.String("job", v.Job),

@@ -89,6 +89,12 @@ type NotificationDropped struct {
 
 func (NotificationDropped) event() {}
 
+type NotificationSkipped struct {
+	Job string
+}
+
+func (NotificationSkipped) event() {}
+
 type JobDestroyed struct {
 	Job   string
 	Cause StopCondition

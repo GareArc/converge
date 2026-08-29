@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -137,6 +138,8 @@ func (e *engine) supervise(ctx context.Context, run func()) {
 func (e *engine) deliverNotification(ctx context.Context, t *notificationTrigger, d converge.Delivery) {
 	n, err := t.decode(d.Message().Payload)
 	switch {
+	case errors.Is(err, Skip):
+		e.deps.Observer.Observe(converge.NotificationSkipped{Job: e.cfg.job.Name()})
 	case err != nil:
 		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), Err: converge.ErrNotificationUndecodable})
 	case n.All:

@@ -194,6 +194,19 @@ func TestNotificationDroppedCounts(t *testing.T) {
 	}
 }
 
+func TestNotificationSkippedCounts(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.NotificationSkipped{Job: "sync"})
+
+	pts := sumPoints(t, collect(t, r), "converge.notifications.skipped")
+	if len(pts) != 1 || pts[0].Value != 1 {
+		t.Fatalf("points = %+v, want a single point of 1", pts)
+	}
+	if got := attrValue(t, pts[0].Attributes, "converge.job"); got != "sync" {
+		t.Fatalf("converge.job = %q, want sync", got)
+	}
+}
+
 func TestScheduleOverrunCounts(t *testing.T) {
 	obs, r := newTestObserver(t)
 	obs.Observe(converge.ScheduleOverrun{Job: "sync", Due: time.Unix(0, 0), Late: time.Minute})

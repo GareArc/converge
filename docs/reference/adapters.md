@@ -240,7 +240,7 @@ func NewObserver(meter metric.Meter) (converge.Observer, error)
 func RegisterGauges(meter metric.Meter, rt *converge.Runtime) error
 ```
 
-**`NewObserver`** maps the five events onto instruments. It returns an error
+**`NewObserver`** maps the six events onto instruments. It returns an error
 if the meter refuses to create one.
 
 | Instrument | Kind | From |
@@ -250,6 +250,7 @@ if the meter refuses to create one.
 | `converge.discarded` | counter | `RunCompleted` with outcome `Discarded` |
 | `converge.lease.transitions` | counter | `LeaseChanged`; attribute `converge.held` |
 | `converge.notifications.dropped` | counter | `NotificationDropped` |
+| `converge.notifications.skipped` | counter | `NotificationSkipped` |
 | `converge.schedule.overruns` | counter | `ScheduleOverrun` |
 | `converge.destroyed` | counter | `JobDestroyed` |
 
