@@ -2,12 +2,12 @@
 
 Ask the question again:
 
-> **If this message were lost, would anything be wrong?**
+> **Can you write a query that lists everything still to be done, without
+> reading the queue?**
 
-"Send the welcome email to ada@example.com." Yes — something would be wrong.
-No query against your database recovers that instruction, because nothing in
-your database records that a welcome email is owed. The message is the only
-copy of the work.
+"Send the welcome email to ada@example.com." No — nothing in your database
+records that a welcome email is owed, so no query lists the ones still to
+send. The message is the only copy of the work.
 
 That is a [worker](../glossary.md#worker) job, and everything about it
 follows from the message being irreplaceable. It is delivered at least once.

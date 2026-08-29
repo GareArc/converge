@@ -294,14 +294,15 @@ second.
 
 One question tells the two kinds of job apart:
 
-> **If this message were lost, would anything be wrong?**
+> **Can you write a query that lists everything still to be done, without
+> reading the queue?**
 
-- **No — reconcile.** The truth lives in your store. Your function reads the
+- **Yes — reconcile.** The truth lives in your store. Your function reads the
   store and makes the world match it. A message is only a
   [notification](docs/glossary.md#notification) — "look at this one sooner" —
   and the [schedule](docs/glossary.md#schedule) visits everything anyway, so
   notifications are cheap, unordered, deduplicated, and allowed to vanish.
-- **Yes — worker.** The truth lives in the message. Something happened and a
+- **No — worker.** The truth lives in the message. Something happened and a
   side effect must follow. The message *is* the work, so it is durable,
   retried, and moved to the shelf for a person to look at when the retries
   run out.

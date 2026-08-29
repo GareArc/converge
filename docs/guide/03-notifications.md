@@ -26,6 +26,17 @@ once rather than serving out a penalty that is now meaningless. That reset
 is the only bypass in the library. There is no separate operator verb, and
 there is nothing else to learn.
 
+## A notification has no verb
+
+If you catch yourself wanting to put a verb on a notification — `"type":
+"rotate"`, `"action": "delete"` — one of two things is true. Either the verb
+is derivable from your store and you have not written that column yet: the
+workspace exists or it does not, the credential is expired or it is not, and
+the function can look. Or the verb really is an instruction nothing can
+re-derive, and what you have is a [worker](../glossary.md#worker) task you
+have not declared yet. A notification carries an ID and nothing else, and
+that is not a limitation to work around: it is what makes losing one free.
+
 ## A second trigger
 
 Every job has one **inbox**: one place it receives things, named after the

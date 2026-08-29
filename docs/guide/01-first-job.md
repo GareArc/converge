@@ -9,34 +9,36 @@ and you do not have to know the library to decide it.
 
 ## One question decides everything
 
-> **If this message were lost, would anything be wrong?**
+> **Can you write a query that lists everything still to be done, without
+> reading the queue?**
 
-**No — you want [reconcile](../glossary.md#reconcile).** The truth already
-lives in your own store. Your function re-reads it and makes the world
-match. A message can only ever say *look at this one sooner*, so losing one
-costs you a little latency and never correctness. You can lose every message
-converge sends and the job still comes out right, because the job also walks
-the whole store on a **schedule**.
+**Yes — you want [reconcile](../glossary.md#reconcile).** The truth already
+lives in your own store, and that query is how the job finds its work: it
+walks the store on a **schedule**, calls your function once per thing, and
+your function makes the world match. A message can only ever say *look at
+this one sooner*. You can lose every message converge sends and the job
+still comes out right, because the next **sweep** runs the same query.
 
-**Yes — the message is the work.** Something happened, a side effect has to
-follow, and re-reading your database will not tell you what it was: send
-this receipt, deliver this webhook. converge keeps the message, hands it to
-your function, and hands it over again if your function fails. When the
-retries are spent it puts the message on the **shelf** — a durable store
-where a person can look at it — rather than dropping it. That kind of job is
-built from a **task**, a typed contract shared by the code that sends the
-message and the code that handles it, and [chapter 4](04-worker.md) is about
-it.
+**No — the message is the work.** Something happened, a side effect has to
+follow, and no query recovers what it was: send this receipt, deliver this
+webhook. converge keeps the message, hands it to your function, and hands
+it over again if your function fails. When the retries are spent it puts
+the message on the **shelf** — a durable store where a person can look at
+it — rather than dropping it. That kind of job is built from a **task**, a
+typed contract shared by the code that sends the message and the code that
+handles it, and [chapter 4](04-worker.md) is about it.
 
-Answer the question first. It settles what starts a run, what your function
-is handed, and what a failure costs.
+The same question from the other side is *if this message were lost, would
+anything be wrong?* — if the query exists, nothing would be, because the
+next run finds the same rows. Answer it first. It settles what starts a run,
+what your function is handed, and what a failure costs.
 
 ## A job that runs every night
 
-Billing generates invoices at 00:05 Tokyo time. If the message that says
-"it's 00:05" went missing, nothing would be wrong — the accounts that need
-invoicing are still sitting in the database, and the next run will find
-them. No: so this is a reconcile job.
+Billing generates invoices at 00:05 Tokyo time. Can you list the accounts
+still to be invoiced without reading a queue? Yes — they are the rows with
+no invoice for this month, and they are still there whether or not anything
+told you it was 00:05. So this is a reconcile job.
 
 Here is the whole program.
 

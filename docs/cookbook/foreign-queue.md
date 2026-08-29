@@ -10,9 +10,10 @@ workspace's credentials are rotated. You cannot change what it pushes, you
 cannot ask it to add headers, and within a year it will be pushing message
 types nobody has told you about. You still have to react.
 
-Ask the question about *their* message: if one were lost, would anything be
-wrong? No — the workspace's credentials are in your database, and you can
-re-read them whenever you like. Their message is a
+Ask the question about *their* message: can you list the workspaces whose
+credentials still need syncing without reading their list? Yes — the
+workspaces are in your database, and you can re-read any of them whenever
+you like. Their message is a
 [notification](../glossary.md#notification) about which workspace to look at,
 so this is a [reconcile](../glossary.md#reconcile) job and their list is one
 of its triggers:

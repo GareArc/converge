@@ -9,14 +9,15 @@ can run.
 
 Before you reach for an API, answer this about the work you have:
 
-> **If this message were lost, would anything be wrong?**
+> **Can you write a query that lists everything still to be done, without
+> reading the queue?**
 
-**No.** The truth lives in your own store, and a message is only a note
+**Yes.** The truth lives in your own store, and a message is only a note
 saying *look at this one sooner*. Losing it costs a little latency and never
 correctness. That is a [reconcile](../glossary.md#reconcile) job.
 
-**Yes.** The truth lives in the message. Something happened, a side effect
-has to follow, and no amount of re-reading your database will tell you what
+**No.** The truth lives in the message. Something happened, a side effect
+has to follow, and no query against your database will tell you what
 it was. That is a [worker](../glossary.md#worker) job: the message is
 durable, it is retried, and it ends up on the
 [shelf](../glossary.md#shelf) for a person to look at rather than being

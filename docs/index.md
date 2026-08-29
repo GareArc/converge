@@ -11,10 +11,11 @@ your function, and tries it again if that function fails.
 
 One question decides which kind you have:
 
-> **If this message were lost, would anything be wrong?**
+> **Can you write a query that lists everything still to be done, without
+> reading the queue?**
 
-No means reconcile — the truth is in your store and the message was only a
-[notification](glossary.md#notification). Yes means worker — the truth is in
+Yes means reconcile — the truth is in your store and a message is only a
+[notification](glossary.md#notification). No means worker — the truth is in
 the message, so it is durable, retried, and set aside on the
 [shelf](glossary.md#shelf) rather than dropped.
 

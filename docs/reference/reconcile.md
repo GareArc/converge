@@ -290,7 +290,9 @@ func IDFromJSON(field string) func(payload []byte) (ID, error)
 For `NotificationsOpts.ID` on a foreign queue.
 
 - **`RawID()`** takes the whole payload as the ID. An empty payload is
-  `reconcile: empty payload`.
+  `reconcile: empty payload`. The whole payload becomes the ID, and an ID
+  is not private: it appears in log lines, in `Stats()` and the debug
+  handler. Never use `RawID` on a payload that contains a secret.
 - **`IDFromJSON(field)`** unmarshals the payload as a JSON object and reads
   one **string** field. It errors — and the notification is dropped and
   reported — if the payload is not a JSON object, if the field is missing, if

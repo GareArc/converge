@@ -22,8 +22,10 @@ _Avoid_: cron entry, background task (as the umbrella term)
 
 **Surface**:
 Which of the two models a job runs on — reconcile or worker. One question
-decides it: if this message were lost, would anything be wrong? No means
-reconcile, yes means worker. The choice settles everything else about the
+decides it: can you write a query that lists everything still to be done,
+without reading the queue? Yes means reconcile, no means worker. (Its
+mirror — if this message were lost, would anything be wrong? — is the
+explanation, not the test.) The choice settles everything else about the
 job: what starts a run, what the function is handed, and what a failure
 costs.
 _Avoid_: mode, engine (as a user-facing term)

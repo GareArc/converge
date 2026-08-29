@@ -14,11 +14,11 @@ in code, and no job appears or disappears while your service is running.
 
 ### Surface
 
-Which of the two kinds a job is. One question decides it: *if this message
-were lost, would anything be wrong?* If nothing would be wrong, the job is
-a reconcile job; if something would, it is a worker job. You choose once
-per job, and the choice settles what starts a run, what your function is
-handed, and what happens when your function fails.
+Which of the two kinds a job is. One question decides it: *can you write a
+query that lists everything still to be done, without reading the queue?*
+If you can, the job is a reconcile job; if you cannot, it is a worker job.
+You choose once per job, and the choice settles what starts a run, what
+your function is handed, and what happens when your function fails.
 
 ### Reconcile
 
