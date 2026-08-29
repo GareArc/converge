@@ -98,12 +98,12 @@ func TestNotifyPublishesToTheNamespacedInbox(t *testing.T) {
 	if sent[0].msg.Kind != notice.Kind {
 		t.Fatalf("Kind = %q, want %q", sent[0].msg.Kind, notice.Kind)
 	}
-	id, err := notice.Decode(sent[0].msg.Payload)
+	n, err := notice.Decode(sent[0].msg.Payload)
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if id != "m-42" {
-		t.Fatalf("id = %q, want %q", id, "m-42")
+	if n.ID != "m-42" {
+		t.Fatalf("id = %q, want %q", n.ID, "m-42")
 	}
 }
 
@@ -117,9 +117,9 @@ func TestNotifyWithNoNamespaceStillNamespacesTheLibrary(t *testing.T) {
 	if len(sent) != 1 || sent[0].queue != "converge/inbox/merchants" {
 		t.Fatalf("published = %+v, want one message on converge/inbox/merchants", sent)
 	}
-	id, err := notice.Decode(sent[0].msg.Payload)
-	if err != nil || id != "" {
-		t.Fatalf("id, err = %q, %v, want an empty id and no error", id, err)
+	n, err := notice.Decode(sent[0].msg.Payload)
+	if err != nil || !n.All {
+		t.Fatalf("n, err = %+v, %v, want All true and no error", n, err)
 	}
 }
 

@@ -58,11 +58,11 @@ func (t *notificationTrigger) decode(payload []byte) (ID, error) {
 	if t.foreign {
 		return t.opts.ID(payload)
 	}
-	id, err := notice.Decode(payload)
+	n, err := notice.Decode(payload)
 	if err != nil {
 		return "", err
 	}
-	return ID(id), nil
+	return ID(n.ID), nil
 }
 
 func (t *notificationTrigger) bind(e *engine) error {

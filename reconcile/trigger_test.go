@@ -274,7 +274,7 @@ func TestNotificationsEmptyIDAddressesSingleIDJob(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go te.e.runNotifications(ctx, trig)
-	payload, err := notice.Encode("")
+	payload, err := notice.EncodeAll()
 	if err != nil {
 		t.Fatal(err)
 	}

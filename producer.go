@@ -47,7 +47,13 @@ func (p *Producer) Notify(ctx context.Context, job, id string) error {
 	if job == "" {
 		return errors.New("converge: Notify needs a job name")
 	}
-	payload, err := notice.Encode(id)
+	var payload []byte
+	var err error
+	if id == "" {
+		payload, err = notice.EncodeAll()
+	} else {
+		payload, err = notice.Encode(id)
+	}
 	if err != nil {
 		return fmt.Errorf("converge: notify %q: %w", job, err)
 	}

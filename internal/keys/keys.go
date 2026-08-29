@@ -1,6 +1,10 @@
 package keys
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+	"unicode"
+)
 
 func join(ns string, fixed []string, parts []string) string {
 	elems := make([]string, 0, len(fixed)+len(parts)+1)
@@ -17,6 +21,27 @@ func Probe(ns string) string {
 }
 
 func Inbox(ns, job string) string { return join(ns, []string{"converge", "inbox"}, []string{job}) }
+
+func Notifications(ns, job string) string {
+	return join(ns, []string{"converge", "notifications"}, []string{job})
+}
+
+func Queue(ns, task string) string { return join(ns, []string{"converge", "queue"}, []string{task}) }
+
+func ValidateDeclared(name string) error {
+	if name == "" {
+		return nil
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("%q has leading or trailing whitespace", name)
+	}
+	for i, r := range name {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%q has a control character at byte %d (0x%02x)", name, i, r)
+		}
+	}
+	return nil
+}
 
 func Worker(ns, job string, parts ...string) string {
 	return join(ns, []string{"converge", "worker", job}, parts)

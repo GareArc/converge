@@ -7,16 +7,40 @@ import (
 
 const Kind = "converge.notification"
 
-type envelope struct {
-	ID string `json:"id"`
+type Notification struct {
+	ID  string
+	All bool
 }
 
-func Encode(id string) ([]byte, error) { return json.Marshal(envelope{ID: id}) }
+type envelope struct {
+	ID  string `json:"id,omitempty"`
+	All bool   `json:"all,omitempty"`
+}
 
-func Decode(payload []byte) (string, error) {
+var errUndecodable = errors.New("notice: undecodable notification")
+
+func Encode(id string) ([]byte, error) {
+	if id == "" {
+		return nil, errors.New("notice: empty id; the whole job is EncodeAll")
+	}
+	return json.Marshal(envelope{ID: id})
+}
+
+func EncodeAll() ([]byte, error) { return json.Marshal(envelope{All: true}) }
+
+func Decode(payload []byte) (Notification, error) {
 	var e envelope
 	if err := json.Unmarshal(payload, &e); err != nil {
-		return "", errors.New("notice: undecodable notification")
+		return Notification{}, errUndecodable
 	}
-	return e.ID, nil
+	if e.All {
+		if e.ID != "" {
+			return Notification{}, errUndecodable
+		}
+		return Notification{All: true}, nil
+	}
+	if e.ID == "" {
+		return Notification{}, errUndecodable
+	}
+	return Notification{ID: e.ID}, nil
 }
