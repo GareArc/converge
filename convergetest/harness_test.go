@@ -164,11 +164,11 @@ func TestWorkerRoundTripAndAssertEnqueued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
+	p, err := tk.NewProducer(converge.Scope{MQ: h.MQ, Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tk.Enqueue(context.Background(), p, "alice@example.com", worker.EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "alice@example.com", worker.EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	h.AssertEnqueued(t, tk, "alice@example.com")
@@ -190,13 +190,13 @@ func TestFailNextPublishSurfacesOnEnqueue(t *testing.T) {
 	if err := worker.Handle(rt, tk, func(context.Context, string) error { return nil }, worker.HandleOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
+	p, err := tk.NewProducer(converge.Scope{MQ: h.MQ, Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	boom := errors.New("boom")
 	h.MQ.FailNextPublish(boom)
-	err = tk.Enqueue(context.Background(), p, "alice@example.com", worker.EnqueueOpts{})
+	err = p.Enqueue(context.Background(), "alice@example.com", worker.EnqueueOpts{})
 	if !errors.Is(err, boom) {
 		t.Fatalf("Enqueue error = %v, want %v", err, boom)
 	}
@@ -228,11 +228,11 @@ func TestLeaseExpireCancelsInFlightHandler(t *testing.T) {
 	if err := worker.Handle(rt, tk, handler, worker.HandleOpts{RunMode: converge.OnOneReplica}); err != nil {
 		t.Fatal(err)
 	}
-	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
+	p, err := tk.NewProducer(converge.Scope{MQ: h.MQ, Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tk.Enqueue(context.Background(), p, "hello", worker.EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "hello", worker.EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -440,11 +440,11 @@ func TestNewWithCustomKVReachesRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
+	p, err := tk.NewProducer(converge.Scope{MQ: h.MQ, Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tk.Enqueue(context.Background(), p, "payload", worker.EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "payload", worker.EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	h.Drain(t)

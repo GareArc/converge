@@ -11,3 +11,5 @@ type systemClock struct{}
 
 func (systemClock) Now() time.Time                         { return time.Now() }
 func (systemClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+func SystemClock() Clock { return systemClock{} }

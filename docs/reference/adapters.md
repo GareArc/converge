@@ -406,11 +406,12 @@ most verbs take a `testing.TB`.
 | `Stop` | cancel the runtime and return what `Run` returned. After it, only `Events` still works. |
 | `Events` | every event recorded so far, as a copy. |
 | `AssertReconciled` | poll for a `RunCompleted` with that job, that ID and outcome `Succeeded`. Fails after 2s, printing every event it saw. |
-| `AssertEnqueued` | poll for a message on the task's inbox whose payload equals the task's encoding of `want`. |
+| `AssertEnqueued` | poll for a message on the task's queue (`TaskRef.QueueName(namespace)`) whose payload equals the task's encoding of `want`. |
 
 ```go
 type TaskRef interface {
     Name() string
+    QueueName(namespace string) string
     Encode(v any) ([]byte, error)
 }
 ```

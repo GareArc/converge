@@ -111,7 +111,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := transcode.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -123,7 +123,7 @@ func run() error {
 		{UploadID: "up-4001", Profile: "1080p"},
 		{UploadID: "up-4002", Profile: "1080p"},
 	} {
-		if err := transcode.Enqueue(ctx, p, j, worker.EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(ctx, j, worker.EnqueueOpts{}); err != nil {
 			return err
 		}
 	}

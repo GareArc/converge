@@ -8,7 +8,7 @@ you declare, and set aside on a durable shelf when it can no longer be tried.
 is the surface, its defaults, and its refusals.
 
 - [Task](#task)
-- [Enqueue](#enqueue)
+- [NewProducer and Enqueue](#newproducer-and-enqueue)
 - [Handle](#handle)
 - [RetryPolicy](#retrypolicy)
 - [Outcomes: Snooze, Discard, Shelve](#outcomes-snooze-discard-shelve)
@@ -28,6 +28,7 @@ type Codec interface {
 type TaskOpts struct {
     Codec   Codec
     Version int
+    Queue   string
 }
 
 type Task[T any] struct { /* sealed */ }
@@ -35,6 +36,8 @@ type Task[T any] struct { /* sealed */ }
 func NewTask[T any](name string, o TaskOpts) Task[T]
 
 func (t Task[T]) Name() string
+func (t Task[T]) Version() int
+func (t Task[T]) QueueName(namespace string) string
 func (t Task[T]) Encode(v any) ([]byte, error)
 ```
 
@@ -46,15 +49,29 @@ consumer share, and the compiler catches drift.
 | --- | --- |
 | `Codec` | JSON (`encoding/json`) |
 | `Version` | 1 — you cannot declare version zero |
+| `Queue` | derived: `<namespace>/converge/queue/<name>` |
+
+`Queue` is the name of the transport queue this task's messages travel on,
+used **verbatim** — not namespaced, not prefixed — so a producer in another
+language can write to it by that exact string. Leave it empty and converge
+derives `<namespace>/converge/queue/<name>`, which is what `QueueName`
+returns in either case; print it at startup for the team that does not
+import your Go package. A declared queue is refused only for what is
+invisible: leading or trailing whitespace, or a control character
+(`worker: task %q: Queue %q has a control character at byte N (0xNN)`).
+Redis Cluster hash tags such as `{dify}:rotate` are fine — the backend's
+own naming rules are the backend's. Two tasks may not resolve to one queue
+in one runtime: `worker: task %q: queue %q is already read by task %q`.
 
 `NewTask` **returns a value, not an error.** An invalid task carries its
-error and reports it the first time you use it, from `Enqueue` (`worker:
-Enqueue: ...`), `Handle` (`worker: Handle: ...`) or `Encode`. Three things
-are invalid:
+error and reports it the first time you use it, from `NewProducer` (`worker:
+NewProducer: ...`), `Handle` (`worker: Handle: ...`) or `Encode`. Four
+things are invalid:
 
 - an empty name — `worker: task name is required`
 - a name containing `/` — `worker: task %q: name must not contain "/"`
 - a negative `Version` — `worker: task %q: Version must not be negative`
+- a `Queue` with leading or trailing whitespace, or a control character
 
 That shape exists so a task can be a package-level `var` without an `init`
 that panics. Nothing silently succeeds: every path that uses the task
@@ -62,9 +79,9 @@ surfaces the error.
 
 `Encode` is the task's own codec applied to a value, and is what
 `convergetest.Harness.AssertEnqueued` uses to compare payloads. `Task[T]`
-satisfies `convergetest.TaskRef` through `Name` and `Encode`.
+satisfies `convergetest.TaskRef` through `Name`, `QueueName` and `Encode`.
 
-## Enqueue
+## NewProducer and Enqueue
 
 ```go
 type EnqueueOpts struct {
@@ -72,18 +89,29 @@ type EnqueueOpts struct {
     Headers map[string]string
 }
 
-func (t Task[T]) Enqueue(ctx context.Context, p *converge.Producer,
-    payload T, o EnqueueOpts) error
+type Producer[T any] struct { /* sealed */ }
+
+func (t Task[T]) NewProducer(s converge.Scope) (*Producer[T], error)
+func (p *Producer[T]) Enqueue(ctx context.Context, payload T, o EnqueueOpts) error
+func (p *Producer[T]) Queue() string
 ```
 
-The whole producer-side surface for worker work. It needs a `*converge.Producer`
-built with `converge.NewProducer` and the same `Namespace` the consuming
-runtime uses — that plus the task name is the entire coupling between the two
-binaries.
+The whole producer-side surface for worker work. A producer is built *from*
+the task and can enqueue to nothing else; there is no producer type that
+takes a task name. It needs a [`converge.Scope`](kernel.md#scope) — the
+`MQ`, the `Namespace`, and optionally the `Clock` — which is `rt.Scope()` in
+the process that runs the job and a struct literal anywhere else. The task
+and the scope are the entire coupling between the two binaries.
 
+- `NewProducer` fails on a misconstructed task (`worker: NewProducer: ...`)
+  and on a nil `Scope.MQ` (`worker: task %q: NewProducer needs Scope.MQ`).
+  An empty `Scope.Namespace` is not an error: a declared queue needs none,
+  and a derived one becomes `converge/queue/<name>`, which is what a runtime
+  with an empty namespace consumes.
+- `Queue` is the resolved queue name, declared or derived.
 - **`Delay`** holds the message back before anyone can pick it up. It needs an
   `MQ` with the `DelayedPublisher` capability; without one the error is
-  `converge: job %q: Delay needs the DelayedPublisher capability`. A negative
+  `worker: task %q: Delay needs the DelayedPublisher capability`. A negative
   `Delay` is `worker: task %q: Delay must not be negative`. Zero publishes
   immediately. Reach for minutes, not days: a due date belongs in a column of
   yours, swept by a reconcile job.
@@ -93,11 +121,10 @@ binaries.
   quietly overwritten. Your map is copied; converge does not mutate it.
 
 `Enqueue` seeds the envelope: a fresh message ID, the task's schema version,
-the enqueue time from the producer's clock, and an attempt base of zero.
-
-A `Producer.Notify` aimed at a worker job is not an error and not ignored: it
-publishes a message with no `converge.schema-version` header, which the worker
-shelves with the reason `schema version`. Visible, not silent.
+the enqueue time from the scope's clock (the wall clock when `Scope.Clock`
+is nil), and an attempt base of zero. A nil or zero-value `Producer` returns
+`worker: producer has no MQ; build it with Task.NewProducer` rather than
+panicking.
 
 ## Handle
 
@@ -293,7 +320,7 @@ reconcile function's, which is the honest answer rather than a zero `Meta`.
 | Field | Value |
 | --- | --- |
 | `Task` | the job name, which is the task name |
-| `Queue` | the job's inbox, as converge named it |
+| `Queue` | the queue the job reads, declared or derived |
 | `MessageID` | the identity minted at enqueue; unchanged across every retry, snooze and requeue |
 | `Attempt` | the **logical attempt**, starting at 1 |
 | `MaxAttempts` | the effective policy value, defaults already applied |
@@ -303,7 +330,7 @@ reconcile function's, which is the honest answer rather than a zero `Meta`.
 `MessageID` is the one value that follows a piece of work end to end, and it
 is what appears as `RunCompleted.ID` and as `id=` in the log line. A message
 that arrives with no `converge.message-id` header — one some other system
-published straight onto the inbox — is given a stable synthetic id derived
+published straight onto the queue — is given a stable synthetic id derived
 from its kind and payload, prefixed `anon-`.
 
 `Attempt` and `Delivery.Attempt()` are different numbers on purpose. The

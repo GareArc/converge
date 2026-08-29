@@ -26,11 +26,10 @@ var wstart = time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
 
 const wns = "wt"
 
-func wInbox(job string) string { return keys.Inbox(wns, job) }
+func wQueue(job string) string { return keys.Queue(wns, job) }
 
-func wProducer(t *testing.T, mq converge.MQ, clock converge.Clock) *converge.Producer {
-	t.Helper()
-	return mustProducerWith(t, mq, converge.ProducerOpts{Namespace: wns, Clock: clock})
+func wScope(mq converge.MQ, clock converge.Clock) converge.Scope {
+	return converge.Scope{MQ: mq, Namespace: wns, Clock: clock}
 }
 
 func eventCount(events []converge.Event, match func(converge.Event) bool) int {
@@ -97,9 +96,9 @@ func TestHandleRunsAndAcks(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
 	enqueuedAt := w.Clock().Now()
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -137,7 +136,7 @@ func TestHandleRunsAndAcks(t *testing.T) {
 	}
 }
 
-func TestInfoReportsTheNamespacedInboxOnceBound(t *testing.T) {
+func TestInfoReportsTheNamespacedQueue(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -153,8 +152,8 @@ func TestInfoReportsTheNamespacedInboxOnceBound(t *testing.T) {
 	if !ok || len(infos) != 1 {
 		t.Fatalf("Inspect = %v, want exactly one JobInfo", raw)
 	}
-	if infos[0].Queue != wInbox("job") {
-		t.Fatalf("Queue = %q, want %q", infos[0].Queue, wInbox("job"))
+	if infos[0].Queue != wQueue("job") {
+		t.Fatalf("Queue = %q, want %q", infos[0].Queue, wQueue("job"))
 	}
 }
 
@@ -171,8 +170,8 @@ func TestErrorRetriesWithBackoffThenShelves(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, w.Clock(), 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 2 })
@@ -235,8 +234,8 @@ func TestMetaAttemptCountsTransportRedeliveries(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, w.Clock(), 100*time.Millisecond, func() bool {
@@ -276,7 +275,7 @@ func TestDecodeFailureShelvesImmediately(t *testing.T) {
 		converge.HeaderEnqueuedAt:    w.Clock().Now().UTC().Format(time.RFC3339Nano),
 		converge.HeaderAttempt:       "0",
 	}
-	if err := w.MQ.Publish(context.Background(), wInbox("job"), converge.Message{Kind: "job", Headers: h, Payload: []byte(`{not valid json`)}); err != nil {
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), converge.Message{Kind: "job", Headers: h, Payload: []byte(`{not valid json`)}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -329,7 +328,7 @@ func TestShelfWriteFailureIsReportedWithItsOwnCause(t *testing.T) {
 		converge.HeaderEnqueuedAt:    w.Clock().Now().UTC().Format(time.RFC3339Nano),
 		converge.HeaderAttempt:       "0",
 	}
-	if err := w.MQ.Publish(context.Background(), wInbox("job"), converge.Message{Kind: tk.Name(), Headers: headers, Payload: []byte(`"x"`)}); err != nil {
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), converge.Message{Kind: tk.Name(), Headers: headers, Payload: []byte(`"x"`)}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -379,7 +378,7 @@ func TestReceiptGuardsShelving(t *testing.T) {
 				converge.HeaderAttempt:       "0",
 			}
 			c.mutate(h)
-			if err := w.MQ.Publish(context.Background(), wInbox("job"), converge.Message{Kind: tk.Name(), Headers: h, Payload: []byte(`"x"`)}); err != nil {
+			if err := w.MQ.Publish(context.Background(), wQueue("job"), converge.Message{Kind: tk.Name(), Headers: h, Payload: []byte(`"x"`)}); err != nil {
 				t.Fatal(err)
 			}
 			convergetest.Await(t, func() bool {
@@ -407,7 +406,7 @@ func TestReceiptGuardsShelving(t *testing.T) {
 	}
 }
 
-func TestForeignKindInTheInboxStillRuns(t *testing.T) {
+func TestForeignKindOnTheQueueStillRuns(t *testing.T) {
 	w := convergetest.NewWith(t, convergetest.Options{Namespace: "wt"})
 	rt := w.Build(t)
 	tk := NewTask[string]("job", TaskOpts{})
@@ -427,7 +426,7 @@ func TestForeignKindInTheInboxStillRuns(t *testing.T) {
 		converge.HeaderAttempt:       "0",
 	}
 	msg := converge.Message{Kind: "some-other-name", Headers: h, Payload: []byte(`"x"`)}
-	if err := w.MQ.Publish(context.Background(), wInbox("job"), msg); err != nil {
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), msg); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&ran) == 1 })
@@ -435,7 +434,7 @@ func TestForeignKindInTheInboxStillRuns(t *testing.T) {
 		rc, ok := e.(converge.RunCompleted)
 		return ok && rc.Outcome == converge.Shelved
 	}); n != 0 {
-		t.Fatalf("RunCompleted{Outcome: Shelved} count = %d, want 0; the inbox is the job, so Kind is not routing", n)
+		t.Fatalf("RunCompleted{Outcome: Shelved} count = %d, want 0; the queue is the task, so Kind is not routing", n)
 	}
 }
 
@@ -493,8 +492,8 @@ func TestShelvingKVFailureNacksAndRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, w.Clock(), 200*time.Millisecond, func() bool {
@@ -532,9 +531,9 @@ func TestConcurrencyBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
 	for i := 0; i < 4; i++ {
-		if err := tk.Enqueue(context.Background(), p, fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(context.Background(), fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -570,8 +569,8 @@ func TestDiscardAcksWithEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
@@ -617,8 +616,8 @@ func TestSnoozeRedeliversWithoutConsumingAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -659,8 +658,8 @@ func TestSnoozeDelayEscalatesAfterNoBackoffCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, w.Clock(), 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 11 })
@@ -682,8 +681,8 @@ func TestSnoozeClampedToMaxAge(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&runs) == 1 })
@@ -738,8 +737,8 @@ func TestSnoozeWithSpentBudgetShelvesImmediately(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -813,7 +812,7 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 		}
 		return converge.Message{Kind: "job", Headers: h, Payload: []byte(`"anon-payload"`)}
 	}
-	if err := w.MQ.Publish(context.Background(), wInbox("job"), anonMsg()); err != nil {
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), anonMsg()); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -822,7 +821,7 @@ func TestAnonymousMessageIDIsStableContentHash(t *testing.T) {
 			return ok && rc.Outcome == converge.Shelved
 		}) == 1
 	})
-	if err := w.MQ.Publish(context.Background(), wInbox("job"), anonMsg()); err != nil {
+	if err := w.MQ.Publish(context.Background(), wQueue("job"), anonMsg()); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -866,8 +865,8 @@ func TestWrongSurfaceSignalShelves(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -909,8 +908,8 @@ func TestShutdownIsNeutral(t *testing.T) {
 
 	w1.Runtime(t)
 
-	p := wProducer(t, w1.MQ, w1.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w1.MQ, w1.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1022,8 +1021,8 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 
 	w1.Runtime(t)
 
-	p := wProducer(t, pmq, w1.Clock())
-	if err := tk.Enqueue(context.Background(), p, "one", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(pmq, w1.Clock()))
+	if err := p.Enqueue(context.Background(), "one", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1031,7 +1030,7 @@ func TestShutdownDrainsWithoutRepublishLivelock(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("first handler never started")
 	}
-	if err := tk.Enqueue(context.Background(), p, "two", EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "two", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return jobStats(t, rt, "job").InFlight == 2 })
@@ -1103,8 +1102,8 @@ func TestVisibilityHeartbeatExtends(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, cmq, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(cmq, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1149,8 +1148,8 @@ func TestUnknownWorkerSignalFallsBackToError(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, w.Clock(), 100*time.Millisecond, func() bool { return atomic.LoadInt32(&runs) >= 2 })
@@ -1194,11 +1193,11 @@ func TestPointerOutcomeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "discard-me", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "discard-me", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tk.Enqueue(context.Background(), p, "snooze-me", EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "snooze-me", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -1282,9 +1281,9 @@ func TestOnOneReplicaOnlyLeaderConsumes(t *testing.T) {
 	wa.Runtime(t)
 	wb.Runtime(t)
 
-	p := wProducer(t, mq, wa.Clock())
+	p := mustProducer(t, tk, wScope(mq, wa.Clock()))
 	for i := 0; i < 3; i++ {
-		if err := tk.Enqueue(context.Background(), p, fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(context.Background(), fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1341,8 +1340,8 @@ func TestLeaseLossCancelsInFlight(t *testing.T) {
 	wa.Runtime(t)
 	wb.Runtime(t)
 
-	p := wProducer(t, mq, wa.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(mq, wa.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1452,32 +1451,34 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 	wa.Runtime(t)
 	wb.Runtime(t)
 
-	p := wProducer(t, mq, clock)
+	okP := mustProducer(t, okTask, wScope(mq, clock))
+	failP := mustProducer(t, failTask, wScope(mq, clock))
+	snoozeP := mustProducer(t, snoozeTask, wScope(mq, clock))
 
-	awaitLive := func(tk Task[string], a, b *int32) {
+	awaitLive := func(p *Producer[string], a, b *int32) {
 		t.Helper()
 		deadline := time.Now().Add(2 * time.Second)
 		for atomic.LoadInt32(a) == 0 || atomic.LoadInt32(b) == 0 {
 			if time.Now().After(deadline) {
-				t.Fatalf("broadcast subscriptions for %q never became live", tk.name)
+				t.Fatalf("broadcast subscriptions for %q never became live", p.task.name)
 			}
-			if err := tk.Enqueue(context.Background(), p, "warm", EnqueueOpts{}); err != nil {
+			if err := p.Enqueue(context.Background(), "warm", EnqueueOpts{}); err != nil {
 				t.Fatal(err)
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
-	awaitLive(okTask, &okWarmA, &okWarmB)
-	awaitLive(failTask, &failWarmA, &failWarmB)
-	awaitLive(snoozeTask, &snoozeWarmA, &snoozeWarmB)
+	awaitLive(okP, &okWarmA, &okWarmB)
+	awaitLive(failP, &failWarmA, &failWarmB)
+	awaitLive(snoozeP, &snoozeWarmA, &snoozeWarmB)
 
-	if err := okTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	if err := okP.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&okA) == 1 && atomic.LoadInt32(&okB) == 1 })
 	convergetest.AssertStable(t, func() bool { return atomic.LoadInt32(&okA) == 1 && atomic.LoadInt32(&okB) == 1 })
 
-	if err := failTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	if err := failP.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&failA) == 1 && atomic.LoadInt32(&failB) == 1 })
@@ -1494,7 +1495,7 @@ func TestOnAllReplicasBroadcast(t *testing.T) {
 		t.Fatalf("worldB failed RunCompleted{Outcome: Discarded} count = %d, want 1: nothing redelivers a failed broadcast", n)
 	}
 
-	if err := snoozeTask.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	if err := snoozeP.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return atomic.LoadInt32(&snoozeA) == 1 && atomic.LoadInt32(&snoozeB) == 1 })
@@ -1524,9 +1525,9 @@ func TestRateLimitSpacesRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
 	for i := 0; i < 3; i++ {
-		if err := tk.Enqueue(context.Background(), p, fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(context.Background(), fmt.Sprintf("m%d", i), EnqueueOpts{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1552,11 +1553,11 @@ func TestRateLimitWaitIsHeartbeatCovered(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "a", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "a", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tk.Enqueue(context.Background(), p, "b", EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "b", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -1601,8 +1602,8 @@ func TestPanicIsRecoveredAsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, w.Clock(), 100*time.Millisecond, func() bool {
@@ -1684,8 +1685,8 @@ func TestLeaseExtendFailureFailsFastWhileActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1715,7 +1716,7 @@ func TestQuietFlipsFalseWhileHandlerInFlight(t *testing.T) {
 	rt := w.Build(t)
 	gate := make(chan struct{})
 	entered := make(chan struct{})
-	e, err := newEngine(taskInfo{name: "job", queue: "job", version: 1}, func(ctx context.Context, payload []byte) error {
+	e, err := newEngine(taskInfo{name: "job", queue: wQueue("job"), version: 1}, func(ctx context.Context, payload []byte) error {
 		close(entered)
 		<-gate
 		return nil
@@ -1731,8 +1732,8 @@ func TestQuietFlipsFalseWhileHandlerInFlight(t *testing.T) {
 		t.Fatal("engine must start quiet")
 	}
 	tk := NewTask[string]("job", TaskOpts{})
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1780,8 +1781,8 @@ func TestTimeoutCancelsTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
-	if err := task.Enqueue(context.Background(), p, "x", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, task, converge.Scope{MQ: h.MQ, Namespace: "test"})
+	if err := p.Enqueue(context.Background(), "x", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, h.Clock(), 10*time.Second, func() bool { return len(deadline) > 0 })
@@ -1790,7 +1791,7 @@ func TestTimeoutCancelsTheRun(t *testing.T) {
 	}
 }
 
-func TestBacklogKnownAfterPollingInbox(t *testing.T) {
+func TestBacklogKnownAfterPollingTheQueue(t *testing.T) {
 	h := convergetest.NewWith(t, convergetest.Options{LeaseTTL: 30 * time.Second})
 	rt := h.Build(t)
 	task := NewTask[string]("job", TaskOpts{})
@@ -1798,8 +1799,8 @@ func TestBacklogKnownAfterPollingInbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
-	if err := task.Enqueue(context.Background(), p, "x", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, task, converge.Scope{MQ: h.MQ, Namespace: "test"})
+	if err := p.Enqueue(context.Background(), "x", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	h.Drain(t)
@@ -1823,8 +1824,8 @@ func TestBacklogCountsADeliveredButUnackedMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
-	if err := task.Enqueue(context.Background(), p, "x", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, task, converge.Scope{MQ: h.MQ, Namespace: "test"})
+	if err := p.Enqueue(context.Background(), "x", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -1864,8 +1865,8 @@ func TestShelveStopsAfterOneAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
-	if err := task.Enqueue(context.Background(), p, "o-1", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, task, converge.Scope{MQ: h.MQ, Namespace: "test"})
+	if err := p.Enqueue(context.Background(), "o-1", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	h.Drain(t)
@@ -1898,8 +1899,8 @@ func TestDeliberateShelveDoesNotStampAnErrorItDoesNotHave(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
-	if err := task.Enqueue(context.Background(), p, "o-1", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, task, converge.Scope{MQ: h.MQ, Namespace: "test"})
+	if err := p.Enqueue(context.Background(), "o-1", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	h.Drain(t)
@@ -1907,7 +1908,7 @@ func TestDeliberateShelveDoesNotStampAnErrorItDoesNotHave(t *testing.T) {
 	if first.LastError == nil || first.LastError.Error() != "gateway timeout" {
 		t.Fatalf("LastError = %v, want gateway timeout", first.LastError)
 	}
-	if err := task.Enqueue(context.Background(), p, "o-2", EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "o-2", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return jobStats(t, rt, "charge").ConsecutiveFails > first.ConsecutiveFails })
@@ -1940,18 +1941,18 @@ func TestShelveOnBroadcastWithoutKVDropsInsteadOfPanicking(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
 	deadline := time.Now().Add(2 * time.Second)
 	for warm.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("broadcast subscription never became live")
 		}
-		if err := tk.Enqueue(context.Background(), p, "warm", EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(context.Background(), "warm", EnqueueOpts{}); err != nil {
 			t.Fatal(err)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return shelves.Load() == 1 })
@@ -1971,9 +1972,9 @@ func TestShelvedReportsTheCurrentShelfDepth(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "wt"})
+	p := mustProducer(t, task, converge.Scope{MQ: h.MQ, Namespace: "wt"})
 	for _, id := range []string{"o-1", "o-2"} {
-		if err := task.Enqueue(context.Background(), p, id, EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(context.Background(), id, EnqueueOpts{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2037,8 +2038,8 @@ func TestDeadlineDestroysTheJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "before", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "before", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return runs.Load() == 1 })
@@ -2047,7 +2048,7 @@ func TestDeadlineDestroysTheJob(t *testing.T) {
 	convergetest.Await(t, func() bool { return jobStats(t, rt, "migration").State == converge.Destroyed })
 
 	before := runs.Load()
-	if err := tk.Enqueue(context.Background(), p, "after", EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "after", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AssertStable(t, func() bool { return runs.Load() == before })
@@ -2067,8 +2068,8 @@ func TestStopKeyDestroysTheJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "before", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "before", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return runs.Load() == 1 })
@@ -2080,7 +2081,7 @@ func TestStopKeyDestroysTheJob(t *testing.T) {
 	convergetest.Await(t, func() bool { return jobStats(t, rt, "migration").State == converge.Destroyed })
 
 	before := runs.Load()
-	if err := tk.Enqueue(context.Background(), p, "after", EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "after", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AssertStable(t, func() bool { return runs.Load() == before })
@@ -2103,8 +2104,8 @@ func TestDeadlineDestroysACompetingWorker(t *testing.T) {
 	if mode := jobStats(t, rt, "migration").RunMode; mode != converge.Competing {
 		t.Fatalf("RunMode = %v, want the worker default %v", mode, converge.Competing)
 	}
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "before", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "before", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return runs.Load() == 1 })
@@ -2114,7 +2115,7 @@ func TestDeadlineDestroysACompetingWorker(t *testing.T) {
 	})
 
 	before := runs.Load()
-	if err := tk.Enqueue(context.Background(), p, "after", EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "after", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AssertStable(t, func() bool { return runs.Load() == before })
@@ -2170,8 +2171,8 @@ func TestDestructionCancelsInFlightRunsWithoutDraining(t *testing.T) {
 	}
 	w.Runtime(t)
 	startedAt := w.Clock().Now()
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "x", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "x", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return len(entered) > 0 })
@@ -2208,9 +2209,9 @@ func TestOutcomesAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	p, _ := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	p := mustProducer(t, task, converge.Scope{MQ: h.MQ, Namespace: "test"})
 	for _, s := range []string{"ok", "gone", "bad"} {
-		if err := task.Enqueue(context.Background(), p, s, EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(context.Background(), s, EnqueueOpts{}); err != nil {
 			t.Fatal(err)
 		}
 	}

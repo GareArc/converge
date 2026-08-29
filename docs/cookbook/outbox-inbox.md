@@ -70,7 +70,7 @@ func (o *outboxTable) sendOne(ctx context.Context, id reconcile.ID) error {
     if err != nil || !ok || row.Sent {
         return err
     }
-    if err := jobs.SendReceipt.Enqueue(ctx, o.producer, row.Receipt, worker.EnqueueOpts{}); err != nil {
+    if err := o.producer.Enqueue(ctx, row.Receipt, worker.EnqueueOpts{}); err != nil {
         return err
     }
     return o.markSent(ctx, string(id))

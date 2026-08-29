@@ -185,15 +185,9 @@ func (e *engine) Info() converge.JobInfo {
 		Job:      e.cfg.info.name,
 		Surface:  converge.SurfaceWorker,
 		RunMode:  e.cfg.runMode,
-		Queue:    e.inbox(),
+		Queue:    e.cfg.info.queue,
 		Settings: settings,
 	}
-}
-
-func (e *engine) inbox() string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.cfg.info.queue
 }
 
 func retrySetting(r RetryPolicy) string {
@@ -204,7 +198,6 @@ func retrySetting(r RetryPolicy) string {
 func (e *engine) bind(deps converge.JobDeps) error {
 	e.mu.Lock()
 	e.deps = deps
-	e.cfg.info.queue = keys.Inbox(deps.Namespace, e.cfg.info.name)
 	e.mu.Unlock()
 	if deps.MQ == nil {
 		return fmt.Errorf("worker: job %q: needs Options.MQ", e.cfg.info.name)

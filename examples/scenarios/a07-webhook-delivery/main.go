@@ -102,7 +102,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := deliverWebhook.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func run() error {
 		{ID: "wh-2", Event: "charge.refunded"},
 		{ID: "wh-3", Event: "payout.paid"},
 	} {
-		if err := deliverWebhook.Enqueue(ctx, p, w, worker.EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(ctx, w, worker.EnqueueOpts{}); err != nil {
 			return err
 		}
 	}

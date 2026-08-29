@@ -247,7 +247,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := sendEmail.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -260,7 +260,7 @@ func run() error {
 		{To: "not-an-address", Template: "welcome"},
 		{To: "quiet@example.com", Template: "welcome"},
 	} {
-		if err := sendEmail.Enqueue(ctx, p, j, worker.EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(ctx, j, worker.EnqueueOpts{}); err != nil {
 			return err
 		}
 	}

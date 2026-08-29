@@ -103,7 +103,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := trackingEvent.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func run() error {
 	defer cancel()
 
 	for _, e := range carrierFeed(time.Now()) {
-		if err := trackingEvent.Enqueue(ctx, p, e, worker.EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(ctx, e, worker.EnqueueOpts{}); err != nil {
 			return err
 		}
 	}

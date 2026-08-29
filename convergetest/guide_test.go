@@ -159,12 +159,12 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 		return false
 	})
 
-	prod, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test", Clock: h.Clock()})
+	prod, err := jobs.SendInvite.NewProducer(converge.Scope{MQ: h.MQ, Namespace: "test", Clock: h.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantPayload := jobs.Invite{Email: "new-member@example.com"}
-	if err := jobs.SendInvite.Enqueue(context.Background(), prod, wantPayload, worker.EnqueueOpts{}); err != nil {
+	if err := prod.Enqueue(context.Background(), wantPayload, worker.EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -173,7 +173,7 @@ func TestGuideSection5TestingWorkflow(t *testing.T) {
 	h.MQ.FailNextPublish(errBoom)
 
 	failedPayload := jobs.Invite{Email: "outage@example.com"}
-	if err := jobs.SendInvite.Enqueue(context.Background(), prod, failedPayload, worker.EnqueueOpts{}); !errors.Is(err, errBoom) {
+	if err := prod.Enqueue(context.Background(), failedPayload, worker.EnqueueOpts{}); !errors.Is(err, errBoom) {
 		t.Fatalf("Enqueue after FailNextPublish = %v, want %v", err, errBoom)
 	}
 

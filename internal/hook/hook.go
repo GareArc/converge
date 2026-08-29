@@ -7,10 +7,6 @@ import (
 
 var RegisterJob func(rt any, job any) error
 
-var ProducerSend func(p any, ctx context.Context, job string, m any, delay time.Duration) error
-
-var ProducerNow func(p any) (time.Time, bool)
-
 var AttachOptions func(o any, attach func(rt any)) any
 
 var Inspect func(rt any) (any, error)
