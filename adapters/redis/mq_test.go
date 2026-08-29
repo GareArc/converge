@@ -24,7 +24,7 @@ const miniredisStubsGroupLag = true
 
 const (
 	testGroup      = "converge"
-	testStreamKey  = "convredis:s:q"
+	testStreamKey  = "q"
 	testPendingKey = "convredis:p:q:" + testGroup
 	testDelayedKey = "convredis:d:q"
 )
@@ -646,5 +646,28 @@ func assertNoDelivery(t *testing.T, ch chan converge.Delivery) {
 	case d := <-ch:
 		t.Fatalf("unexpected delivery: %+v", d.Message())
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestStreamsMQStreamKeyIsTheQueueNameVerbatim(t *testing.T) {
+	client, clock, _ := openMini(t)
+	mq := convredis.NewStreamsMQ(client, convredis.StreamsOpts{Clock: clock})
+	ctx := context.Background()
+	const queue = "dify:credential:rotate"
+	if err := mq.Publish(ctx, queue, converge.Message{Payload: []byte(`{"workspace_id":"ws-1"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := client.XLen(ctx, queue).Result(); err != nil || n != 1 {
+		t.Fatalf("XLEN %q = %d, %v; want 1: the declared name is the stream key", queue, n, err)
+	}
+	if prefixed, err := client.Keys(ctx, "convredis:s:*").Result(); err != nil || len(prefixed) != 0 {
+		t.Fatalf("keys convredis:s:* = %v, %v; want none", prefixed, err)
+	}
+	values, err := client.XRange(ctx, queue, "-", "+").Result()
+	if err != nil || len(values) != 1 {
+		t.Fatalf("XRANGE = %v, %v", values, err)
+	}
+	if got := values[0].Values["payload"]; got != `{"workspace_id":"ws-1"}` {
+		t.Fatalf("payload field = %v", got)
 	}
 }

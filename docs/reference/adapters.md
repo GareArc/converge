@@ -178,9 +178,14 @@ Other behaviour worth knowing:
   does not release delayed messages, so a delayed enqueue aimed at an
   `OnAllReplicas` job never arrives.
 - `Extend` after the delivery has been acknowledged returns `ErrSettled`.
-- Keys are prefixed `convredis:` — `:s:` the stream, `:p:` the pending index,
-  `:a:` the attempt counters, `:d:` the delayed set — and are **not** subject
-  to `Options.Namespace`, which is already part of the queue name they embed.
+- **The stream key is the queue name, exactly as the job declared or derived
+  it** — `dify:credential:rotate` if a task declared that, or
+  `<ns>/converge/queue/<task>` if it did not — so a producer in any language
+  can find it. The adapter's own bookkeeping keeps a prefix, because those
+  keys are the adapter's and not yours: `convredis:p:<queue>:<group>` the
+  pending index, `convredis:a:<queue>:<group>` the attempt counters,
+  `convredis:d:<queue>` the delayed set. None of them is subject to
+  `Options.Namespace`; the namespace is already part of a derived queue name.
 
 ### List MQ
 

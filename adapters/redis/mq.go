@@ -74,7 +74,6 @@ type wallClock struct{}
 func (wallClock) Now() time.Time                         { return time.Now() }
 func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
-func streamKey(queue string) string  { return "convredis:s:" + queue }
 func pendingKey(q, g string) string  { return "convredis:p:" + q + ":" + g }
 func attemptsKey(q, g string) string { return "convredis:a:" + q + ":" + g }
 func delayedKey(queue string) string { return "convredis:d:" + queue }
@@ -93,11 +92,10 @@ func (m *streamsMQ) Publish(ctx context.Context, queue string, msg converge.Mess
 	if err != nil {
 		return err
 	}
-	key := streamKey(queue)
-	if err := m.rdb.XAdd(ctx, &redis.XAddArgs{Stream: key, Values: values}).Err(); err != nil {
+	if err := m.rdb.XAdd(ctx, &redis.XAddArgs{Stream: queue, Values: values}).Err(); err != nil {
 		return err
 	}
-	return m.trimRetention(ctx, key)
+	return m.trimRetention(ctx, queue)
 }
 
 func (m *streamsMQ) trimRetention(ctx context.Context, key string) error {
@@ -116,15 +114,14 @@ func (m *streamsMQ) Backlog(ctx context.Context, queue string) (int, error) {
 }
 
 func (m *streamsMQ) BacklogForGroup(ctx context.Context, queue, group string) (int, error) {
-	key := streamKey(queue)
-	entries, err := m.rdb.XLen(ctx, key).Result()
+	entries, err := m.rdb.XLen(ctx, queue).Result()
 	if err != nil {
 		return 0, err
 	}
 	if entries == 0 {
 		return 0, nil
 	}
-	reply, err := m.rdb.Do(ctx, "xinfo", "groups", key).Result()
+	reply, err := m.rdb.Do(ctx, "xinfo", "groups", queue).Result()
 	if err != nil {
 		return 0, err
 	}
@@ -219,7 +216,7 @@ func (m *streamsMQ) ConsumeBroadcast(ctx context.Context, queue string, deliver 
 			return ctx.Err()
 		}
 		res, err := m.rdb.XRead(ctx, &redis.XReadArgs{
-			Streams: []string{streamKey(queue), last},
+			Streams: []string{queue, last},
 			Count:   readCount,
 			Block:   blockInterval,
 		}).Result()
@@ -306,11 +303,10 @@ func pause(ctx context.Context) bool {
 }
 
 func (m *streamsMQ) ensureGroup(ctx context.Context, queue, group string) error {
-	key := streamKey(queue)
-	if err := m.trimRetention(ctx, key); err != nil {
+	if err := m.trimRetention(ctx, queue); err != nil {
 		return err
 	}
-	err := m.rdb.XGroupCreateMkStream(ctx, key, group, groupStartID).Err()
+	err := m.rdb.XGroupCreateMkStream(ctx, queue, group, groupStartID).Err()
 	if err != nil && strings.HasPrefix(err.Error(), busyGroupPrefix) {
 		return nil
 	}
@@ -321,7 +317,7 @@ func (m *streamsMQ) readNew(ctx context.Context, queue, group, consumer string) 
 	res, err := m.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    group,
 		Consumer: consumer,
-		Streams:  []string{streamKey(queue), newEntriesID},
+		Streams:  []string{queue, newEntriesID},
 		Count:    readCount,
 		Block:    blockInterval,
 	}).Result()
@@ -385,7 +381,7 @@ func (m *streamsMQ) reconcilePending(ctx context.Context, queue, group string) e
 	start := pendingRangeMin
 	for {
 		pending, err := m.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
-			Stream: streamKey(queue),
+			Stream: queue,
 			Group:  group,
 			Start:  start,
 			End:    pendingRangeMax,
@@ -469,7 +465,7 @@ func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer str
 			return ctx.Err()
 		}
 		entries, err := m.rdb.XClaim(ctx, &redis.XClaimArgs{
-			Stream:   streamKey(queue),
+			Stream:   queue,
 			Group:    group,
 			Consumer: consumer,
 			Messages: []string{id},
@@ -524,12 +520,12 @@ func (m *streamsMQ) ack(ctx context.Context, queue, group, id string) error {
 }
 
 func (m *streamsMQ) ackStream(ctx context.Context, queue, group, id string) error {
-	return m.rdb.XAck(ctx, streamKey(queue), group, id).Err()
+	return m.rdb.XAck(ctx, queue, group, id).Err()
 }
 
 func (m *streamsMQ) ackAttempt(ctx context.Context, queue, group, id string, attempt int) (bool, error) {
 	n, err := ackScript.Run(ctx, m.rdb,
-		[]string{attemptsKey(queue, group), streamKey(queue)},
+		[]string{attemptsKey(queue, group), queue},
 		id, strconv.Itoa(attempt), group).Int()
 	if err != nil {
 		return false, err
