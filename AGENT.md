@@ -29,18 +29,15 @@ API reference (`docs/reference/`), and `docs/glossary.md`. `README.md` and
 
 ```sh
 set -e
-make check                      # gofmt gate, vet, dependency gate, race tests, scenarios — every module
-for m in . adapters/redis adapters/otel bridges/kratos examples; do  # ./... does not cross module boundaries
+make check                      # gofmt gate, vet, dependency gate, race tests — every module
+for m in . adapters/redis adapters/otel bridges/kratos; do  # ./... does not cross module boundaries
   (cd "$m" && go test -race -count=2 ./...)
 done
 (cd website && pnpm install --frozen-lockfile && pnpm run docs:build)  # the site, when docs/ changed
 ```
 
-`make check` ends by running all fifteen scenarios under `examples/scenarios`
-in parallel (`scripts/scenarios.sh`, about 13s): they are the acceptance
-criteria and the source of every tagged snippet in the documentation, so
-compiling them is not enough. `a14-foreign-queue` exits 0 without a Redis; it
-says so and skips its Redis path.
+`make check` is `fmt-check vet depcheck test`: the gofmt gate, `go vet`, the
+core-module dependency gate, and `go test -race` across all four modules.
 
 The VitePress build is the only check that catches a page that renders on
 GitHub but breaks the site — an unescaped angle bracket, or a link out of
@@ -173,8 +170,6 @@ adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
 adapters/otel (convotel)     Observer over OpenTelemetry metrics; observable
                              gauges read from `Runtime.Stats()` on collection
                              — separate module
-examples/                    runnable programs (scenarios/a01..a15, the fifteen
-                             acceptance scenarios) — separate module
 bridges/kratos (convkratos)  Runtime as a kratos transport.Server — separate module
 docs/                        the documentation: guide/, cookbook/, reference/,
                              glossary.md, index.md

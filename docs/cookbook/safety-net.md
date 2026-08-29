@@ -1,8 +1,6 @@
 # The safety net
 
-> Assumes [chapter 2, one job, many things](../guide/02-ids.md). The programs
-> are [`a11-purge-pii`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a11-purge-pii/main.go) and
-> [`a05-plan-tier-backfill`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a05-plan-tier-backfill/main.go).
+> Assumes [chapter 2, one job, many things](../guide/02-ids.md).
 
 Most jobs exist to make something happen. This page is about the other kind:
 the job that exists so that nothing is ever *permanently* wrong. Deleted
@@ -101,15 +99,15 @@ longer period or a faster query, not more concurrency.
 
 ## The backfill that never has to be run once
 
-`a05-plan-tier-backfill` is the case that makes the whole idea worth it. It
+A plan-tier backfill is the case that makes the whole idea worth it. It
 looks like a migration — recompute every account's tier — but it is written
 as a permanent job with a `Versions` source, and that one field is the
 difference between "we ran the backfill" and "the tier is never wrong".
 
 converge reads your counter before the run and again after it. If it moved,
 the ID is queued again, because whatever the function decided was decided
-from state that has since changed. In the program, buying seats bumps the
-account's generation mid-run:
+from state that has since changed. Buying seats mid-run bumps the account's
+generation, and the log says so:
 
 ```text
 run completed job=account-plan-tier id=a-1001 attempt=1 outcome=succeeded

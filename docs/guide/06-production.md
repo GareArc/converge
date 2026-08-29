@@ -161,15 +161,8 @@ messages it is retrying and does not keep them, so what you have is
 and the warn-level `RunCompleted` log lines — each one carries the message
 ID of the message being retried, which is the thread to pull.
 
-Run
-[`examples/scenarios/a15-operations/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a15-operations/main.go)
-to see all of it end to end — a readiness probe, a message that fails its
-way onto the shelf, the shelf depth appearing in the stats, and a requeue:
-
-```sh
-cd examples
-go run ./scenarios/a15-operations
-```
+Wired together, that is a readiness probe, a message that fails its way onto
+the shelf, the shelf depth appearing in the stats, and a requeue:
 
 ```text
 http://127.0.0.1:62657/healthz/ready -> 200 OK, 6 bytes
@@ -216,7 +209,7 @@ others belong to the runtime, in `converge.Options`:
 Most jobs run forever. A migration does not. Declare that where you register
 it, with `Until`:
 
-```go title=examples/scenarios/a12-legacy-migration/main.go
+```go
 package main
 
 import (
@@ -339,12 +332,7 @@ func run() error {
 }
 ```
 
-```sh
-cd examples
-go run ./scenarios/a12-legacy-migration
-```
-
-Timestamps and run durations are trimmed from the log lines below; nothing
+Run it and it logs this, with timestamps and run durations trimmed; nothing
 else is.
 
 ```text

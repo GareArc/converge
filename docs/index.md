@@ -22,8 +22,8 @@ the message, so it is durable, retried, and set aside on the
 ## Start here
 
 **[The guide](guide/index.md)** teaches the model in seven chapters. Every
-program in it is a real file under `examples/scenarios/` that you can run,
-and almost none of them need Redis, a database, or a container.
+program in it is whole and runnable, and almost none of them need Redis, a
+database, or a container.
 
 1. [Your first job](guide/01-first-job.md) — the question above, and a
    complete converge program.

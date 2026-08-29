@@ -1,9 +1,9 @@
 # A queue somebody else owns
 
 > Assumes [chapter 3, telling a job to look sooner](../guide/03-notifications.md).
-> The program is
-> [`a14-foreign-queue`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go),
-> and it is the one scenario that needs a real Redis.
+> Unlike the rest of the cookbook this needs a real Redis: reading a list
+> another system writes is `convredis.NewListMQ`, and `inmem` has no
+> equivalent.
 
 Another team's service already pushes JSON onto a Redis list when a
 workspace's credentials are rotated. You cannot change what it pushes, you
@@ -178,11 +178,3 @@ none of them is obvious from the signature:
 The schedule is what makes the job correct while any of this is down, and
 with a custom trigger that is not a figure of speech: a trigger whose backend
 has been unreachable for an hour is invisible, and the job is merely slower.
-
-## Running it
-
-`a14-foreign-queue` talks to a real Redis at `127.0.0.1:6379`, or wherever
-`REDIS_ADDR` points, and exits cleanly with a message if there is not one.
-Point it at something disposable: on startup it deletes every key under its
-own namespace and the demo list itself, so that each run starts from a known
-state.

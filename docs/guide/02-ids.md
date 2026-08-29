@@ -33,7 +33,7 @@ outlives it. You do not need a job factory.
 `reconcile.Register` with a `reconcile.Spec`, and here it is expiring
 unpaid orders thirty minutes after checkout.
 
-```go title=examples/scenarios/a02-expire-orders/main.go
+```go
 package main
 
 import (
@@ -157,10 +157,7 @@ func run() error {
 }
 ```
 
-```sh
-cd examples
-go run ./scenarios/a02-expire-orders
-```
+Running it prints:
 
 ```text
 o-1001 placed 45m ago: cancelled
@@ -225,9 +222,6 @@ err = reconcile.Register(rt, reconcile.Spec{
 })
 ```
 
-The whole program is
-[`examples/scenarios/a04-scim-provision/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a04-scim-provision/main.go).
-
 `Concurrency` is how many IDs this job may be running at once **on this
 replica**. It defaults to 1, which is why chapter 1's job and the order
 expiry above run strictly one at a time. Raise it when the work is
@@ -262,12 +256,10 @@ Reconcile: func(ctx context.Context, id reconcile.ID) error {
 },
 ```
 
-That is from
-[`examples/scenarios/a13-namespace-reconciler/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a13-namespace-reconciler/main.go).
-It is honest about its bound: converge honours your delay for the first ten
-deferrals of an ID in a row and starts spacing them out after that, so a
-thing that will never be ready costs you less and less rather than the same
-forever.
+`CheckAgain` is honest about its bound: converge honours your delay for the
+first ten deferrals of an ID in a row and starts spacing them out after
+that, so a thing that will never be ready costs you less and less rather
+than the same forever.
 
 ## When the intent moves under you
 
@@ -282,9 +274,8 @@ reconciled again, because whatever your function decided was decided from
 state that has since changed. And you can carry the counter into your own
 conditional write, then return `reconcile.ErrOutdated` when the database
 refuses it; converge treats that as a deferral rather than a failure, so a
-lost race costs a re-run and not a place in the backoff queue.
-[`examples/scenarios/a05-plan-tier-backfill/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a05-plan-tier-backfill/main.go)
-uses a `Versions` source to make a one-time backfill re-runnable.
+lost race costs a re-run and not a place in the backoff queue. That is what
+makes a one-time backfill re-runnable.
 
 ## Next
 

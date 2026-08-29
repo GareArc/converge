@@ -1,9 +1,6 @@
 # Work that takes a while
 
 > Assumes [chapter 4, when the message is the work](../guide/04-worker.md).
-> The programs are
-> [`a08-transcode`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a08-transcode/main.go) and
-> [`a09-tracking-events`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a09-tracking-events/main.go).
 
 Transcoding a video is the awkward case for a queue. The work is
 irreplaceable, so it belongs on the [worker](../glossary.md#worker) surface.
@@ -14,7 +11,7 @@ those three pulls on a different part of the surface.
 
 ## Not ready yet is not a failure
 
-`a08-transcode` is handed an upload that may still be uploading:
+The transcode handler is given an upload that may still be uploading:
 
 ```go
 err = worker.Handle(rt, transcode, func(ctx context.Context, j TranscodeJob) error {
@@ -126,7 +123,7 @@ first delivery. If a handler of yours is shelving everything with
 
 ## Changing a payload that is already in flight
 
-`a09-tracking-events` declares a schema version:
+The tracking-event task declares a schema version:
 
 ```go
 var trackingEvent = worker.NewTask[TrackingEvent]("tracking-event", worker.TaskOpts{Version: 2})

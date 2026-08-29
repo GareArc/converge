@@ -79,10 +79,7 @@ err = reconcile.Periodic(rt, "flag-cache", reconcile.Every(10*time.Second), flag
     reconcile.PeriodicOpts{RunMode: converge.OnAllReplicas})
 ```
 
-That is
-[`examples/scenarios/a10-flag-cache/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a10-flag-cache/main.go),
-which runs two replicas inside one process so you can watch both of them
-reload.
+Run two replicas inside one process and you can watch both of them reload.
 
 `OnAllReplicas` takes no lease and keeps no shared record of when it last
 ran. On the worker surface it is deliberately narrow, and here is the second
@@ -104,12 +101,11 @@ err = worker.Handle(rt, trackingEvent, shipments.applyEvent, worker.HandleOpts{C
 No `RunMode` here, so this is `Competing`: every replica reads the same
 [queue](../glossary.md#queue), each message goes to exactly one of them, and
 adding replicas adds throughput. `Concurrency` is per replica on top of that
-— 32 in flight each, times however many replicas you run. That is
-[`examples/scenarios/a09-tracking-events/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a09-tracking-events/main.go).
+— 32 in flight each, times however many replicas you run.
 
 Nothing about ordering is promised, by converge or by this run mode. Two
 messages for the same shipment can be handled at the same time, on different
-replicas, in either order — which is why `applyEvent` in that program compares
+replicas, in either order — which is why `applyEvent` has to compare
 timestamps before it writes. If your handler needs "the latest one wins",
 write that yourself.
 

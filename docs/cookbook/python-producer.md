@@ -2,9 +2,8 @@
 
 > Assumes [chapter 3, telling a job to look sooner](../guide/03-notifications.md)
 > and [chapter 4, when the message is the work](../guide/04-worker.md).
-> There is no scenario program for this page: the Go side is two
-> declarations, and the interesting half is the `XADD` a service in another
-> language writes.
+> The Go side of this is two declarations; the interesting half is the
+> `XADD` a service in another language writes.
 
 A Python service owns workspaces. When one is created, deleted, or has its
 credentials rotated, Go has to make provider credentials match. Today that

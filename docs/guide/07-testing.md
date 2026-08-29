@@ -15,7 +15,7 @@ no flakes.
 Here is the entire test for the order-expiry job you read in
 [chapter 2](02-ids.md):
 
-```go title=examples/scenarios/a02-expire-orders/main_test.go
+```go
 package main
 
 import (
@@ -44,11 +44,6 @@ func TestUnpaidOrdersAreCancelled(t *testing.T) {
 		t.Fatalf("order o-2 status = %q, want %q", got, statusPending)
 	}
 }
-```
-
-```sh
-cd examples
-go test ./scenarios/a02-expire-orders
 ```
 
 Three lines carry the whole test: `o-1` is created, the clock jumps 31
@@ -145,8 +140,7 @@ store. Yes — [worker](../glossary.md#worker), and the truth lives in the
 message. Everything else in this library is a consequence of that answer.
 
 - Every word with a specific meaning is in the [glossary](../glossary.md).
-- Every program is under `examples/scenarios/`, and all fifteen run.
-- Six problems that pick up where these chapters stop are worked end to end
+- Seven problems that pick up where these chapters stop are worked end to end
   in the [cookbook](../cookbook/index.md).
 - Every exported name, its default and what it costs is in the reference:
   [kernel](../reference/kernel.md), [reconcile](../reference/reconcile.md),

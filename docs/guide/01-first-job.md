@@ -42,7 +42,7 @@ told you it was 00:05. So this is a reconcile job.
 
 Here is the whole program.
 
-```go title=examples/scenarios/a01-nightly-invoices/main.go
+```go
 package main
 
 import (
@@ -129,14 +129,7 @@ func run() error {
 }
 ```
 
-Run it:
-
-```sh
-cd examples
-go run ./scenarios/a01-nightly-invoices
-```
-
-Timestamps and run durations are trimmed from the log lines below.
+Run it and it logs this, with timestamps and run durations trimmed.
 
 ```text
 INFO converge: lease changed job=generate-invoices held=true

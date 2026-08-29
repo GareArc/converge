@@ -31,14 +31,7 @@ go get github.com/GareArc/converge/bridges/kratos   # convkratos: Runtime as a k
 
 ## Two programs
 
-Both of these are real files under `examples/scenarios/`, and both run with
-no services at all. From the `examples` module:
-
-```sh
-cd examples
-go run ./scenarios/a01-nightly-invoices
-go run ./scenarios/a06-transactional-email
-```
+Both of these are whole programs, and both run with no services at all.
 
 ### One that reconciles
 
@@ -47,7 +40,7 @@ in the ledger, so nothing here is sent anywhere: the function reads what is
 due and issues it. Miss a night and the next run still catches everything,
 which is what makes this the reconcile side of the question.
 
-```go title=examples/scenarios/a01-nightly-invoices/main.go
+```go
 package main
 
 import (
@@ -146,7 +139,7 @@ that the producer is built from the task and never from a queue name:
 converge derives the task's [queue](docs/glossary.md#queue) from the
 namespace and the task's own name unless the task declares one.
 
-```go title=examples/scenarios/a06-transactional-email/main.go
+```go
 package main
 
 import (
@@ -343,7 +336,7 @@ Start at [the documentation index](docs/index.md), or go straight to what you
 came for:
 
 - **[The guide](docs/guide/index.md)** — seven chapters that teach the model
-  in order, each one a program under `examples/scenarios/` you can run:
+  in order, each one built around a whole program:
   [your first job](docs/guide/01-first-job.md),
   [one job, many things](docs/guide/02-ids.md),
   [telling a job to look sooner](docs/guide/03-notifications.md),

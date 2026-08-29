@@ -81,7 +81,7 @@ or bad data got in, and throwing the evidence away would hide it: `Shelve`.
 Here they are in one program — an ordinary success, a `Discard`, and a
 `Shelve`:
 
-```go title=examples/scenarios/a06-transactional-email/main.go
+```go
 package main
 
 import (
@@ -221,12 +221,7 @@ func run() error {
 }
 ```
 
-```sh
-cd examples
-go run ./scenarios/a06-transactional-email
-```
-
-Timestamps and run durations are trimmed from the log lines below.
+Run it and it logs this, with timestamps and run durations trimmed.
 
 ```text
 INFO  converge: run completed job=send-email id=efb0aee1f8693bd39030b98cb8f276f1 attempt=1 outcome=succeeded
@@ -297,8 +292,7 @@ err = worker.Handle(rt, deliverWebhook, func(ctx context.Context, w Webhook) err
 ```
 
 `RateLimit` is a job-wide ceiling on how often the handler is entered — 50
-per second across this job, not per merchant. The whole program is
-[`examples/scenarios/a07-webhook-delivery/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a07-webhook-delivery/main.go).
+per second across this job, not per merchant.
 
 `Timeout` on a worker job is the same **time limit** as everywhere else —
 how long one run may take before its context is cancelled — and it does one

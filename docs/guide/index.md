@@ -2,8 +2,7 @@
 
 converge gives a service one model for all background work. This guide
 teaches that model in seven chapters. Each one ends where the next begins,
-and every program in it is a real file under `examples/scenarios/` that you
-can run.
+and every program in it is whole and runnable.
 
 ## Start with one question
 
@@ -50,17 +49,10 @@ Every chapter below either teaches that distinction or builds on it.
   [glossary](../glossary.md). If a word on these pages looks like it is
   carrying more weight than usual, it is, and the glossary says why.
 - When a chapter answers your question but not your problem, the
-  [cookbook](../cookbook/index.md) works six of them end to end, and the
+  [cookbook](../cookbook/index.md) works seven of them end to end, and the
   reference starts at the [kernel page](../reference/kernel.md).
-- The programs live in the `examples` module. Run them from there:
-
-```sh
-cd examples
-go run ./scenarios/a01-nightly-invoices
-```
-
 - Almost nothing here needs Redis, a database, or a container: the `inmem`
-  package supplies everything converge needs in process, so the programs run
-  and their tests pass with no services at all. Exactly one scenario is the
-  exception — `a14-foreign-queue`, which chapter 3 links to rather than
-  shows, reads a real Redis list and tells you so if there is not one.
+  package supplies everything converge needs in process, so the code on
+  these pages needs no services at all. The one exception is the
+  foreign queue chapter 3 describes rather than shows, which reads a list in
+  a real Redis.

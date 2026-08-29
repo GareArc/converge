@@ -1,13 +1,9 @@
 # Outbox and inbox
 
 > Assumes [chapter 3](../guide/03-notifications.md) and
-> [chapter 4](../guide/04-worker.md). This is the one page here with no
-> scenario of its own, because the half that matters is a database
-> transaction converge does not own. The pieces are
-> [`a06-transactional-email`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a06-transactional-email/main.go),
-> which is the worker the outbox feeds, and
-> [`a14-foreign-queue`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go),
-> which is what you write instead when their message only names something.
+> [chapter 4](../guide/04-worker.md). Nothing here can be shown end to end,
+> because the half that matters is a database transaction converge does not
+> own.
 
 One sentence on vocabulary first. converge has no "inbox" of its own: a
 [reconcile](../glossary.md#reconcile) job has

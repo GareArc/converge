@@ -5,14 +5,8 @@ chapter. This is the other half: seven problems people actually bring to a
 background-work library, each one worked end to end, and each one ending
 somewhere the guide stops short of.
 
-Every page opens by naming the chapter it assumes and the program under
-`examples/scenarios/` it is drawn from, so you can run the thing you are
-reading about:
-
-```sh
-cd examples
-go run ./scenarios/a08-transcode
-```
+Every page opens by naming the chapter it assumes, so you always know which
+part of the model it is building on.
 
 These pages use converge's vocabulary without re-teaching it: a
 [reconcile](../glossary.md#reconcile) job, a

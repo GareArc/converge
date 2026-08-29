@@ -98,7 +98,7 @@ goroutine standing in for the API binary that onboards a merchant *after*
 the first sweep has already listed the directory — so the only way that
 merchant can be reconciled in this run is the notification.
 
-```go title=examples/scenarios/a03-merchant-sync/main.go
+```go
 package main
 
 import (
@@ -282,10 +282,7 @@ func run() error {
 }
 ```
 
-```sh
-cd examples
-go run ./scenarios/a03-merchant-sync
-```
+Running it prints:
 
 ```text
 m-1001 synced 1 time(s)
@@ -346,10 +343,8 @@ Three things are different from `Notifications`:
 
 Everything downstream is identical: a decoded ID goes into the same
 deduplicated queue as a sweep or a plain notification, and the schedule
-still backs it up. The whole program is
-[`examples/scenarios/a14-foreign-queue/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go)
-— it needs a Redis to talk to, and tells you so and exits cleanly if there
-is not one.
+still backs it up. This is the one shape in the guide that needs a real
+Redis to talk to, because the list belongs to somebody else's process.
 
 ## Next
 
