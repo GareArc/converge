@@ -281,7 +281,7 @@ func (e *engine) notifyAll(ctx context.Context) {
 	}
 	for _, t := range e.cfg.triggers {
 		if st, ok := t.(*scheduleTrigger); ok {
-			st.wake()
+			st.requestSweep()
 		}
 	}
 }

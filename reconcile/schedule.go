@@ -68,18 +68,18 @@ func (c Cadence) next(anchor, after time.Time) time.Time {
 }
 
 type scheduleTrigger struct {
-	source IDSource
-	cad    Cadence
-	wakeCh chan struct{}
+	source  IDSource
+	cad     Cadence
+	sweepCh chan struct{}
 }
 
 func Schedule(ids IDSource, c Cadence) PeriodicTrigger {
-	return &scheduleTrigger{source: ids, cad: c, wakeCh: make(chan struct{}, 1)}
+	return &scheduleTrigger{source: ids, cad: c, sweepCh: make(chan struct{}, 1)}
 }
 
-func (s *scheduleTrigger) wake() {
+func (s *scheduleTrigger) requestSweep() {
 	select {
-	case s.wakeCh <- struct{}{}:
+	case s.sweepCh <- struct{}{}:
 	default:
 	}
 }

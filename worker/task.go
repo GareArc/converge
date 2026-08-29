@@ -55,6 +55,16 @@ func NewTask[T any](name string, o TaskOpts) Task[T] {
 	return t
 }
 
+func (t Task[T]) check() error {
+	if t.err != nil {
+		return t.err
+	}
+	if t.name == "" {
+		return errors.New("worker: Task is required; build one with NewTask")
+	}
+	return nil
+}
+
 func (t Task[T]) Name() string { return t.name }
 
 func (t Task[T]) Version() int { return t.version }

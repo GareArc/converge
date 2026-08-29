@@ -22,8 +22,8 @@ type Producer[T any] struct {
 }
 
 func (t Task[T]) NewProducer(s converge.Scope) (*Producer[T], error) {
-	if t.err != nil {
-		return nil, fmt.Errorf("worker: NewProducer: %w", t.err)
+	if err := t.check(); err != nil {
+		return nil, fmt.Errorf("worker: NewProducer: %w", err)
 	}
 	if s.MQ == nil {
 		return nil, fmt.Errorf("worker: task %q: NewProducer needs Scope.MQ", t.name)

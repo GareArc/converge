@@ -46,8 +46,8 @@ func (d decodeError) Error() string { return "worker: decode: " + d.err.Error() 
 func (d decodeError) Unwrap() error { return d.err }
 
 func Handle[T any](rt *converge.Runtime, t Task[T], fn func(ctx context.Context, payload T) error, o HandleOpts) error {
-	if t.err != nil {
-		return fmt.Errorf("worker: Handle: %w", t.err)
+	if err := t.check(); err != nil {
+		return fmt.Errorf("worker: Handle: %w", err)
 	}
 	if fn == nil {
 		return fmt.Errorf("worker: task %q: handler fn is required", t.name)

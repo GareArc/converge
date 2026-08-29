@@ -240,7 +240,7 @@ if declared, otherwise `<namespace>/converge/notifications/<name>` — over
 `Options.MQ`. It takes nothing, because converge owns the payload format of
 its own notifications (`{"id":"..."}` or `{"all":true}`). It is still
 explicit: a job with only a schedule is a valid job that should not pay for
-a consumer, and the trigger list is the one place a reader learns what wakes
+a consumer, and the trigger list is the one place a reader learns what runs
 a job.
 
 **`NotificationsFrom`** reads a source some other system already writes.

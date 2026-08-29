@@ -235,6 +235,15 @@ func TestNewProducerSurfacesTaskMisconstruction(t *testing.T) {
 	}
 }
 
+func TestZeroTaskIsRefusedByNewProducer(t *testing.T) {
+	var zero Task[string]
+	p, err := zero.NewProducer(converge.Scope{MQ: inmem.NewMQ()})
+	const want = "worker: NewProducer: worker: Task is required; build one with NewTask"
+	if err == nil || err.Error() != want || p != nil {
+		t.Fatalf("NewProducer = %v, %q; want nil and %q", p, err, want)
+	}
+}
+
 func TestUnbuiltProducerErrorsInsteadOfPanicking(t *testing.T) {
 	var nilProducer *Producer[string]
 	for name, p := range map[string]*Producer[string]{"nil pointer": nilProducer, "zero value": {}} {

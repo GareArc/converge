@@ -217,6 +217,16 @@ func TestHandleMisconstructedTask(t *testing.T) {
 	}
 }
 
+func TestZeroTaskIsRefusedByHandle(t *testing.T) {
+	rt := mustHandleRuntime(t, converge.Options{})
+	var zero Task[string]
+	err := Handle(rt, zero, noopHandler, HandleOpts{})
+	const want = "worker: Handle: worker: Task is required; build one with NewTask"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
 func TestHandleNilFn(t *testing.T) {
 	rt := mustHandleRuntime(t, converge.Options{})
 	tk := NewTask[string]("job", TaskOpts{})
