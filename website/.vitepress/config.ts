@@ -43,6 +43,7 @@ export default defineConfig({
           { text: 'Jobs that end', link: '/cookbook/lifecycle' },
           { text: 'Outbox and inbox', link: '/cookbook/outbox-inbox' },
           { text: 'The safety net', link: '/cookbook/safety-net' },
+          { text: 'Credential sync from a Python service', link: '/cookbook/python-producer' },
         ],
       },
       {
@@ -52,6 +53,7 @@ export default defineConfig({
           { text: 'Reconcile', link: '/reference/reconcile' },
           { text: 'Worker', link: '/reference/worker' },
           { text: 'Operations', link: '/reference/operations' },
+          { text: 'Wire', link: '/reference/wire' },
           { text: 'Adapters and test support', link: '/reference/adapters' },
           { text: 'Converge terms in other systems', link: '/reference/prior-art' },
         ],

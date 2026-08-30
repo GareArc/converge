@@ -118,8 +118,9 @@ func describe(s converge.JobStats) string {
 ```
 
 **`Backlog` travels with `BacklogKnown`.** The **backlog** is the real depth
-of a job's [inbox](../glossary.md#inbox), read from the message queue rather
-than counted inside your process — and not every backend can answer that
+of a job's channel — its [notifications](../glossary.md#notifications) or its
+[queue](../glossary.md#queue) — read from the message queue rather than
+counted inside your process, and not every backend can answer that
 question. When it cannot, `BacklogKnown` is false and `Backlog` is
 meaningless. Not zero: *unknown*. converge does not invent the number, the
 metrics do not publish it, and a dashboard that shows a gap there is telling
@@ -160,15 +161,8 @@ messages it is retrying and does not keep them, so what you have is
 and the warn-level `RunCompleted` log lines — each one carries the message
 ID of the message being retried, which is the thread to pull.
 
-Run
-[`examples/scenarios/a15-operations/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a15-operations/main.go)
-to see all of it end to end — a readiness probe, a message that fails its
-way onto the shelf, the shelf depth appearing in the stats, and a requeue:
-
-```sh
-cd examples
-go run ./scenarios/a15-operations
-```
+Wired together, that is a readiness probe, a message that fails its way onto
+the shelf, the shelf depth appearing in the stats, and a requeue:
 
 ```text
 http://127.0.0.1:62657/healthz/ready -> 200 OK, 6 bytes
@@ -215,7 +209,7 @@ others belong to the runtime, in `converge.Options`:
 Most jobs run forever. A migration does not. Declare that where you register
 it, with `Until`:
 
-```go title=examples/scenarios/a12-legacy-migration/main.go
+```go
 package main
 
 import (
@@ -312,7 +306,7 @@ func run() error {
 	cutover := time.Now().Add(cutoverIn)
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "legacy-credential-migration",
+		Job:       reconcile.NewJob("legacy-credential-migration", reconcile.JobOpts{}),
 		Reconcile: creds.migrateOne,
 		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.IDsByPage(creds.unmigrated), reconcile.Every(time.Minute))},
 		Until:     converge.Deadline(cutover),
@@ -338,12 +332,7 @@ func run() error {
 }
 ```
 
-```sh
-cd examples
-go run ./scenarios/a12-legacy-migration
-```
-
-Timestamps and run durations are trimmed from the log lines below; nothing
+Run it and it logs this, with timestamps and run durations trimmed; nothing
 else is.
 
 ```text

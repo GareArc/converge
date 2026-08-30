@@ -105,12 +105,12 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	}
 	consumer.Runtime(t)
 
-	producer := wProducer(t, mq, consumer.Clock())
+	p := mustProducer(t, tk, wScope(mq, consumer.Clock()))
 
-	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: cleanInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), invitePayload{Email: cleanInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: rejectedInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), invitePayload{Email: rejectedInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return mailer.count(cleanInviteEmail) == 1 })
@@ -142,7 +142,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 		t.Fatalf("mailer called %d times for rejected address, want 0", got)
 	}
 
-	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: throttledInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), invitePayload{Email: throttledInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -168,7 +168,7 @@ func TestScenarioCEndToEnd(t *testing.T) {
 	}
 	convergetest.Await(t, func() bool { return mailer.count(throttledInviteEmail) == 1 })
 
-	if err := tk.Enqueue(context.Background(), producer, invitePayload{Email: hardFailInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), invitePayload{Email: hardFailInviteEmail, Team: "eng"}, EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.AdvanceUntil(t, consumer.Clock(), 100*time.Millisecond, func() bool { return atomic.LoadInt32(&hardFailRuns) >= 2 })
@@ -210,8 +210,8 @@ func TestMaxAgeCapsPerpetualSnoozer(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 

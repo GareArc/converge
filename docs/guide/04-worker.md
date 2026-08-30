@@ -2,12 +2,12 @@
 
 Ask the question again:
 
-> **If this message were lost, would anything be wrong?**
+> **Can you write a query that lists everything still to be done, without
+> reading the queue?**
 
-"Send the welcome email to ada@example.com." Yes — something would be wrong.
-No query against your database recovers that instruction, because nothing in
-your database records that a welcome email is owed. The message is the only
-copy of the work.
+"Send the welcome email to ada@example.com." No — nothing in your database
+records that a welcome email is owed, so no query lists the ones still to
+send. The message is the only copy of the work.
 
 That is a [worker](../glossary.md#worker) job, and everything about it
 follows from the message being irreplaceable. It is delivered at least once.
@@ -30,18 +30,22 @@ and which version of that payload shape this is.
 var sendEmail = worker.NewTask[EmailJob]("send-email", worker.TaskOpts{})
 ```
 
-Declare it once, in a package both sides import. The sending side calls
-`sendEmail.Enqueue`, the side running the job calls
-`worker.Handle(rt, sendEmail, ...)`, and both are typed on `EmailJob` —
-change the struct and the compiler finds every side that has to change with
-it. Nothing else has to be agreed between the two: no queue name, no route,
-no serialisation format. Payloads are JSON unless you set `TaskOpts.Codec`.
+Declare it once, in a package both sides import. The sending side enqueues
+through it, the side running the job calls `worker.Handle(rt, sendEmail,
+...)`, and both are typed on `EmailJob` — change the struct and the compiler
+finds every side that has to change with it. Nothing else has to be agreed
+between the two: the queue is derived from the task's name and your
+namespace, and the format is JSON, unless you set `TaskOpts.Queue` or
+`TaskOpts.Codec` — and even then it is set in the one place both sides
+already import.
 
-The sending side has exactly two knobs of its own, both on
-`worker.EnqueueOpts`. `Delay` holds the message back before anyone can pick
-it up — minutes, not days; a due date belongs in a column of yours, swept by
-a [reconcile](../glossary.md#reconcile) job, and a delay needs an MQ that
-can publish one. `Headers` are yours to attach, and they reach your handler
+The sending side is `sendEmail.NewProducer(rt.Scope())` — a producer built
+from the task, which can enqueue to that task and nothing else — and it has
+exactly two knobs of its own, both on `worker.EnqueueOpts`. `Delay` holds
+the message back before anyone can pick it up — minutes, not days; a due
+date belongs in a column of yours, swept by a
+[reconcile](../glossary.md#reconcile) job, and a delay needs an MQ that can
+publish one. `Headers` are yours to attach, and they reach your handler
 through `worker.MetaFromContext(ctx)`; converge owns every name beginning
 `converge.`, and `Enqueue` returns an error on a header that trespasses
 there rather than quietly overwriting it. That is the entire producer-side
@@ -77,7 +81,7 @@ or bad data got in, and throwing the evidence away would hide it: `Shelve`.
 Here they are in one program — an ordinary success, a `Discard`, and a
 `Shelve`:
 
-```go title=examples/scenarios/a06-transactional-email/main.go
+```go
 package main
 
 import (
@@ -178,7 +182,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := sendEmail.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -191,7 +195,7 @@ func run() error {
 		{To: "not-an-address", Template: "welcome"},
 		{To: "quiet@example.com", Template: "welcome"},
 	} {
-		if err := sendEmail.Enqueue(ctx, p, j, worker.EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(ctx, j, worker.EnqueueOpts{}); err != nil {
 			return err
 		}
 	}
@@ -217,12 +221,7 @@ func run() error {
 }
 ```
 
-```sh
-cd examples
-go run ./scenarios/a06-transactional-email
-```
-
-Timestamps and run durations are trimmed from the log lines below.
+Run it and it logs this, with timestamps and run durations trimmed.
 
 ```text
 INFO  converge: run completed job=send-email id=efb0aee1f8693bd39030b98cb8f276f1 attempt=1 outcome=succeeded
@@ -293,8 +292,7 @@ err = worker.Handle(rt, deliverWebhook, func(ctx context.Context, w Webhook) err
 ```
 
 `RateLimit` is a job-wide ceiling on how often the handler is entered — 50
-per second across this job, not per merchant. The whole program is
-[`examples/scenarios/a07-webhook-delivery/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a07-webhook-delivery/main.go).
+per second across this job, not per merchant.
 
 `Timeout` on a worker job is the same **time limit** as everywhere else —
 how long one run may take before its context is cancelled — and it does one

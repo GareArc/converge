@@ -1,18 +1,19 @@
 # A queue somebody else owns
 
 > Assumes [chapter 3, telling a job to look sooner](../guide/03-notifications.md).
-> The program is
-> [`a14-foreign-queue`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go),
-> and it is the one scenario that needs a real Redis.
+> Unlike the rest of the cookbook this needs a real Redis: reading a list
+> another system writes is `convredis.NewListMQ`, and `inmem` has no
+> equivalent.
 
 Another team's service already pushes JSON onto a Redis list when a
 workspace's credentials are rotated. You cannot change what it pushes, you
 cannot ask it to add headers, and within a year it will be pushing message
 types nobody has told you about. You still have to react.
 
-Ask the question about *their* message: if one were lost, would anything be
-wrong? No — the workspace's credentials are in your database, and you can
-re-read them whenever you like. Their message is a
+Ask the question about *their* message: can you list the workspaces whose
+credentials still need syncing without reading their list? Yes — the
+workspaces are in your database, and you can re-read any of them whenever
+you like. Their message is a
 [notification](../glossary.md#notification) about which workspace to look at,
 so this is a [reconcile](../glossary.md#reconcile) job and their list is one
 of its triggers:
@@ -20,10 +21,7 @@ of its triggers:
 ```go
 Triggers: []reconcile.Trigger{
     reconcile.Schedule(reconcile.IDsByPage(workspaces.page), reconcile.Every(5*time.Minute)),
-    reconcile.NotificationsFrom(foreignQueue, reconcile.NotificationsOpts{
-        ID: reconcile.IDFromJSON("workspace_id"),
-        MQ: convredis.NewListMQ(rdb),
-    }),
+    reconcile.NotificationsFrom(foreignQueue, convredis.NewListMQ(rdb), reconcile.IDFromJSON("workspace_id")),
 },
 ```
 
@@ -84,7 +82,7 @@ Two more drops get the same treatment, with a different error: an ID that
 decodes to the empty string on a job whose source is not `SingleID`
 (`converge: notification: empty id`), and a notification naming an ID
 converge has never seen when the job is already tracking 65536 of them
-(`converge: notification: inbox overflow`). The second of those is the only
+(`converge: notification: overflow`). The second of those is the only
 drop that can tell you *which* ID it lost — the overflow line carries it,
 where the other two report `id=""` because there is no decoded ID to
 report.
@@ -111,6 +109,11 @@ than a partial sum, because a partial sum would be a lie.
 `NewListMQ` exists for this one job and is honest about the rest — the full
 list is in the [adapters reference](../reference/adapters.md#list-mq):
 
+- A list cannot be a worker's queue. A **durable** `worker.Handle` on a
+  runtime whose `MQ` is a list fails at `Run` with `cannot carry work` — the
+  pop is destructive, and making it safe means a processing list plus a
+  recovery loop for entries stranded by a dead process, which is exactly the
+  half that never gets written.
 - It has no consumer groups and no broadcast, so a job reading a foreign list
   runs under the default [run mode](../glossary.md#run-mode), `OnOneReplica`.
   Setting `OnAllReplicas` fails at `Run` with the missing capability named.
@@ -122,8 +125,8 @@ list is in the [adapters reference](../reference/adapters.md#list-mq):
 ## What you cannot do
 
 **You cannot point a worker job at a foreign queue.** `worker.Handle` reads
-the [inbox](../glossary.md#inbox) converge names after the job, and there is
-no equivalent of `NotificationsFrom` on that surface. This is not an
+the [queue](../glossary.md#queue) the task declares or converge derives, and
+there is no equivalent of `NotificationsFrom` on that surface. This is not an
 oversight: a worker message has to arrive carrying an
 [envelope](../glossary.md#envelope), and a queue somebody else writes does
 not have one.
@@ -135,13 +138,17 @@ setting:
 - **The [inbox table pattern](outbox-inbox.md#the-inbox-table)**, which makes
   their message durable in a table of yours first, and is almost always the
   right answer.
-- **Ask them to publish onto converge's inbox directly.** The queue name is
-  visible in `/debug/jobs`, and the one header they must set is
-  `converge.schema-version`; without it the message is set aside with reason
-  `schema version` before your handler is entered, and without
-  `converge.message-id` converge derives a synthetic `anon-` identity from
-  the message's kind and payload. It works, and it makes another team's
-  release schedule part of your wire format.
+- **Ask them to publish onto the task's queue directly.** Declare the queue
+  on the task so they have a name they can read, and hand them the
+  [wire reference](../reference/wire.md). On Redis Streams what they write is
+  a payload and an `enq` timestamp, and no `converge.*` header is required —
+  an absent one is no claim rather than a mismatch. **`enq` is not optional**:
+  an entry the adapter cannot read a timestamp from is acknowledged and
+  discarded, with no event and no shelf. Without `converge.message-id`
+  converge derives a synthetic `anon-` identity from the message's kind and
+  payload; without `converge.schema-version` it makes no version claim and
+  the payload goes straight to your codec. It works, and it makes another
+  team's release schedule part of your wire format.
 
 ## When the source is not a queue at all
 
@@ -171,11 +178,3 @@ none of them is obvious from the signature:
 The schedule is what makes the job correct while any of this is down, and
 with a custom trigger that is not a figure of speech: a trigger whose backend
 has been unreachable for an hour is invisible, and the job is merely slower.
-
-## Running it
-
-`a14-foreign-queue` talks to a real Redis at `127.0.0.1:6379`, or wherever
-`REDIS_ADDR` points, and exits cleanly with a message if there is not one.
-Point it at something disposable: on startup it deletes every key under its
-own namespace and the demo list itself, so that each run starts from a known
-state.

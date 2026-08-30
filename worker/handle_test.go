@@ -41,6 +41,20 @@ func (m publishConsumeMQ) Consume(ctx context.Context, queue string, deliver fun
 	return m.mq.Consume(ctx, queue, deliver)
 }
 
+type broadcastOnlyMQ struct{ mq *inmem.MQ }
+
+func (m broadcastOnlyMQ) Publish(ctx context.Context, queue string, msg converge.Message) error {
+	return m.mq.Publish(ctx, queue, msg)
+}
+
+func (m broadcastOnlyMQ) Consume(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
+	return m.mq.Consume(ctx, queue, deliver)
+}
+
+func (m broadcastOnlyMQ) ConsumeBroadcast(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
+	return m.mq.ConsumeBroadcast(ctx, queue, deliver)
+}
+
 type groupOnlyMQ struct{ mq *inmem.MQ }
 
 func (m groupOnlyMQ) Publish(ctx context.Context, queue string, msg converge.Message) error {
@@ -203,6 +217,16 @@ func TestHandleMisconstructedTask(t *testing.T) {
 	}
 }
 
+func TestZeroTaskIsRefusedByHandle(t *testing.T) {
+	rt := mustHandleRuntime(t, converge.Options{})
+	var zero Task[string]
+	err := Handle(rt, zero, noopHandler, HandleOpts{})
+	const want = "worker: Handle: worker: Task is required; build one with NewTask"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %q, want %q", err, want)
+	}
+}
+
 func TestHandleNilFn(t *testing.T) {
 	rt := mustHandleRuntime(t, converge.Options{})
 	tk := NewTask[string]("job", TaskOpts{})
@@ -238,10 +262,22 @@ func TestBindFailures(t *testing.T) {
 			wantErr: "Options.MQ",
 		},
 		{
-			name:    "competing without group consumer",
-			opts:    converge.Options{MQ: publishConsumeMQ{inmem.NewMQ()}},
+			name:    "competing on a transport that carries no work",
+			opts:    converge.Options{MQ: publishConsumeMQ{inmem.NewMQ()}, KV: inmem.NewKV()},
 			handle:  HandleOpts{RunMode: converge.Competing},
-			wantErr: "GroupConsumer",
+			wantErr: `worker: task "job": worker.publishConsumeMQ cannot carry work: a worker's MQ needs DelayedPublisher and GroupConsumer`,
+		},
+		{
+			name:    "one replica on a transport that carries no work",
+			opts:    converge.Options{MQ: publishConsumeMQ{inmem.NewMQ()}, KV: inmem.NewKV(), Lease: inmem.NewLease()},
+			handle:  HandleOpts{RunMode: converge.OnOneReplica},
+			wantErr: `worker: task "job": worker.publishConsumeMQ cannot carry work: a worker's MQ needs DelayedPublisher and GroupConsumer`,
+		},
+		{
+			name:    "one replica is refused for the transport before the lease is missed",
+			opts:    converge.Options{MQ: publishConsumeMQ{inmem.NewMQ()}},
+			handle:  HandleOpts{RunMode: converge.OnOneReplica},
+			wantErr: `worker: task "job": worker.publishConsumeMQ cannot carry work: a worker's MQ needs DelayedPublisher and GroupConsumer`,
 		},
 		{
 			name:    "all replicas without broadcast consumer",
@@ -251,7 +287,7 @@ func TestBindFailures(t *testing.T) {
 		},
 		{
 			name:    "one replica without lease",
-			opts:    converge.Options{MQ: inmem.NewMQ()},
+			opts:    converge.Options{MQ: inmem.NewMQ(), KV: inmem.NewKV()},
 			handle:  HandleOpts{RunMode: converge.OnOneReplica},
 			wantErr: "Options.Lease",
 		},
@@ -262,10 +298,10 @@ func TestBindFailures(t *testing.T) {
 			wantErr: "Options.KV",
 		},
 		{
-			name:    "competing mq without delayed publisher",
+			name:    "competing on a transport with groups but no delayed publish",
 			opts:    converge.Options{MQ: groupOnlyMQ{inmem.NewMQ()}, KV: inmem.NewKV()},
 			handle:  HandleOpts{RunMode: converge.Competing},
-			wantErr: "DelayedPublisher",
+			wantErr: `worker: task "job": worker.groupOnlyMQ cannot carry work: a worker's MQ needs DelayedPublisher and GroupConsumer`,
 		},
 		{
 			name:    "until without kv",
@@ -286,5 +322,18 @@ func TestBindFailures(t *testing.T) {
 				t.Fatalf("err = %v, want it to mention %q", err, c.wantErr)
 			}
 		})
+	}
+}
+
+func TestOnAllReplicasIsNeverAskedToCarryWork(t *testing.T) {
+	rt := mustHandleRuntime(t, converge.Options{MQ: broadcastOnlyMQ{inmem.NewMQ()}})
+	tk := NewTask[string]("job", TaskOpts{})
+	if err := Handle(rt, tk, noopHandler, HandleOpts{RunMode: converge.OnAllReplicas}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := rt.Run(ctx); err != nil {
+		t.Fatalf("Run() = %v, want nil: a broadcast job is not durable and must not be refused for it", err)
 	}
 }

@@ -31,14 +31,7 @@ go get github.com/GareArc/converge/bridges/kratos   # convkratos: Runtime as a k
 
 ## Two programs
 
-Both of these are real files under `examples/scenarios/`, and both run with
-no services at all. From the `examples` module:
-
-```sh
-cd examples
-go run ./scenarios/a01-nightly-invoices
-go run ./scenarios/a06-transactional-email
-```
+Both of these are whole programs, and both run with no services at all.
 
 ### One that reconciles
 
@@ -47,7 +40,7 @@ in the ledger, so nothing here is sent anywhere: the function reads what is
 due and issues it. Miss a night and the next run still catches everything,
 which is what makes this the reconcile side of the question.
 
-```go title=examples/scenarios/a01-nightly-invoices/main.go
+```go
 package main
 
 import (
@@ -142,11 +135,11 @@ and when the retries run out it is set aside on the
 [shelf](docs/glossary.md#shelf) for a person rather than dropped. This one
 also shows two of the three ways a handler stops early on purpose: it shelves
 an address it can never deliver to, and discards one it should not. Note too
-that the producer names the task and never a queue: converge gives every job
-one [inbox](docs/glossary.md#inbox) and builds its name from the namespace
-and the job's own name.
+that the producer is built from the task and never from a queue name:
+converge derives the task's [queue](docs/glossary.md#queue) from the
+namespace and the task's own name unless the task declares one.
 
-```go title=examples/scenarios/a06-transactional-email/main.go
+```go
 package main
 
 import (
@@ -247,7 +240,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := sendEmail.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -260,7 +253,7 @@ func run() error {
 		{To: "not-an-address", Template: "welcome"},
 		{To: "quiet@example.com", Template: "welcome"},
 	} {
-		if err := sendEmail.Enqueue(ctx, p, j, worker.EnqueueOpts{}); err != nil {
+		if err := p.Enqueue(ctx, j, worker.EnqueueOpts{}); err != nil {
 			return err
 		}
 	}
@@ -294,14 +287,15 @@ second.
 
 One question tells the two kinds of job apart:
 
-> **If this message were lost, would anything be wrong?**
+> **Can you write a query that lists everything still to be done, without
+> reading the queue?**
 
-- **No — reconcile.** The truth lives in your store. Your function reads the
+- **Yes — reconcile.** The truth lives in your store. Your function reads the
   store and makes the world match it. A message is only a
   [notification](docs/glossary.md#notification) — "look at this one sooner" —
   and the [schedule](docs/glossary.md#schedule) visits everything anyway, so
   notifications are cheap, unordered, deduplicated, and allowed to vanish.
-- **Yes — worker.** The truth lives in the message. Something happened and a
+- **No — worker.** The truth lives in the message. Something happened and a
   side effect must follow. The message *is* the work, so it is durable,
   retried, and moved to the shelf for a person to look at when the retries
   run out.
@@ -342,7 +336,7 @@ Start at [the documentation index](docs/index.md), or go straight to what you
 came for:
 
 - **[The guide](docs/guide/index.md)** — seven chapters that teach the model
-  in order, each one a program under `examples/scenarios/` you can run:
+  in order, each one built around a whole program:
   [your first job](docs/guide/01-first-job.md),
   [one job, many things](docs/guide/02-ids.md),
   [telling a job to look sooner](docs/guide/03-notifications.md),
@@ -350,19 +344,21 @@ came for:
   [where a job runs](docs/guide/05-run-modes.md),
   [taking it to production](docs/guide/06-production.md), and
   [testing a job](docs/guide/07-testing.md).
-- **[The cookbook](docs/cookbook/index.md)** — six problems people bring to a
-  background-work library, answered end to end:
+- **[The cookbook](docs/cookbook/index.md)** — seven problems people bring to
+  a background-work library, answered end to end:
   [work that takes a while](docs/cookbook/durable-work.md),
   [waiting for something to become true](docs/cookbook/event-driven.md),
   [a queue somebody else owns](docs/cookbook/foreign-queue.md),
   [jobs that end](docs/cookbook/lifecycle.md),
-  [outbox and inbox](docs/cookbook/outbox-inbox.md), and
-  [the safety net](docs/cookbook/safety-net.md).
-- **The reference** — every exported name, in six pages:
+  [outbox and inbox](docs/cookbook/outbox-inbox.md),
+  [the safety net](docs/cookbook/safety-net.md), and
+  [credential sync from a Python service](docs/cookbook/python-producer.md).
+- **The reference** — every exported name, in seven pages:
   [kernel](docs/reference/kernel.md),
   [reconcile](docs/reference/reconcile.md),
   [worker](docs/reference/worker.md),
   [operations](docs/reference/operations.md),
+  [wire](docs/reference/wire.md),
   [adapters and test support](docs/reference/adapters.md), and
   [converge terms in other systems](docs/reference/prior-art.md).
 - **[The glossary](docs/glossary.md)** — every converge-specific word,

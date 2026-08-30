@@ -32,8 +32,8 @@ func startEngineKV(t *testing.T, cfg config, kv converge.KV, fn func(ctx context
 	t.Helper()
 	clock := convergetest.NewClock(wqStart)
 	rec := &convergetest.Recorder{}
-	if cfg.name == "" {
-		cfg.name = "job"
+	if cfg.job.Name() == "" {
+		cfg.job = NewJob("job", JobOpts{})
 	}
 	if cfg.concurrency == 0 {
 		cfg.concurrency = 1
@@ -259,7 +259,7 @@ func TestMiddlewareWrapsEveryRunOutermostFirst(t *testing.T) {
 	}
 	clock := convergetest.NewClock(wqStart)
 	rec := &convergetest.Recorder{}
-	e := &engine{cfg: config{name: "job", concurrency: 1, middleware: []converge.Middleware{mkmw("local")}, fn: func(ctx context.Context, id ID) error { return nil }}, ready: make(chan struct{})}
+	e := &engine{cfg: config{job: NewJob("job", JobOpts{}), concurrency: 1, middleware: []converge.Middleware{mkmw("local")}, fn: func(ctx context.Context, id ID) error { return nil }}, ready: make(chan struct{})}
 	deps := converge.JobDeps{
 		KV:         inmem.NewKVWithClock(clock),
 		Observer:   rec,
@@ -295,7 +295,7 @@ func TestEmptyIDNotifyRejectedUnlessSingle(t *testing.T) {
 			return ok && errors.Is(nd.Err, converge.ErrNotificationEmptyID)
 		}) == 1
 	})
-	single := startEngine(t, config{name: "single", single: true}, func(ctx context.Context, id ID) error { return nil })
+	single := startEngine(t, config{job: NewJob("single", JobOpts{}), single: true}, func(ctx context.Context, id ID) error { return nil })
 	single.e.notify(context.Background(), "")
 	convergetest.Await(t, func() bool {
 		return single.rec.Count(func(e converge.Event) bool {
@@ -306,14 +306,14 @@ func TestEmptyIDNotifyRejectedUnlessSingle(t *testing.T) {
 }
 
 func TestNotifyWhenNotRunningIsDropped(t *testing.T) {
-	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
+	e := &engine{cfg: config{job: NewJob("job", JobOpts{})}, ready: make(chan struct{})}
 	e.notify(context.Background(), "a")
 }
 
 func TestEmptyIDNotifyAfterTeardownStillReportsDiscard(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	rec := &convergetest.Recorder{}
-	e := &engine{cfg: config{name: "job", concurrency: 1, fn: func(context.Context, ID) error { return nil }}, ready: make(chan struct{})}
+	e := &engine{cfg: config{job: NewJob("job", JobOpts{}), concurrency: 1, fn: func(context.Context, ID) error { return nil }}, ready: make(chan struct{})}
 	if err := e.bindCore(converge.JobDeps{KV: inmem.NewKVWithClock(clock), Observer: rec, Clock: clock}); err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func TestEmptyIDNotifyAfterTeardownStillReportsDiscard(t *testing.T) {
 }
 
 func TestQuietUnboundEngineIsQuiet(t *testing.T) {
-	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
+	e := &engine{cfg: config{job: NewJob("job", JobOpts{})}, ready: make(chan struct{})}
 	if !e.Quiet() {
 		t.Fatal("unbound engine must be quiet")
 	}
@@ -368,7 +368,7 @@ func TestQuietTrueWithOnlyFutureBackoffItems(t *testing.T) {
 }
 
 func TestNotifyBeforeBindFails(t *testing.T) {
-	e := &engine{cfg: config{name: "job"}, ready: make(chan struct{})}
+	e := &engine{cfg: config{job: NewJob("job", JobOpts{})}, ready: make(chan struct{})}
 	if err := e.Notify("x"); err == nil {
 		t.Fatal("notify before Run must error")
 	}
@@ -416,7 +416,7 @@ func TestNotifyBypassesBackoff(t *testing.T) {
 
 func TestNotifyDoesNotPanicRacingShutdown(t *testing.T) {
 	spec := Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers: []Trigger{Schedule(StringIDs(func(context.Context) ([]string, error) {
 			return []string{"x"}, nil
@@ -454,7 +454,7 @@ func TestNotifyDoesNotPanicRacingShutdown(t *testing.T) {
 }
 
 func TestKeyNamespacing(t *testing.T) {
-	e := &engine{cfg: config{name: "app-runner"}}
+	e := &engine{cfg: config{job: NewJob("app-runner", JobOpts{})}}
 	e.deps = converge.JobDeps{Namespace: "acme"}
 	if got := e.key("lease"); got != "acme/converge/reconcile/app-runner/lease" {
 		t.Fatalf("key = %q", got)

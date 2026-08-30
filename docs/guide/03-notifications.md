@@ -26,56 +26,80 @@ once rather than serving out a penalty that is now meaningless. That reset
 is the only bypass in the library. There is no separate operator verb, and
 there is nothing else to learn.
 
+## A notification has no verb
+
+If you catch yourself wanting to put a verb on a notification — `"type":
+"rotate"`, `"action": "delete"` — one of two things is true. Either the verb
+is derivable from your store and you have not written that column yet: the
+workspace exists or it does not, the credential is expired or it is not, and
+the function can look. Or the verb really is an instruction nothing can
+re-derive, and what you have is a [worker](../glossary.md#worker) task you
+have not declared yet. A notification carries an ID — or the marker that
+means *all* — and nothing else, and that is not a limitation to work around:
+it is what makes losing one free.
+
 ## A second trigger
 
-Every job has one **inbox**: one place it receives things, named after the
-job and namespaced by the library. You never name it and nobody routes
-anything to it — senders address the job by the name you registered.
+Every reconcile job has one channel for **notifications**: the place a
+notification lands, named after the job and derived from your namespace
+unless you give the job a name of its own. It carries pointers — *look at
+this ID* — and never the work, which is why it may be lost, trimmed, or
+flushed. A worker task has a different channel with a different word, its
+**queue**, because that one carries the only copy of the work and may not
+be. Keeping the two words apart is how you know, reading a key name in
+Redis, whether deleting it loses anything.
 
-A reconcile job does not read its inbox unless you say so, and you say so
-with a second [trigger](../glossary.md#trigger):
+A reconcile job does not read its notifications unless you say so, and you
+say so with a second [trigger](../glossary.md#trigger):
 
 ```go
 Triggers: []reconcile.Trigger{
     reconcile.Schedule(reconcile.IDsByPage(merchants.page), reconcile.Every(15*time.Minute)),
-    reconcile.Notifications(reconcile.NotificationsOpts{}),
+    reconcile.Notifications(),
 },
 ```
 
 Triggers all feed one deduplicated queue of pending IDs, so a schedule and a
 stream of notifications for the same ID collapse into one run rather than
-racing. `reconcile.Notifications` takes no configuration in the common case
-because there is nothing to configure: it reads the job's own inbox, over
-the `MQ` you already gave `converge.New`.
+racing. `reconcile.Notifications()` takes nothing because there is nothing
+to configure: it reads the job's own channel, over the `MQ` you already gave
+`converge.New`.
 
 ## Notifying from another binary
 
 The process that notices a change is usually not the process that runs the
 job. An API handler onboards a merchant; a separate binary runs the
-reconcile job. They share three things and nothing else: the `MQ` backend,
-the job's name, and — for worker jobs — the payload shape.
+reconcile job. They share two things and nothing else: the `MQ` backend
+with its namespace, and the job value itself — declared once, in a package
+both binaries import.
 
-The producer side needs no `Runtime` at all:
+The producer side needs no `Runtime` at all, only a `converge.Scope`:
 
 ```go
-p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+var merchantStripe = reconcile.NewJob("merchant-stripe", reconcile.JobOpts{})
+
+p, err := merchantStripe.NewProducer(converge.Scope{MQ: mq, Namespace: namespace})
 if err != nil {
     return err
 }
 
-p.Notify(ctx, "merchant-stripe", string(newMerchant))
+p.Notify(ctx, newMerchant)
 ```
 
-`Namespace` has to match the one the `Runtime` was built with, because the
-namespace and the job name together are what name the inbox. That is the
-whole coupling.
+A producer is built *from* the job, so there is no call site where the job's
+name is a string that could be misspelt into a channel nothing reads.
+`Namespace` has to match the one the `Runtime` was built with — in the
+process that runs the job, `rt.Scope()` is that scope — because the
+namespace and the job's name together derive the channel. That is the whole
+coupling. `p.NotifyAll(ctx)` says *look at everything*: a sweep, now, for
+a job with many IDs, or a run for a job with one.
 
 Here is both halves in one runnable program: the reconcile job, and a
 goroutine standing in for the API binary that onboards a merchant *after*
 the first sweep has already listed the directory — so the only way that
 merchant can be reconciled in this run is the notification.
 
-```go title=examples/scenarios/a03-merchant-sync/main.go
+```go
 package main
 
 import (
@@ -101,6 +125,8 @@ const (
 	merchantPageSize = 2
 	newMerchant      = reconcile.ID("m-1004")
 )
+
+var merchantStripe = reconcile.NewJob("merchant-stripe", reconcile.JobOpts{})
 
 type merchantDirectory struct {
 	mu     sync.Mutex
@@ -211,11 +237,11 @@ func run() error {
 	merchants := newMerchantDirectory("m-1001", "m-1002", "m-1003")
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:      "merchant-stripe",
+		Job:       merchantStripe,
 		Reconcile: stripe.syncMerchant,
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDsByPage(merchants.page), reconcile.Every(15*time.Minute)),
-			reconcile.Notifications(reconcile.NotificationsOpts{}),
+			reconcile.Notifications(),
 		},
 		Concurrency: 8,
 		Timeout:     20 * time.Second,
@@ -224,7 +250,7 @@ func run() error {
 		return err
 	}
 
-	p, err := converge.NewProducer(mq, converge.ProducerOpts{Namespace: namespace})
+	p, err := merchantStripe.NewProducer(rt.Scope())
 	if err != nil {
 		return err
 	}
@@ -239,7 +265,7 @@ func run() error {
 			return
 		}
 		merchants.add(newMerchant)
-		onboarded <- p.Notify(ctx, "merchant-stripe", string(newMerchant))
+		onboarded <- p.Notify(ctx, newMerchant)
 	}()
 
 	if err := rt.Run(ctx); err != nil {
@@ -257,10 +283,7 @@ func run() error {
 }
 ```
 
-```sh
-cd examples
-go run ./scenarios/a03-merchant-sync
-```
+Running it prints:
 
 ```text
 m-1001 synced 1 time(s)
@@ -279,48 +302,50 @@ them all off and the job still converges.
 
 ## What a producer cannot do
 
-A producer has two verbs — `Notify` and `Enqueue` — and no control
-authority. It cannot make a job run now, pause it, change how often it
-sweeps, or ask it how it is doing. Everything about a job's life is declared
-where the job is registered. This is not an oversight to be worked around;
-it is what keeps a job's behaviour readable from one file.
+A producer has three verbs — `Notify` and `NotifyAll` on a reconcile job,
+`Enqueue` on a worker task — and no control authority. It can say *look at
+this now*; it cannot say when the job runs next. It cannot pause a job,
+change how often it sweeps, or ask it how it is doing. Everything about a
+job's life is declared where the job is registered. This is not an oversight
+to be worked around; it is what keeps a job's behaviour readable from one
+file.
 
-## Reading a queue another system writes
+## Reading a source another system writes
 
 Sometimes the thing that knows an ID changed is not yours, and it is not
 going to learn your conventions. A Python service pushes JSON onto a Redis
 list; you want that to hurry a reconcile job along.
 
-`reconcile.NotificationsFrom` is the one place in the whole surface where a
-raw queue name appears, and it is used exactly as given:
+`reconcile.NotificationsFrom` takes that name and uses it exactly as given:
 
 ```go
-reconcile.NotificationsFrom(foreignQueue, reconcile.NotificationsOpts{
-    ID: reconcile.IDFromJSON("workspace_id"),
-    MQ: convredis.NewListMQ(rdb),
-}),
+reconcile.NotificationsFrom(foreignQueue, convredis.NewListMQ(rdb), reconcile.IDFromJSON("workspace_id")),
 ```
 
 Three things are different from `Notifications`:
 
-- **The queue is named.** `foreignQueue` here is the literal string
+- **The source is named.** `foreignQueue` here is the literal string
   `"enterprise:workspace:sync:queue"`. converge does not namespace it,
-  prefix it, or own it.
-- **You supply the `ID` function**, because converge has no idea what shape
-  that system's messages are. `reconcile.IDFromJSON("workspace_id")` reads
-  one string field out of a JSON object; `reconcile.RawID()` takes the whole
-  payload as the ID. Anything that fails to decode is dropped and reported,
-  never guessed at.
-- **You supply the `MQ`**, because a foreign queue is usually not the
-  transport your own jobs use. Here it is a Redis list rather than the
-  stream the runtime is wired to.
+  prefix it, or own it — and it is called a *source*, not a queue, because
+  from this job's side that is all it is: where notifications come from,
+  whatever the other system calls it.
+- **You supply the `MQ`**, because it is not "which Redis" but "how to read
+  this source": a list and a stream on the same server are different
+  readers. Here it is a Redis list rather than the stream the runtime is
+  wired to.
+- **You supply the ID function.** It is an open function,
+  `func(payload []byte) (reconcile.ID, error)`, and converge ships two
+  conveniences for the common shapes — `reconcile.IDFromJSON("workspace_id")`
+  reads one string field out of a JSON object, `reconcile.RawID()` takes the
+  whole payload — but a composite ID or a field buried one level down is a
+  four-line function of your own. Returning `reconcile.Skip` says *this entry
+  is not for this job*; anything else that fails to decode is dropped and
+  reported, never guessed at.
 
 Everything downstream is identical: a decoded ID goes into the same
 deduplicated queue as a sweep or a plain notification, and the schedule
-still backs it up. The whole program is
-[`examples/scenarios/a14-foreign-queue/main.go`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a14-foreign-queue/main.go)
-— it needs a Redis to talk to, and tells you so and exits cleanly if there
-is not one.
+still backs it up. This is the one shape in the guide that needs a real
+Redis to talk to, because the list belongs to somebody else's process.
 
 ## Next
 

@@ -11,7 +11,7 @@ vocabulary, the [glossary](../glossary.md).
 
 - [Options and New](#options-and-new)
 - [Runtime](#runtime)
-- [Producer](#producer)
+- [Scope](#scope)
 - [Message and the envelope headers](#message-and-the-envelope-headers)
 - [Ports](#ports)
 - [Capability interfaces](#capability-interfaces)
@@ -135,31 +135,28 @@ What the runtime hands each job when `Run` starts it. It is exported because
 the seam between the kernel and the surface engines needs one exported type;
 you neither build one nor receive one.
 
-## Producer
+## Scope
 
 ```go
-type ProducerOpts struct {
+type Scope struct {
+    MQ        MQ
     Namespace string
     Clock     Clock
 }
 
-func NewProducer(mq MQ, o ProducerOpts) (*Producer, error)
-func (p *Producer) Notify(ctx context.Context, job, id string) error
+func (rt *Runtime) Scope() Scope
 ```
 
-A `Producer` is the whole sending side. It needs no `Runtime`, so the binary
-that sends does not have to be the binary that runs the job — it needs the
-same `MQ` backend, the same `Namespace`, and the job's name.
+The three things every producer needs, held once per process. It is a
+struct with **no methods**: there is nothing you can do with a `Scope` except
+hand it to `worker.Task.NewProducer` or `reconcile.Job.NewProducer`, so a
+namespace-wide "send anything anywhere" object cannot exist by accident.
 
-- `NewProducer(nil, ...)` returns `converge: NewProducer needs an MQ`.
-- `ProducerOpts.Clock` defaults to the wall clock. It stamps the enqueue time
-  on worker messages; `Notify` does not use it.
-- `Notify` publishes a small JSON notification to the job's inbox. An empty
-  `job` is `converge: Notify needs a job name`. An **empty `id` is legal** and
-  addresses a job whose ID source is `reconcile.SingleID`.
-- A `Producer` has exactly two verbs. `Notify` is here; `Enqueue` is a method
-  on [`worker.Task`](worker.md#enqueue) and takes a `*Producer`. There is no
-  third — nothing about a job's life can be set from the sending side.
+`rt.Scope()` is the in-process convenience; a binary that sends but runs no
+jobs builds one by hand with the same `MQ` backend and the same `Namespace`
+as the consuming runtime. `Clock` may be nil, in which case producers stamp
+the wall clock; the runtime's own scope always carries the clock it was
+built with.
 
 ## Message and the envelope headers
 
@@ -185,7 +182,7 @@ const (
 legal message with no kind, no headers and no payload.
 
 The five header names are the worker envelope. The library owns every name
-beginning `converge.`: `worker.Task.Enqueue` refuses a caller header that
+beginning `converge.`: `worker.Producer.Enqueue` refuses a caller header that
 starts with the prefix rather than overwriting it, and folds these five
 forward itself on every republish. You should not need to read them —
 `worker.MetaFromContext` gives you the decoded values — but they are exported
@@ -193,7 +190,7 @@ because they appear on the wire and in whatever your backend shows you.
 
 `Kind` on a worker message is the task name. On a notification it is the
 constant `converge.notification`, not the job name; the job is identified by
-the inbox the message was published to.
+the channel the message was published to.
 
 ## Ports
 
@@ -473,10 +470,10 @@ type Observer interface {
 type Event interface{ event() }
 ```
 
-`Event` is a sealed interface: the five concrete events below are the only
+`Event` is a sealed interface: the six concrete events below are the only
 implementations, and a `switch` over them is exhaustive today. Handle the
-default case anyway — a later version may add a sixth, and an observer that
-panics or blocks does so on the engine's goroutine. `Observe` is called
+default case anyway — a later version may add a seventh, and an observer
+that panics or blocks does so on the engine's goroutine. `Observe` is called
 concurrently from multiple jobs; implementations must be safe for that.
 
 ```go
@@ -506,6 +503,10 @@ type NotificationDropped struct {
     Err error
 }
 
+type NotificationSkipped struct {
+    Job string
+}
+
 type JobDestroyed struct {
     Job   string
     Cause StopCondition
@@ -518,6 +519,7 @@ type JobDestroyed struct {
 | `LeaseChanged` | an `OnOneReplica` job takes or gives up its lease. Emitted only by jobs that take one. |
 | `ScheduleOverrun` | a scheduled sweep boundary passed while the previous sweep was still running. One event per missed boundary, with how late it is. |
 | `NotificationDropped` | a notification never reached the queue of pending IDs. |
+| `NotificationSkipped` | an ID function returned `reconcile.Skip`; the entry was acknowledged and not counted as a drop. |
 | `JobDestroyed` | a job's stop condition fired. Emitted once per replica, with the cause. |
 
 A run that ends because the engine is shutting down is **not** reported: the
@@ -528,15 +530,15 @@ ending. That is why a clean shutdown produces no final flurry of failures.
 var (
     ErrNotificationUndecodable = errors.New("converge: notification: undecodable")
     ErrNotificationEmptyID     = errors.New("converge: notification: empty id")
-    ErrInboxOverflow           = errors.New("converge: notification: inbox overflow")
+    ErrNotificationOverflow    = errors.New("converge: notification: overflow")
 )
 ```
 
 `NotificationDropped.Err` is one of these three. On `ErrNotificationUndecodable`
-the `ID` field is empty — the engine could not read one. `ErrInboxOverflow`
-means the job's in-memory queue of pending IDs was at its bound (65536
-distinct IDs) when a new one arrived; the schedule still covers that ID on the
-next sweep.
+the `ID` field is empty — the engine could not read one.
+`ErrNotificationOverflow` means the job's in-memory set of pending IDs was at
+its bound (65536 distinct IDs) when a new one arrived; the schedule still
+covers that ID on the next sweep.
 
 ```go
 type Outcome struct { /* sealed */ }
@@ -571,7 +573,7 @@ worker control value returned from a reconcile function is an ordinary failure.
 func LogObserver(l *slog.Logger) Observer
 ```
 
-Maps the five events onto `slog` records. `LogObserver(nil)` returns the
+Maps the six events onto `slog` records. `LogObserver(nil)` returns the
 no-op observer rather than panicking.
 
 | Event | Level |
@@ -580,6 +582,7 @@ no-op observer rather than panicking.
 | `LeaseChanged` | info |
 | `ScheduleOverrun` | warn |
 | `NotificationDropped` | warn |
+| `NotificationSkipped` | info |
 | `JobDestroyed` | info |
 
 Attributes carry the event's fields under the names `job`, `id`, `attempt`,
@@ -639,7 +642,7 @@ is reconcile-only — the worker engine counts the messages it is retrying but
 does not keep them.
 
 `JobInfo` is the static half: what a job was registered as. `Queue` is the
-job's inbox on a worker job and empty on a reconcile job. `Settings` is a
+task's queue on a worker job and empty on a reconcile job. `Settings` is a
 rendered, human-readable map — `concurrency`, `retry`, `schema-version`,
 `timeout` and `rate-limit` for a worker job; `concurrency`, `schedule`,
 `triggers` and `versions` for a reconcile one. It is for reading, not for

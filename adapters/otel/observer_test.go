@@ -180,7 +180,7 @@ func TestLeaseChangedCounts(t *testing.T) {
 
 func TestNotificationDroppedCounts(t *testing.T) {
 	obs, r := newTestObserver(t)
-	obs.Observe(converge.NotificationDropped{Job: "sync", ID: "ws-1", Err: converge.ErrInboxOverflow})
+	obs.Observe(converge.NotificationDropped{Job: "sync", ID: "ws-1", Err: converge.ErrNotificationOverflow})
 
 	pts := sumPoints(t, collect(t, r), "converge.notifications.dropped")
 	if len(pts) != 1 || pts[0].Value != 1 {
@@ -191,6 +191,19 @@ func TestNotificationDroppedCounts(t *testing.T) {
 	}
 	if _, ok := pts[0].Attributes.Value(attribute.Key("converge.id")); ok {
 		t.Fatal("per-ID attribute exported; unbounded cardinality")
+	}
+}
+
+func TestNotificationSkippedCounts(t *testing.T) {
+	obs, r := newTestObserver(t)
+	obs.Observe(converge.NotificationSkipped{Job: "sync"})
+
+	pts := sumPoints(t, collect(t, r), "converge.notifications.skipped")
+	if len(pts) != 1 || pts[0].Value != 1 {
+		t.Fatalf("points = %+v, want a single point of 1", pts)
+	}
+	if got := attrValue(t, pts[0].Attributes, "converge.job"); got != "sync" {
+		t.Fatalf("converge.job = %q, want sync", got)
 	}
 }
 

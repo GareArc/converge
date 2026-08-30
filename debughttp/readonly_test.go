@@ -113,11 +113,11 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	}
 	w.Runtime(t)
 
-	p, err := converge.NewProducer(w.MQ, converge.ProducerOpts{Namespace: "dt", Clock: w.Clock()})
+	p, err := tk.NewProducer(converge.Scope{MQ: w.MQ, Namespace: "dt", Clock: w.Clock()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tk.Enqueue(context.Background(), p, "hi", worker.EnqueueOpts{}); err != nil {
+	if err := p.Enqueue(context.Background(), "hi", worker.EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {
@@ -179,8 +179,8 @@ func TestReadOnlyListMergesReconcileAndWorkerJobs(t *testing.T) {
 	if wk["surface"] != "worker" {
 		t.Fatalf("surface = %v, want worker", wk["surface"])
 	}
-	if wk["queue"] != "dt/converge/inbox/send-invite" {
-		t.Fatalf("queue = %v, want the namespaced inbox", wk["queue"])
+	if wk["queue"] != "dt/converge/queue/send-invite" {
+		t.Fatalf("queue = %v, want the namespaced queue", wk["queue"])
 	}
 	if wk["last_success"] == "" {
 		t.Fatal("last_success = empty, want a populated RFC3339Nano timestamp after a successful run")
@@ -379,7 +379,7 @@ func TestReadOnlyHandlerNamesFailingIDs(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name: "flaky",
+		Job: reconcile.NewJob("flaky", reconcile.JobOpts{}),
 		Reconcile: func(_ context.Context, id reconcile.ID) error {
 			if id == "bad" {
 				return errors.New("upstream refused")

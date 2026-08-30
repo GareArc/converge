@@ -1,8 +1,7 @@
 # Jobs that end
 
 > Assumes [chapter 6, taking it to production](../guide/06-production.md),
-> which shows the whole program and watches it stop. That program is
-> [`a12-legacy-migration`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a12-legacy-migration/main.go).
+> which shows the whole program and watches it stop.
 
 A password-hash migration is a job with an end in it. Every credential still
 on `sha1` has to be rehashed, and one day there will be none left, and after
@@ -83,9 +82,10 @@ the job is destroyed is simply never reconciled. There is no error, no
 event, and no number that moves.
 
 **Producers keep succeeding.** `Notify` and `Enqueue` publish to a job's
-[inbox](../glossary.md#inbox) without asking whether anything is reading it,
-so a code path that still sends to a destroyed job goes on working, silently,
-forever. The messages accumulate.
+channel — its [notifications](../glossary.md#notifications) or its
+[queue](../glossary.md#queue) — without asking whether anything is reading
+it, so a code path that still sends to a destroyed job goes on working,
+silently, forever. The messages accumulate.
 
 **And converge stops reporting the pile.** A destroyed job is no longer
 active on any replica, so it stops polling: `BacklogKnown` and
@@ -116,9 +116,9 @@ What that costs depends on the surface:
 - A worker delivery in flight is also settled neutrally: the message is
   republished with its
   [logical attempt](../glossary.md#logical-attempt) folded back, so it has
-  not spent an attempt — into an inbox nothing will read again.
+  not spent an attempt — into a queue nothing will read again.
 
-So a job whose runs are long, or whose inbox is not empty, should be
+So a job whose runs are long, or whose queue is not empty, should be
 destroyed at a moment you chose. For a worker job that means draining it
 first: watch the backlog reach zero, *then* write the stop key.
 

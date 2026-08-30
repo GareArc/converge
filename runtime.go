@@ -32,6 +32,16 @@ type Runtime struct {
 	frozen bool
 }
 
+type Scope struct {
+	MQ        MQ
+	Namespace string
+	Clock     Clock
+}
+
+func (rt *Runtime) Scope() Scope {
+	return Scope{MQ: rt.opts.MQ, Namespace: rt.opts.Namespace, Clock: rt.opts.Clock}
+}
+
 func init() {
 	hook.RegisterJob = func(rt any, j any) error {
 		r, ok := rt.(*Runtime)

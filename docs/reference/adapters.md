@@ -178,15 +178,34 @@ Other behaviour worth knowing:
   does not release delayed messages, so a delayed enqueue aimed at an
   `OnAllReplicas` job never arrives.
 - `Extend` after the delivery has been acknowledged returns `ErrSettled`.
-- Keys are prefixed `convredis:` — `:s:` the stream, `:p:` the pending index,
-  `:a:` the attempt counters, `:d:` the delayed set — and are **not** subject
-  to `Options.Namespace`, which is already part of the queue name they embed.
+- **The stream key is the queue name, exactly as the job declared or derived
+  it** — `dify:credential:rotate` if a task declared that, or
+  `<ns>/converge/queue/<task>` if it did not — so a producer in any language
+  can find it. The adapter's own bookkeeping keeps a prefix, because those
+  keys are the adapter's and not yours: `convredis:p:<queue>:<group>` the
+  pending index, `convredis:a:<queue>:<group>` the attempt counters,
+  `convredis:d:<queue>` the delayed set. None of them is subject to
+  `Options.Namespace`; the namespace is already part of a derived queue name.
+  Those three prefixes are therefore reserved: a **declared** channel name
+  beginning `convredis:p:`, `convredis:a:` or `convredis:d:` lands in another
+  channel's bookkeeping space. It is not silent — those keys are sorted sets
+  and a hash while a channel is a stream, so the collision comes back from
+  `Publish` as a Redis `WRONGTYPE` error.
+- **A stream entry carries `payload`, `enq`, and optionally `kind` and
+  `headers`.** `enq` is RFC 3339 with an offset, nanoseconds optional, and it
+  is required: an entry the adapter cannot decode — including one a foreign
+  producer wrote without `enq` — is acknowledged and discarded. The full
+  encoding, for producers that are not Go, is in the
+  [wire reference](wire.md).
 
 ### List MQ
 
 `NewListMQ` reads and writes a plain Redis list. It exists for exactly one
 job: [`reconcile.NotificationsFrom`](reconcile.md#triggers), pointed at a
-queue some other system already writes.
+source some other system already writes. It **cannot carry worker work**: a
+`BRPOP` deletes the element the instant it is read, so a durable task
+registered against it fails at `Run` with `cannot carry work`, naming the
+adapter type.
 
 It is deliberately minimal, and the limits matter if you point it anywhere
 else:
@@ -235,7 +254,7 @@ func NewObserver(meter metric.Meter) (converge.Observer, error)
 func RegisterGauges(meter metric.Meter, rt *converge.Runtime) error
 ```
 
-**`NewObserver`** maps the five events onto instruments. It returns an error
+**`NewObserver`** maps the six events onto instruments. It returns an error
 if the meter refuses to create one.
 
 | Instrument | Kind | From |
@@ -245,6 +264,7 @@ if the meter refuses to create one.
 | `converge.discarded` | counter | `RunCompleted` with outcome `Discarded` |
 | `converge.lease.transitions` | counter | `LeaseChanged`; attribute `converge.held` |
 | `converge.notifications.dropped` | counter | `NotificationDropped` |
+| `converge.notifications.skipped` | counter | `NotificationSkipped` |
 | `converge.schedule.overruns` | counter | `ScheduleOverrun` |
 | `converge.destroyed` | counter | `JobDestroyed` |
 
@@ -401,11 +421,12 @@ most verbs take a `testing.TB`.
 | `Stop` | cancel the runtime and return what `Run` returned. After it, only `Events` still works. |
 | `Events` | every event recorded so far, as a copy. |
 | `AssertReconciled` | poll for a `RunCompleted` with that job, that ID and outcome `Succeeded`. Fails after 2s, printing every event it saw. |
-| `AssertEnqueued` | poll for a message on the task's inbox whose payload equals the task's encoding of `want`. |
+| `AssertEnqueued` | poll for a message on the task's queue (`TaskRef.QueueName(namespace)`) whose payload equals the task's encoding of `want`. |
 
 ```go
 type TaskRef interface {
     Name() string
+    QueueName(namespace string) string
     Encode(v any) ([]byte, error)
 }
 ```

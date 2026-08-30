@@ -21,7 +21,7 @@ func TestVersionsBumpMidRunDefersRatherThanFails(t *testing.T) {
 	v := versions.Fixed(map[string]reconcile.Version{"widget": 1})
 
 	err = reconcile.Register(rt, reconcile.Spec{
-		Name:     "priced-widgets",
+		Job:      reconcile.NewJob("priced-widgets", reconcile.JobOpts{}),
 		Versions: v,
 		Reconcile: func(context.Context, reconcile.ID) error {
 			v.Bump("widget")

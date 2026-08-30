@@ -7,6 +7,8 @@ cadence, and your function re-reads the truth and makes the world match it.
 The [guide's chapters 2 and 3](../guide/02-ids.md) teach the model. This page
 is the surface, its defaults, and its refusals.
 
+- [Job](#job)
+- [Notifier](#notifier)
 - [Spec and Register](#spec-and-register)
 - [Periodic](#periodic)
 - [Triggers](#triggers)
@@ -18,11 +20,84 @@ is the surface, its defaults, and its refusals.
 - [CheckAgain and ErrOutdated](#checkagain-and-erroutdated)
 - [What a run costs when it fails](#what-a-run-costs-when-it-fails)
 
+## Job
+
+```go
+type JobOpts struct {
+    Notifications string
+}
+
+type Job struct { /* sealed */ }
+
+func NewJob(name string, o JobOpts) Job
+
+func (j Job) Name() string
+func (j Job) NotificationsName(namespace string) string
+```
+
+A job is a value: the name every other piece of code refers to it by, and
+the name of the channel its notifications arrive on. Declare it once, in a
+package the registering binary and any notifying binary both import, and
+hand the same value to `Spec.Job` and to `NewProducer`.
+
+| Field | Zero value means |
+| --- | --- |
+| `Notifications` | derived: `<namespace>/converge/notifications/<name>` |
+
+`Notifications` is used **verbatim** when set — not namespaced, not
+prefixed — so a producer in another language can `XADD` to that exact key.
+`NotificationsName` returns whichever resolves; print it at startup for the
+team that cannot import your package. Like a task's queue, a declared name
+is refused only for what is invisible — leading or trailing whitespace, or a
+control character, with the offending byte named — and any other string is
+the backend's business.
+
+`NewJob` **returns a value, not an error.** An invalid job carries its error
+and reports it from `Register` and from `NewProducer`. Two things are
+invalid: an empty name (`reconcile: job name is required`) and a name
+containing `/` (`reconcile: job %q: name must not contain "/"`). A zero
+`Job` handed to `Spec` is `reconcile: Spec.Job is required; build one with
+NewJob`.
+
+## Notifier
+
+```go
+type Notifier struct { /* sealed */ }
+
+func (j Job) NewProducer(s converge.Scope) (*Notifier, error)
+func (n *Notifier) Notify(ctx context.Context, id ID) error
+func (n *Notifier) NotifyAll(ctx context.Context) error
+func (n *Notifier) Notifications() string
+```
+
+The sending side of a reconcile job, built from the job value so it can
+address nothing else. It needs a [`converge.Scope`](kernel.md#scope) —
+`rt.Scope()` in the process that runs the job, a struct literal with the
+same `MQ` and `Namespace` anywhere else.
+
+- `NewProducer` fails on a misconstructed job (`reconcile: NewProducer:
+  ...`) and on a nil `Scope.MQ` (`reconcile: job %q: NewProducer needs
+  Scope.MQ`).
+- `Notify` publishes `{"id":"<id>"}` to the job's channel. An empty `id` is
+  refused: `reconcile: job %q: Notify needs an id; NotifyAll addresses the
+  whole job`.
+- `NotifyAll` publishes `{"all":true}`. On a `SingleID` job that runs the
+  job's one ID as a notification would; on any other job it starts a sweep
+  of every `Schedule` trigger now, without moving the cadence. It exists
+  for the producer that just changed many IDs at once — a bulk import, a
+  migration — and would otherwise have to notify each.
+- `Notifications` is the resolved channel name, declared or derived.
+
+A nil or zero-value `Notifier` returns `reconcile: notifier has no MQ; build
+it with Job.NewProducer` from every verb rather than panicking. Both payload
+forms, and what a producer in another language writes, are in the
+[wire reference](wire.md).
+
 ## Spec and Register
 
 ```go
 type Spec struct {
-    Name        string
+    Job         Job
     Reconcile   func(ctx context.Context, id ID) error
     Triggers    []Trigger
     Concurrency int
@@ -38,7 +113,7 @@ func Register(rt *converge.Runtime, s Spec) error
 
 | Field | Zero value means | Notes |
 | --- | --- | --- |
-| `Name` | invalid | Required. The name other code addresses the job by, and the name in every log line, metric and key. It must not contain `/`. |
+| `Job` | invalid | Required. Build it with [`NewJob`](#job). Its name is the name in every log line, metric and key. |
 | `Reconcile` | invalid | Required. Called once per pending ID. Must be safe to run twice. |
 | `Triggers` | invalid | Must contain at least one `Schedule`. |
 | `Concurrency` | 1 | How many IDs this **one replica** may run at once. Never negative. |
@@ -53,8 +128,8 @@ the whole list of things a reconcile job can get wrong at declaration time:
 
 | Error | Cause |
 | --- | --- |
-| `reconcile: Spec.Name is required` | empty `Name` |
-| `reconcile: job %q: Name must not contain "/"` | `/` in `Name` |
+| `reconcile: Spec.Job is required; build one with NewJob` | zero `Job` |
+| `reconcile: job name is required` / `reconcile: job %q: name must not contain "/"` | carried from `NewJob` |
 | `reconcile: job %q: Spec.Reconcile is required` | nil function |
 | `reconcile: job %q: Concurrency must not be negative` | negative `Concurrency` |
 | `reconcile: job %q: Timeout must not be negative` | negative `Timeout` |
@@ -64,9 +139,8 @@ the whole list of things a reconcile job can get wrong at declaration time:
 | `reconcile: job %q: Schedule needs an IDSource` | `Schedule` built from a zero `IDSource` — including one built from a nil function |
 | `reconcile: job %q: Schedule needs a Cadence; use Every or Cron` | zero `Cadence` |
 | `reconcile: cron %q: ...` | a `Cadence` that failed to parse; the error is carried from `Cron` and surfaces here |
-| `reconcile: job %q: NotificationsFrom needs a queue name` | empty queue |
-| `reconcile: job %q: NotificationsFrom needs an ID function` | `NotificationsOpts.ID` nil on a foreign queue |
-| `reconcile: job %q: Notifications always reads Options.MQ; MQ is NotificationsFrom only` | `NotificationsOpts.MQ` set on a plain `Notifications` trigger |
+| `reconcile: job %q: NotificationsFrom needs a source name` | empty `source` |
+| `reconcile: job %q: NotificationsFrom needs an ID function` | nil `id` on a foreign source |
 
 Plus the runtime's own three: empty name, duplicate name, and registering
 after `Run` has started.
@@ -104,7 +178,7 @@ ID has nothing to run in parallel and nothing to version.
 
 The ID a `Periodic` job runs under is the empty string. That is what you will
 see in `RunCompleted.ID` and in the `id=""` of a log line, and it is what
-`Producer.Notify(ctx, name, "")` addresses.
+`Notifier.NotifyAll` addresses.
 
 ## Triggers
 
@@ -156,25 +230,28 @@ this library leans on. Do your own timing inside `Run`, and keep a real
 `Schedule` for the guarantee.
 
 ```go
-type NotificationsOpts struct {
-    ID func(payload []byte) (ID, error)
-    MQ converge.MQ
-}
-
-func Notifications(o NotificationsOpts) Trigger
-func NotificationsFrom(queue string, o NotificationsOpts) Trigger
+func Notifications() Trigger
+func NotificationsFrom(source string, mq converge.MQ,
+    id func(payload []byte) (ID, error)) Trigger
 ```
 
-**`Notifications`** reads the job's own inbox over `Options.MQ`. Both fields
-are meant to be left zero: setting `MQ` is refused, and `ID` is ignored
-because converge owns the payload format of its own notifications.
+**`Notifications`** reads the job's own channel — `JobOpts.Notifications`
+if declared, otherwise `<namespace>/converge/notifications/<name>` — over
+`Options.MQ`. It takes nothing, because converge owns the payload format of
+its own notifications (`{"id":"..."}` or `{"all":true}`). It is still
+explicit: a job with only a schedule is a valid job that should not pay for
+a consumer, and the trigger list is the one place a reader learns what runs
+a job.
 
-**`NotificationsFrom`** reads a queue some other system already writes. It is
-the only place in the surface where a raw queue name appears, and the string
-is used **exactly as given** — not namespaced, not prefixed. Both fields are
-then required: `ID` because converge has no idea what shape that system's
-messages are, and `MQ` because a foreign queue is usually not the transport
-your own jobs use.
+**`NotificationsFrom`** reads a source some other system already writes.
+The parameter is `source`, not queue, because from the job's side that is
+what it is: where notifications come from, whatever the other system calls
+it. The string is used **exactly as given** — not namespaced, not prefixed.
+`id` is required, because converge has no idea what shape that system's
+messages are. `mq` is not "which Redis" but "how to read this source": a
+list and a stream on the same server are different readers, so a source
+written as a list needs `convredis.NewListMQ`; pass nil to read it the way
+the runtime reads its own channels, over `Options.MQ`.
 
 Every delivery on a notifications trigger is acknowledged, decodable or not.
 A payload that will not decode raises `NotificationDropped` with
@@ -276,8 +353,7 @@ func ToIDs(raw ...string) []ID
 ```
 
 The name of one unit of reconcile work. Any string is a legal ID, including
-the empty one — which is reserved for `SingleID` jobs and is what
-`Producer.Notify` sends when you pass an empty id. `ToIDs` is the bulk
+the empty one — which is reserved for `SingleID` jobs. `ToIDs` is the bulk
 conversion `StringIDs` uses internally.
 
 ## ID functions for foreign queues
@@ -287,18 +363,40 @@ func RawID() func(payload []byte) (ID, error)
 func IDFromJSON(field string) func(payload []byte) (ID, error)
 ```
 
-For `NotificationsOpts.ID` on a foreign queue.
+For the `id` parameter of `NotificationsFrom`.
 
 - **`RawID()`** takes the whole payload as the ID. An empty payload is
-  `reconcile: empty payload`.
+  `reconcile: empty payload`. The whole payload becomes the ID, and an ID
+  is not private: it appears in log lines, in `Stats()` and the debug
+  handler. Never use `RawID` on a payload that contains a secret.
 - **`IDFromJSON(field)`** unmarshals the payload as a JSON object and reads
   one **string** field. It errors — and the notification is dropped and
   reported — if the payload is not a JSON object, if the field is missing, if
   it is not a string, or if it is the empty string. Unknown extra fields are
   ignored.
+- **`Skip`** is a value your own ID function returns — `return "",
+  reconcile.Skip` — to say *this entry is not for this job*. The delivery is
+  acknowledged and a `NotificationSkipped` event is recorded; nothing is
+  dropped and nothing is logged as a fault. Two jobs reading one stream
+  through separate consumer groups need it. Two jobs cannot share one
+  **list** at all — a list pop is destructive — and must be fed two lists.
+
+These are conveniences, not the menu. The parameter is an open function,
+`func(payload []byte) (reconcile.ID, error)`: a composite ID is
+
+```go
+id := func(payload []byte) (reconcile.ID, error) {
+    var m struct{ Tenant, Workspace string }
+    if err := json.Unmarshal(payload, &m); err != nil {
+        return "", err
+    }
+    return reconcile.ID(m.Tenant + "/" + m.Workspace), nil
+}
+```
 
 Both return a function, so both are called at spec-construction time:
-`ID: reconcile.IDFromJSON("workspace_id")`.
+`reconcile.NotificationsFrom("their-stream", nil,
+reconcile.IDFromJSON("workspace_id"))`.
 
 ## Versions
 

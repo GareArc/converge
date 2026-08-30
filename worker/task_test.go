@@ -33,6 +33,8 @@ func TestNewTaskMisconstruction(t *testing.T) {
 		{"empty name", "", TaskOpts{}, "required"},
 		{"slash name", "a/b", TaskOpts{}, "must not contain"},
 		{"negative version", "ok", TaskOpts{Version: -1}, "negative"},
+		{"queue with leading space", "ok", TaskOpts{Queue: " q"}, "Queue"},
+		{"queue with control character", "ok", TaskOpts{Queue: "q\x00"}, "control character"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -99,5 +101,29 @@ func TestCodecJSONRoundTrip(t *testing.T) {
 	}
 	if decoded.Name != "Alice" || decoded.Age != 30 {
 		t.Fatalf("got %+v, want %+v", decoded, original)
+	}
+}
+
+func TestTaskQueueNameIsDeclaredOrDerived(t *testing.T) {
+	derived := NewTask[string]("send-invite", TaskOpts{})
+	if got := derived.QueueName("acme"); got != "acme/converge/queue/send-invite" {
+		t.Fatalf("QueueName = %q", got)
+	}
+	if got := derived.QueueName(""); got != "converge/queue/send-invite" {
+		t.Fatalf("QueueName with no namespace = %q", got)
+	}
+	declared := NewTask[string]("send-invite", TaskOpts{Queue: "dify:credential:rotate"})
+	if got := declared.QueueName("acme"); got != "dify:credential:rotate" {
+		t.Fatalf("declared QueueName = %q, want it verbatim, not namespaced", got)
+	}
+	hashTag := NewTask[string]("send-invite", TaskOpts{Queue: "{dify}:rotate"})
+	if hashTag.err != nil {
+		t.Fatalf("a Redis Cluster hash tag must be accepted: %v", hashTag.err)
+	}
+	if NewTask[string]("v3", TaskOpts{Version: 3}).Version() != 3 {
+		t.Fatal("Version() must report the declared version")
+	}
+	if NewTask[string]("v0", TaskOpts{}).Version() != 1 {
+		t.Fatal("Version() must report the defaulted version")
 	}
 }

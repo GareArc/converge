@@ -41,7 +41,7 @@ func TestScenarioASafetyNetCronReconciler(t *testing.T) {
 	workspaces := []string{"ws_1", "ws_2", "ws_3"}
 	synced := map[reconcile.ID]int{}
 	err := reconcile.Register(rt, reconcile.Spec{
-		Name: "workspace-credentials",
+		Job: reconcile.NewJob("workspace-credentials", reconcile.JobOpts{}),
 		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -119,27 +119,28 @@ func TestTenMinuteTourPeriodic(t *testing.T) {
 func TestNotifyFromAnotherBinaryReconcilesTheID(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
+	job := reconcile.NewJob("merchants", reconcile.JobOpts{})
 	seen := make(chan string, 4)
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name: "merchants",
+		Job: job,
 		Reconcile: func(_ context.Context, id reconcile.ID) error {
 			seen <- string(id)
 			return nil
 		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
-			reconcile.Notifications(reconcile.NotificationsOpts{}),
+			reconcile.Notifications(),
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	h.Drain(t)
 
-	p, err := converge.NewProducer(h.MQ, converge.ProducerOpts{Namespace: "test"})
+	p, err := job.NewProducer(rt.Scope())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Notify(context.Background(), "merchants", "m-42"); err != nil {
+	if err := p.Notify(context.Background(), "m-42"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -156,11 +157,11 @@ func TestNotificationsFromRequiresAnIDFunction(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	err := reconcile.Register(rt, reconcile.Spec{
-		Name:      "workspaces",
+		Job:       reconcile.NewJob("workspaces", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error { return nil },
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
-			reconcile.NotificationsFrom("legacy:queue", reconcile.NotificationsOpts{}),
+			reconcile.NotificationsFrom("legacy:queue", nil, nil),
 		},
 	})
 	if err == nil {
@@ -174,7 +175,7 @@ func TestMalformedNotificationsCountedAndDropped(t *testing.T) {
 	var mu sync.Mutex
 	var got []reconcile.ID
 	err := reconcile.Register(rt, reconcile.Spec{
-		Name: "member-sync",
+		Job: reconcile.NewJob("member-sync", reconcile.JobOpts{}),
 		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -183,7 +184,7 @@ func TestMalformedNotificationsCountedAndDropped(t *testing.T) {
 		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
-			reconcile.NotificationsFrom("member-events", reconcile.NotificationsOpts{ID: reconcile.IDFromJSON("workspace_id")}),
+			reconcile.NotificationsFrom("member-events", nil, reconcile.IDFromJSON("workspace_id")),
 		},
 	})
 	if err != nil {
@@ -329,5 +330,94 @@ func TestMissedTickRunOnceAcrossRestart(t *testing.T) {
 		}
 		clock.Advance(10 * time.Second)
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func TestNotifyReachesAJobWithADeclaredNotificationsName(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	job := reconcile.NewJob("merchants", reconcile.JobOpts{Notifications: "dify:merchants"})
+	seen := make(chan string, 4)
+	if err := reconcile.Register(rt, reconcile.Spec{
+		Job: job,
+		Reconcile: func(_ context.Context, id reconcile.ID) error {
+			seen <- string(id)
+			return nil
+		},
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
+			reconcile.Notifications(),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	p, err := job.NewProducer(rt.Scope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Notifications() != "dify:merchants" {
+		t.Fatalf("Notifications() = %q, want the declared name", p.Notifications())
+	}
+	if err := p.Notify(context.Background(), "m-42"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-seen:
+		if id != "m-42" {
+			t.Fatalf("reconciled %q, want %q", id, "m-42")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a notification sent through the job never reached the job listening on its declared channel")
+	}
+}
+
+func TestNotifyAllSweepsAMultiIDJobOutOfCadence(t *testing.T) {
+	h := convergetest.New(t)
+	rt := h.Build(t)
+	job := reconcile.NewJob("inventory", reconcile.JobOpts{})
+	err := reconcile.Register(rt, reconcile.Spec{
+		Job:       job,
+		Reconcile: func(context.Context, reconcile.ID) error { return nil },
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
+				return []reconcile.ID{"sku-1", "sku-2"}, nil
+			}), reconcile.Every(time.Hour)),
+			reconcile.Notifications(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Drain(t)
+	runs := func(id string) int {
+		n := 0
+		for _, e := range h.Events() {
+			if rc, ok := e.(converge.RunCompleted); ok && rc.Job == "inventory" && rc.ID == id {
+				n++
+			}
+		}
+		return n
+	}
+	before1, before2 := runs("sku-1"), runs("sku-2")
+	n, err := job.NewProducer(rt.Scope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := n.NotifyAll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return runs("sku-1") > before1 && runs("sku-2") > before2 })
+	h.Drain(t)
+	if runs("sku-1") != before1+1 || runs("sku-2") != before2+1 {
+		t.Fatalf("runs after NotifyAll = %d/%d, want %d/%d: every listed ID once more", runs("sku-1"), runs("sku-2"), before1+1, before2+1)
+	}
+	if err := n.Notify(context.Background(), "sku-2"); err != nil {
+		t.Fatal(err)
+	}
+	convergetest.Await(t, func() bool { return runs("sku-2") > before2+1 })
+	h.Drain(t)
+	if runs("sku-2") != before2+2 || runs("sku-1") != before1+1 {
+		t.Fatalf("Notify must address one ID: %d/%d", runs("sku-1"), runs("sku-2"))
 	}
 }

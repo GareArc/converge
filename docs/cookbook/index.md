@@ -1,23 +1,18 @@
 # The cookbook
 
 The [guide](../guide/index.md) teaches the model in order, one idea per
-chapter. This is the other half: six problems people actually bring to a
+chapter. This is the other half: seven problems people actually bring to a
 background-work library, each one worked end to end, and each one ending
 somewhere the guide stops short of.
 
-Every page opens by naming the chapter it assumes and the program under
-`examples/scenarios/` it is drawn from, so you can run the thing you are
-reading about:
-
-```sh
-cd examples
-go run ./scenarios/a08-transcode
-```
+Every page opens by naming the chapter it assumes, so you always know which
+part of the model it is building on.
 
 These pages use converge's vocabulary without re-teaching it: a
 [reconcile](../glossary.md#reconcile) job, a
 [notification](../glossary.md#notification), a job's
-[inbox](../glossary.md#inbox), the [shelf](../glossary.md#shelf). Each of
+[notifications](../glossary.md#notifications), a task's
+[queue](../glossary.md#queue), the [shelf](../glossary.md#shelf). Each of
 those is one paragraph in the [glossary](../glossary.md), and every page
 links the words it leans on.
 
@@ -45,6 +40,9 @@ links the words it leans on.
 6. **[The safety net](safety-net.md)** — the job nobody sends anything to and
    nothing waits on, which exists so that nothing is ever *permanently*
    wrong.
+7. **[Credential sync from a Python service](python-producer.md)** — a
+   producer that cannot import your package: which of three shapes the job
+   takes, and the one `XADD` each needs.
 
 ## If you are looking for something else
 

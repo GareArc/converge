@@ -53,6 +53,7 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 	q := e.queue
 	lastKey := e.key("sched", strconv.Itoa(idx), "last")
 	cursorKey := e.key("sched", strconv.Itoa(idx), "cursor")
+	sweepKey := e.key("sched", strconv.Itoa(idx), "sweep")
 	readLast := func(ctx context.Context) (time.Time, bool) { return e.readTime(ctx, lastKey) }
 	writeLast := func(ctx context.Context, t time.Time) { e.writeTime(ctx, lastKey, t) }
 	if e.cfg.runMode == converge.OnAllReplicas || e.deps.KV == nil {
@@ -81,6 +82,14 @@ func (e *engine) runSchedule(ctx context.Context, idx int, st *scheduleTrigger) 
 			case <-ctx.Done():
 				return
 			case <-e.deps.Clock.After(next.Sub(now)):
+			case <-st.sweepCh:
+				release := e.markBusy()
+				e.deleteKey(ctx, sweepKey)
+				if !e.runPass(ctx, q, st, sweepKey) {
+					release()
+					return
+				}
+				release()
 			}
 			continue
 		}
@@ -103,7 +112,7 @@ func (e *engine) checkOverrun(ctx context.Context, st *scheduleTrigger, writeLas
 		return
 	}
 	for _, due := range over {
-		e.deps.Observer.Observe(converge.ScheduleOverrun{Job: e.cfg.name, Due: due, Late: now.Sub(due)})
+		e.deps.Observer.Observe(converge.ScheduleOverrun{Job: e.cfg.job.Name(), Due: due, Late: now.Sub(due)})
 	}
 	writeLast(ctx, latestBoundary(st.cad, over[len(over)-1], now))
 }

@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -66,7 +67,7 @@ func TestMissedTicksRunOnceOnReturn(t *testing.T) {
 	rt := h.Build(t)
 	var sweeps atomic.Int64
 	if err := Register(rt, Spec{
-		Name: "hourly",
+		Job: NewJob("hourly", JobOpts{}),
 		Reconcile: func(context.Context, ID) error {
 			sweeps.Add(1)
 			return nil
@@ -159,7 +160,7 @@ func TestAllReplicasScheduleIsReplicaLocal(t *testing.T) {
 	calls := map[int]int{}
 	boot := func(replica int) *engine {
 		e := &engine{cfg: config{
-			name:        "job",
+			job:         NewJob("job", JobOpts{}),
 			concurrency: 1,
 			single:      true,
 			runMode:     converge.OnAllReplicas,
@@ -420,7 +421,7 @@ func TestRunPassNowInactiveErrors(t *testing.T) {
 
 func TestRunPassNowWithoutScheduleTriggerErrors(t *testing.T) {
 	spec := Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 		RunMode:   converge.OnAllReplicas,
@@ -453,7 +454,7 @@ func TestRunPassNowEnumeratesFullIDSource(t *testing.T) {
 	var mu sync.Mutex
 	counts := map[ID]int{}
 	spec := Spec{
-		Name: "job",
+		Job: NewJob("job", JobOpts{}),
 		Reconcile: func(_ context.Context, id ID) error {
 			mu.Lock()
 			counts[id]++
@@ -494,7 +495,7 @@ func TestRunPassNowDoesNotDisturbScheduledLastFireOrCursor(t *testing.T) {
 	var mu sync.Mutex
 	scheduledRuns := 0
 	spec := Spec{
-		Name: "job",
+		Job: NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error {
 			mu.Lock()
 			scheduledRuns++
@@ -550,7 +551,7 @@ func TestRunPassNowCtxCancellationAbortsAndReturnsCtxErr(t *testing.T) {
 		return nil, errors.New("db hiccup")
 	})
 	spec := Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(src, Every(time.Hour))},
 	}
@@ -599,7 +600,7 @@ func TestRunPassNowDoesNotPanicWhenQueueNilsMidPass(t *testing.T) {
 		return []ID{"a"}, nil
 	})
 	spec := Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(src, Every(time.Hour))},
 	}
@@ -720,5 +721,88 @@ func TestSchedulePageRetryBacksOffAndResetsOnSuccess(t *testing.T) {
 	advanceUntil(t, te, retryStep, func() bool { return callCount() >= len(steps) })
 	if waited := te.clock.Now().Sub(resumed); waited > resetBudget {
 		t.Fatalf("the retry after a successful page waited %v, want at most %v (a successful page must reset the attempt counter)", waited, resetBudget)
+	}
+}
+
+func lastFire(t *testing.T, te *testEngine) string {
+	t.Helper()
+	val, ok, err := te.e.deps.KV.Get(context.Background(), te.e.key("sched", "0", "last"))
+	if err != nil || !ok {
+		t.Fatalf("last-fire not readable: %v %v", ok, err)
+	}
+	return string(val)
+}
+
+func TestNotifyAllRunsAPassWithoutMovingTheCadenceAnchor(t *testing.T) {
+	st := Schedule(IDs(func(context.Context) ([]ID, error) {
+		return []ID{"a", "b"}, nil
+	}), Every(time.Hour)).(*scheduleTrigger)
+	te := startEngine(t, config{triggers: []Trigger{st}}, func(context.Context, ID) error { return nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go te.e.runSchedule(ctx, 0, st)
+	convergetest.Await(t, func() bool { return runCount(te) == 2 })
+	anchor := lastFire(t, te)
+	te.e.notifyAll(ctx)
+	convergetest.Await(t, func() bool { return runCount(te) == 4 })
+	if got := lastFire(t, te); got != anchor {
+		t.Fatalf("anchor after NotifyAll = %q, want %q unchanged", got, anchor)
+	}
+	convergetest.AssertStable(t, func() bool { return runCount(te) == 4 })
+	advanceUntil(t, te, time.Minute, func() bool { return runCount(te) == 6 })
+	if got := lastFire(t, te); got == anchor {
+		t.Fatalf("anchor after the cadence boundary = %q, want it moved off %q", got, anchor)
+	}
+}
+
+func TestNotifyAllSweepsFromTheFirstPageNotTheCadenceCursor(t *testing.T) {
+	pages := map[string]struct {
+		ids  []ID
+		next string
+	}{
+		"":   {[]ID{"a", "b"}, "p1"},
+		"p1": {[]ID{"c", "d"}, ""},
+	}
+	var mu sync.Mutex
+	var visited []ID
+	st := Schedule(IDsByPage(func(_ context.Context, cursor string) ([]ID, string, error) {
+		p, ok := pages[cursor]
+		if !ok {
+			return nil, "", errors.New("unknown cursor " + cursor)
+		}
+		mu.Lock()
+		visited = append(visited, p.ids...)
+		mu.Unlock()
+		return p.ids, p.next, nil
+	}), Every(time.Hour)).(*scheduleTrigger)
+	te := startEngine(t, config{triggers: []Trigger{st}}, func(context.Context, ID) error { return nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go te.e.runSchedule(ctx, 0, st)
+	convergetest.Await(t, func() bool { return runCount(te) == 4 })
+	cursorKey := te.e.key("sched", "0", "cursor")
+	convergetest.Await(t, func() bool {
+		_, ok, err := te.e.deps.KV.Get(context.Background(), cursorKey)
+		return err == nil && !ok
+	})
+	if err := te.e.deps.KV.Set(context.Background(), cursorKey, []byte("p1"), 0); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	visited = nil
+	mu.Unlock()
+	te.e.notifyAll(ctx)
+	seen := func() []ID {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]ID(nil), visited...)
+	}
+	convergetest.Await(t, func() bool { return len(seen()) == 4 })
+	if got := seen(); !slices.Equal(got, []ID{"a", "b", "c", "d"}) {
+		t.Fatalf("NotifyAll visited %v, want every ID from the first page on", got)
+	}
+	val, ok, err := te.e.deps.KV.Get(context.Background(), cursorKey)
+	if err != nil || !ok || string(val) != "p1" {
+		t.Fatalf("cadence cursor = %q, found %v, err %v; want %q untouched by the sweep", val, ok, err, "p1")
 	}
 }

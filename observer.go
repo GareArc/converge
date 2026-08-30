@@ -52,7 +52,7 @@ func (o Outcome) String() string {
 var (
 	ErrNotificationUndecodable = errors.New("converge: notification: undecodable")
 	ErrNotificationEmptyID     = errors.New("converge: notification: empty id")
-	ErrInboxOverflow           = errors.New("converge: notification: inbox overflow")
+	ErrNotificationOverflow    = errors.New("converge: notification: overflow")
 )
 
 type RunCompleted struct {
@@ -88,6 +88,12 @@ type NotificationDropped struct {
 }
 
 func (NotificationDropped) event() {}
+
+type NotificationSkipped struct {
+	Job string
+}
+
+func (NotificationSkipped) event() {}
 
 type JobDestroyed struct {
 	Job   string

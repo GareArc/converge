@@ -11,26 +11,27 @@ your function, and tries it again if that function fails.
 
 One question decides which kind you have:
 
-> **If this message were lost, would anything be wrong?**
+> **Can you write a query that lists everything still to be done, without
+> reading the queue?**
 
-No means reconcile — the truth is in your store and the message was only a
-[notification](glossary.md#notification). Yes means worker — the truth is in
+Yes means reconcile — the truth is in your store and a message is only a
+[notification](glossary.md#notification). No means worker — the truth is in
 the message, so it is durable, retried, and set aside on the
 [shelf](glossary.md#shelf) rather than dropped.
 
 ## Start here
 
 **[The guide](guide/index.md)** teaches the model in seven chapters. Every
-program in it is a real file under `examples/scenarios/` that you can run,
-and almost none of them need Redis, a database, or a container.
+program in it is whole and runnable, and almost none of them need Redis, a
+database, or a container.
 
 1. [Your first job](guide/01-first-job.md) — the question above, and a
    complete converge program.
 2. [One job, many things](guide/02-ids.md) — one job responsible for ten
    thousand customers, one [ID](glossary.md#id) at a time.
-3. [Telling a job to look sooner](guide/03-notifications.md) — the
-   [inbox](glossary.md#inbox), `Notify` from another binary, and reading a
-   queue some other system already writes.
+3. [Telling a job to look sooner](guide/03-notifications.md) — the job's
+   [notifications](glossary.md#notifications), `Notify` from another binary,
+   and reading a source some other system already writes.
 4. [When the message is the work](guide/04-worker.md) — tasks, retries, the
    three ways to stop early, and the shelf.
 5. [Where a job runs](guide/05-run-modes.md) — three values, one rule, and
@@ -43,7 +44,7 @@ and almost none of them need Redis, a database, or a container.
 
 ## When you have a specific problem
 
-**[The cookbook](cookbook/index.md)** works six of them end to end.
+**[The cookbook](cookbook/index.md)** works seven of them end to end.
 
 - [Work that takes a while](cookbook/durable-work.md) — half an hour of
   transcoding on a surface built for half a second of work.
@@ -57,12 +58,14 @@ and almost none of them need Redis, a database, or a container.
   a message agree about what happened.
 - [The safety net](cookbook/safety-net.md) — the job nobody sends anything
   to, which exists so nothing is ever permanently wrong.
+- [Credential sync from a Python service](cookbook/python-producer.md) — a
+  producer that cannot import your package, and the one `XADD` it writes.
 
 ## When you want the exact signature
 
 The reference covers every exported name, its defaults, and what it costs.
 
-- [Kernel](reference/kernel.md) — `Options`, `Runtime`, `Producer`, the
+- [Kernel](reference/kernel.md) — `Options`, `Runtime`, `Scope`, the
   ports, the events, and the stats types.
 - [Reconcile](reference/reconcile.md) — `Spec`, `Register`, `Periodic`,
   triggers, cadences, ID sources, and versions.
@@ -70,6 +73,9 @@ The reference covers every exported name, its defaults, and what it costs.
   three outcomes, and the shelf.
 - [Operations](reference/operations.md) — the debug routes, the JSON, how
   stale each number is, requeueing a shelved message, and destroying a job.
+- [Wire](reference/wire.md) — what a producer in any language writes: channel
+  names, the two payload shapes, the headers, and the Redis Streams
+  encoding.
 - [Adapters and test support](reference/adapters.md) — `inmem`, convredis,
   convotel, convkratos, `portcheck`, and `convergetest`.
 - [Converge terms in other systems](reference/prior-art.md) — the same ideas

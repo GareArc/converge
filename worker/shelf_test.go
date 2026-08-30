@@ -28,8 +28,8 @@ func TestShelfListAndGetSeeRealShelvedMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return len(shelfKeys(t, w.KV, "job")) == 1 })
@@ -49,8 +49,8 @@ func TestShelfListAndGetSeeRealShelvedMessage(t *testing.T) {
 	if entry.Task != "job" {
 		t.Fatalf("Task = %q, want %q", entry.Task, "job")
 	}
-	if entry.Queue != wInbox("job") {
-		t.Fatalf("Queue = %q, want %q", entry.Queue, wInbox("job"))
+	if entry.Queue != wQueue("job") {
+		t.Fatalf("Queue = %q, want %q", entry.Queue, wQueue("job"))
 	}
 	if entry.Reason != reasonMaxAttempts {
 		t.Fatalf("Reason = %q, want %q", entry.Reason, reasonMaxAttempts)
@@ -164,8 +164,8 @@ func TestShelfRequeueFullLoopSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.Runtime(t)
-	p := wProducer(t, w.MQ, w.Clock())
-	if err := tk.Enqueue(context.Background(), p, "hello", EnqueueOpts{}); err != nil {
+	p := mustProducer(t, tk, wScope(w.MQ, w.Clock()))
+	if err := p.Enqueue(context.Background(), "hello", EnqueueOpts{}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool { return len(shelfKeys(t, w.KV, "job")) == 1 })
@@ -238,7 +238,7 @@ func TestShelfRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 	rt := w.Build(t)
 	rec := ShelvedMessage{
 		Task:       "job",
-		Queue:      wInbox("job"),
+		Queue:      wQueue("job"),
 		MessageID:  "anon-deadbeef",
 		Attempt:    1,
 		Reason:     reasonMaxAttempts,
@@ -261,7 +261,7 @@ func TestShelfRequeueWithoutMessageIDStaysAnonymous(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ch := startConsumer(t, w.MQ, wInbox("job"))
+	ch := startConsumer(t, w.MQ, wQueue("job"))
 	shelf, err := ShelfFrom(rt, "job")
 	if err != nil {
 		t.Fatal(err)
@@ -334,7 +334,7 @@ func TestShelfListDedupesAcrossScanPages(t *testing.T) {
 	ctx := context.Background()
 	rec := ShelvedMessage{
 		Task:       "job",
-		Queue:      wInbox("job"),
+		Queue:      wQueue("job"),
 		MessageID:  "id-0",
 		Attempt:    1,
 		Reason:     reasonMaxAttempts,
@@ -383,7 +383,7 @@ func TestShelfPurgeAllRemovesEverything(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		rec := ShelvedMessage{
 			Task:       "job",
-			Queue:      wInbox("job"),
+			Queue:      wQueue("job"),
 			MessageID:  fmt.Sprintf("id-%d", i),
 			Attempt:    1,
 			Reason:     reasonMaxAttempts,
@@ -467,7 +467,7 @@ func TestShelfRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 	rt := w.Build(t)
 	rec := ShelvedMessage{
 		Task:       "job",
-		Queue:      wInbox("job"),
+		Queue:      wQueue("job"),
 		MessageID:  "msg-1",
 		Attempt:    1,
 		Reason:     reasonMaxAttempts,
@@ -510,7 +510,7 @@ func TestShelfRequeuePublishFailureLeavesRecordIntact(t *testing.T) {
 	if got.MessageID != rec.MessageID {
 		t.Fatalf("got.MessageID = %q, want %q", got.MessageID, rec.MessageID)
 	}
-	if n := len(cmq.Published(wInbox("job"))); n != 0 {
+	if n := len(cmq.Published(wQueue("job"))); n != 0 {
 		t.Fatalf("Published(job) = %d messages, want 0 (publish must have failed before the record was deleted)", n)
 	}
 }
@@ -523,7 +523,7 @@ func TestShelfListAndPurgeAllFollowScanCursorPastOnePage(t *testing.T) {
 	for i := 0; i < total; i++ {
 		rec := ShelvedMessage{
 			Task:       "job",
-			Queue:      wInbox("job"),
+			Queue:      wQueue("job"),
 			MessageID:  fmt.Sprintf("id-%03d", i),
 			Attempt:    1,
 			Reason:     reasonMaxAttempts,
@@ -614,7 +614,7 @@ func TestShelfPurgeAllPartialFailureLeavesRemainder(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		rec := ShelvedMessage{
 			Task:       "job",
-			Queue:      wInbox("job"),
+			Queue:      wQueue("job"),
 			MessageID:  fmt.Sprintf("id-%d", i),
 			Attempt:    1,
 			Reason:     reasonMaxAttempts,
@@ -654,7 +654,7 @@ func TestShelfRequeueNoMQErrors(t *testing.T) {
 	ctx := context.Background()
 	rec := ShelvedMessage{
 		Task:       "job",
-		Queue:      wInbox("job"),
+		Queue:      wQueue("job"),
 		MessageID:  "msg-1",
 		Attempt:    1,
 		Reason:     reasonMaxAttempts,

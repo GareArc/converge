@@ -13,7 +13,7 @@ import (
 
 func okSpec() Spec {
 	return Spec{
-		Name:      "job",
+		Job:       NewJob("job", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Hour))},
 	}
@@ -26,8 +26,8 @@ func TestSpecValidationMatrix(t *testing.T) {
 		wantErr string
 	}{
 		{"valid", func(s *Spec) {}, ""},
-		{"empty name", func(s *Spec) { s.Name = "" }, "Name"},
-		{"slash in name", func(s *Spec) { s.Name = "a/b" }, "must not contain"},
+		{"empty name", func(s *Spec) { s.Job = NewJob("", JobOpts{}) }, "required"},
+		{"slash in name", func(s *Spec) { s.Job = NewJob("a/b", JobOpts{}) }, "must not contain"},
 		{"nil reconcile func", func(s *Spec) { s.Reconcile = nil }, "Reconcile"},
 		{"negative concurrency", func(s *Spec) { s.Concurrency = -1 }, "Concurrency"},
 		{"negative timeout", func(s *Spec) { s.Timeout = -time.Second }, "Timeout"},
@@ -36,17 +36,14 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"bad cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Every(-time.Second))} }, "positive"},
 		{"zero cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cadence{})} }, "Cadence"},
 		{"bad cron", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cron("@daily", CronOpts{}))} }, "descriptors"},
-		{"notifications-from trigger without queue", func(s *Spec) {
-			s.Triggers = append(s.Triggers, NotificationsFrom("", NotificationsOpts{ID: RawID()}))
-		}, "queue"},
+		{"notifications-from trigger without a source", func(s *Spec) {
+			s.Triggers = append(s.Triggers, NotificationsFrom("", nil, RawID()))
+		}, "source"},
 		{"notifications-from trigger without id function", func(s *Spec) {
-			s.Triggers = append(s.Triggers, NotificationsFrom("q", NotificationsOpts{}))
+			s.Triggers = append(s.Triggers, NotificationsFrom("q", nil, nil))
 		}, "ID function"},
-		{"notifications trigger sets MQ", func(s *Spec) {
-			s.Triggers = append(s.Triggers, Notifications(NotificationsOpts{MQ: bareMQ{}}))
-		}, "MQ"},
 		{"no periodic trigger", func(s *Spec) {
-			s.Triggers = []Trigger{Notifications(NotificationsOpts{})}
+			s.Triggers = []Trigger{Notifications()}
 		}, "Schedule trigger"},
 		{"no triggers at all", func(s *Spec) { s.Triggers = nil }, "Schedule trigger"},
 	}
@@ -76,7 +73,7 @@ func TestCompetingIsRejectedOnReconcile(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	err := Register(rt, Spec{
-		Name:      "nope",
+		Job:       NewJob("nope", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers:  []Trigger{Schedule(SingleID(), Every(time.Minute))},
 		RunMode:   converge.Competing,
@@ -93,7 +90,7 @@ func TestOnAllReplicasAcceptsVersionsAndPagedIDs(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	if err := Register(rt, Spec{
-		Name:      "broadcast-paged",
+		Job:       NewJob("broadcast-paged", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
 		Triggers: []Trigger{Schedule(
 			IDsByPage(func(context.Context, string) ([]ID, string, error) { return nil, "", nil }),
@@ -115,9 +112,9 @@ func TestSpecRequiresASchedule(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	err := Register(rt, Spec{
-		Name:      "notifications-only",
+		Job:       NewJob("notifications-only", JobOpts{}),
 		Reconcile: func(context.Context, ID) error { return nil },
-		Triggers:  []Trigger{Notifications(NotificationsOpts{})},
+		Triggers:  []Trigger{Notifications()},
 	})
 	if err == nil {
 		t.Fatal("a job with no Schedule trigger was accepted")
@@ -208,8 +205,8 @@ func TestEngineInfoRendersTriggerComposition(t *testing.T) {
 	s := okSpec()
 	s.Triggers = []Trigger{
 		Schedule(SingleID(), Every(time.Hour)),
-		Notifications(NotificationsOpts{}),
-		NotificationsFrom("deploy-hints", NotificationsOpts{ID: RawID()}),
+		Notifications(),
+		NotificationsFrom("deploy-hints", nil, RawID()),
 	}
 	e, err := newEngine(s)
 	if err != nil {
@@ -293,21 +290,5 @@ func TestEngineInfoRendersPinnedDisplayFormats(t *testing.T) {
 				t.Fatalf("Settings[%q] = %q, want %q", c.key, got, c.want)
 			}
 		})
-	}
-}
-
-func TestNotificationsRejectsAnIDFunctionItWouldIgnore(t *testing.T) {
-	h := convergetest.New(t)
-	rt := h.Build(t)
-	err := Register(rt, Spec{
-		Name:      "local-notifications-with-id",
-		Reconcile: func(context.Context, ID) error { return nil },
-		Triggers: []Trigger{
-			Schedule(SingleID(), Every(time.Hour)),
-			Notifications(NotificationsOpts{ID: func([]byte) (ID, error) { return "x", nil }}),
-		},
-	})
-	if err == nil {
-		t.Fatal("Notifications accepted an ID function it never calls")
 	}
 }

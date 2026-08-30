@@ -1,8 +1,6 @@
 # Waiting for something to become true
 
 > Assumes [chapter 3, telling a job to look sooner](../guide/03-notifications.md).
-> The program is
-> [`a13-namespace-reconciler`](https://github.com/GareArc/converge/blob/main/examples/scenarios/a13-namespace-reconciler/main.go).
 
 A whole family of work has the same shape: you ask another system to make
 something so, and it says *working on it*. Kubernetes accepts a namespace and
@@ -37,7 +35,7 @@ direction and wasted calls in the other, and nothing worse.
 ```go
 Triggers: []reconcile.Trigger{
     reconcile.Schedule(reconcile.IDsByPage(customers.page), reconcile.Every(30*time.Minute)),
-    reconcile.Notifications(reconcile.NotificationsOpts{}),
+    reconcile.Notifications(),
 },
 ```
 

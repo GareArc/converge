@@ -6,6 +6,8 @@ import (
 	"fmt"
 )
 
+var Skip = errors.New("reconcile: not for this job")
+
 func RawID() func(payload []byte) (ID, error) {
 	return func(payload []byte) (ID, error) {
 		if len(payload) == 0 {

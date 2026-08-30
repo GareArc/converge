@@ -21,26 +21,23 @@ kernel owns the ports (MQ, Lease, KV, Clock, Observer), the runtime, and the
 shared value types; surfaces and adapters plug in around it.
 
 The prose that teaches this lives in `docs/`: the seven-chapter guide
-(`docs/guide/`), the six cookbook pages (`docs/cookbook/`), the six-page API
-reference (`docs/reference/`), and `docs/glossary.md`. `README.md` and
+(`docs/guide/`), the seven cookbook pages (`docs/cookbook/`), the seven-page
+API reference (`docs/reference/`), and `docs/glossary.md`. `README.md` and
 `docs/index.md` are the two front doors and link all of it.
 
 ## Verify
 
 ```sh
 set -e
-make check                      # gofmt gate, vet, dependency gate, race tests, scenarios — every module
-for m in . adapters/redis adapters/otel bridges/kratos examples; do  # ./... does not cross module boundaries
+make check                      # gofmt gate, vet, dependency gate, race tests — every module
+for m in . adapters/redis adapters/otel bridges/kratos; do  # ./... does not cross module boundaries
   (cd "$m" && go test -race -count=2 ./...)
 done
 (cd website && pnpm install --frozen-lockfile && pnpm run docs:build)  # the site, when docs/ changed
 ```
 
-`make check` ends by running all fifteen scenarios under `examples/scenarios`
-in parallel (`scripts/scenarios.sh`, about 13s): they are the acceptance
-criteria and the source of every tagged snippet in the documentation, so
-compiling them is not enough. `a14-foreign-queue` exits 0 without a Redis; it
-says so and skips its Redis path.
+`make check` is `fmt-check vet depcheck test`: the gofmt gate, `go vet`, the
+core-module dependency gate, and `go test -race` across all four modules.
 
 The VitePress build is the only check that catches a page that renders on
 GitHub but breaks the site — an unescaped angle bracket, or a link out of
@@ -141,14 +138,14 @@ URLs). Never push without explicit maintainer approval.
 /               kernel: ports (mq.go, lease.go, kv.go, clock.go, observer.go),
                 value types (message.go, runmode.go, rate.go, lifecycle.go),
                 runtime (converge.go, runtime.go, jobdeps.go, middleware.go,
-                stats.go), producer (producer.go), slog Observer
-                (logobserver.go)
+                stats.go), slog Observer (logobserver.go)
 internal/sig    sealed control-signal detection
 internal/hook   registration seam between kernel and surface engines
 internal/wiring the one crossing of hook's any-typed seam: typed runtime
                 dependencies, job listing, failing IDs, and option attachment
 internal/keys   the KV and queue key layout — every key string is built here
-internal/notice the envelope on a reconcile notification: one ID, encoded once
+internal/notice the envelope on a reconcile notification: one ID, or the
+                whole job
 internal/clockctx
                 run deadlines derived from converge.Clock, not the wall clock
 internal/mw     middleware chain composition
@@ -173,8 +170,6 @@ adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
 adapters/otel (convotel)     Observer over OpenTelemetry metrics; observable
                              gauges read from `Runtime.Stats()` on collection
                              — separate module
-examples/                    runnable programs (scenarios/a01..a15, the fifteen
-                             acceptance scenarios) — separate module
 bridges/kratos (convkratos)  Runtime as a kratos transport.Server — separate module
 docs/                        the documentation: guide/, cookbook/, reference/,
                              glossary.md, index.md

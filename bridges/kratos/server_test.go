@@ -106,7 +106,7 @@ func TestStopReportsAnIncompleteDrain(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:      "blocker",
+		Job:       reconcile.NewJob("blocker", reconcile.JobOpts{}),
 		Reconcile: r.Reconcile,
 		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour))},
 	}); err != nil {
@@ -147,7 +147,7 @@ func TestStartReturnsTheRuntimeErrorUnchanged(t *testing.T) {
 	})
 	rt := h.Build(t)
 	if err := reconcile.Register(rt, reconcile.Spec{
-		Name:      "unreachable",
+		Job:       reconcile.NewJob("unreachable", reconcile.JobOpts{}),
 		Reconcile: func(context.Context, reconcile.ID) error { return nil },
 		Triggers:  []reconcile.Trigger{reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour))},
 	}); err != nil {

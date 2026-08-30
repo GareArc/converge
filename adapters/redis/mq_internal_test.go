@@ -34,7 +34,7 @@ func TestStreamsMQReconcilesDeepPEL(t *testing.T) {
 	if _, err := client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    reservedGroup,
 		Consumer: "foreign",
-		Streams:  []string{streamKey(queue), newEntriesID},
+		Streams:  []string{queue, newEntriesID},
 		Count:    total,
 	}).Result(); err != nil {
 		t.Fatal(err)

@@ -2,12 +2,12 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/backoff"
-	"github.com/GareArc/converge/internal/keys"
 	"github.com/GareArc/converge/internal/notice"
 )
 
@@ -27,26 +27,21 @@ const (
 
 var triggerRestartCurve = backoff.Curve{Min: triggerRestartMin, Max: triggerRestartMax}
 
-type NotificationsOpts struct {
-	ID func(payload []byte) (ID, error)
-	MQ converge.MQ
-}
-
 type notificationTrigger struct {
-	queue   string
+	source  string
 	foreign bool
-	opts    NotificationsOpts
+	id      func(payload []byte) (ID, error)
 
 	mq        converge.MQ
 	broadcast bool
 }
 
-func Notifications(o NotificationsOpts) Trigger {
-	return &notificationTrigger{opts: o}
+func Notifications() Trigger {
+	return &notificationTrigger{}
 }
 
-func NotificationsFrom(queue string, o NotificationsOpts) Trigger {
-	return &notificationTrigger{queue: queue, foreign: true, opts: o}
+func NotificationsFrom(source string, mq converge.MQ, id func(payload []byte) (ID, error)) Trigger {
+	return &notificationTrigger{source: source, foreign: true, mq: mq, id: id}
 }
 
 func (t *notificationTrigger) Run(ctx context.Context, notify func(ID)) error {
@@ -54,43 +49,39 @@ func (t *notificationTrigger) Run(ctx context.Context, notify func(ID)) error {
 	return ctx.Err()
 }
 
-func (t *notificationTrigger) decode(payload []byte) (ID, error) {
+func (t *notificationTrigger) decode(payload []byte) (notice.Notification, error) {
 	if t.foreign {
-		return t.opts.ID(payload)
+		id, err := t.id(payload)
+		return notice.Notification{ID: string(id)}, err
 	}
-	id, err := notice.Decode(payload)
-	if err != nil {
-		return "", err
-	}
-	return ID(id), nil
+	return notice.Decode(payload)
 }
 
 func (t *notificationTrigger) bind(e *engine) error {
 	if !t.foreign {
 		e.mu.Lock()
-		t.queue = keys.Inbox(e.deps.Namespace, e.cfg.name)
+		t.source = e.cfg.job.NotificationsName(e.deps.Namespace)
 		e.mu.Unlock()
 	}
-	t.mq = t.opts.MQ
 	if t.mq == nil {
 		t.mq = e.deps.MQ
 	}
 	if t.mq == nil {
 		if t.foreign {
-			return fmt.Errorf("reconcile: job %q: NotificationsFrom(%q) needs an MQ", e.cfg.name, t.queue)
+			return fmt.Errorf("reconcile: job %q: NotificationsFrom(%q) needs an MQ", e.cfg.job.Name(), t.source)
 		}
-		return fmt.Errorf("reconcile: job %q: Notifications needs Options.MQ", e.cfg.name)
+		return fmt.Errorf("reconcile: job %q: Notifications needs Options.MQ", e.cfg.job.Name())
 	}
 	switch e.cfg.runMode {
 	case converge.OnAllReplicas:
 		if _, ok := t.mq.(converge.BroadcastConsumer); !ok {
-			return fmt.Errorf("reconcile: job %q: notifications from %q need the BroadcastConsumer capability", e.cfg.name, t.queue)
+			return fmt.Errorf("reconcile: job %q: notifications from %q need the BroadcastConsumer capability", e.cfg.job.Name(), t.source)
 		}
 		t.broadcast = true
 	case converge.OnOneReplica:
 	default:
 		if _, ok := t.mq.(converge.GroupConsumer); !ok {
-			return fmt.Errorf("reconcile: job %q: notifications from %q need the GroupConsumer capability", e.cfg.name, t.queue)
+			return fmt.Errorf("reconcile: job %q: notifications from %q need the GroupConsumer capability", e.cfg.job.Name(), t.source)
 		}
 	}
 	return nil
@@ -115,11 +106,11 @@ func (e *engine) runNotifications(ctx context.Context, t *notificationTrigger) {
 	e.supervise(ctx, func() {
 		switch e.cfg.runMode {
 		case converge.OnAllReplicas:
-			t.mq.(converge.BroadcastConsumer).ConsumeBroadcast(ctx, t.queue, deliver)
+			t.mq.(converge.BroadcastConsumer).ConsumeBroadcast(ctx, t.source, deliver)
 		case converge.OnOneReplica:
-			t.mq.Consume(ctx, t.queue, deliver)
+			t.mq.Consume(ctx, t.source, deliver)
 		default:
-			t.mq.(converge.GroupConsumer).ConsumeGroup(ctx, t.queue, e.key("notifications"), deliver)
+			t.mq.(converge.GroupConsumer).ConsumeGroup(ctx, t.source, e.key("notifications"), deliver)
 		}
 	})
 }
@@ -145,11 +136,16 @@ func (e *engine) supervise(ctx context.Context, run func()) {
 }
 
 func (e *engine) deliverNotification(ctx context.Context, t *notificationTrigger, d converge.Delivery) {
-	id, err := t.decode(d.Message().Payload)
-	if err != nil {
-		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.name, Err: converge.ErrNotificationUndecodable})
-	} else {
-		e.notifyVia(ctx, e.idQueueRef(), id, causeNotification)
+	n, err := t.decode(d.Message().Payload)
+	switch {
+	case errors.Is(err, Skip):
+		e.deps.Observer.Observe(converge.NotificationSkipped{Job: e.cfg.job.Name()})
+	case err != nil:
+		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), Err: converge.ErrNotificationUndecodable})
+	case n.All:
+		e.notifyAll(ctx)
+	default:
+		e.notifyVia(ctx, e.idQueueRef(), ID(n.ID), causeNotification)
 	}
 	d.Ack(ctx)
 }

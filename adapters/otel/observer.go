@@ -26,6 +26,7 @@ type observer struct {
 	discarded        metric.Int64Counter
 	leaseMoves       metric.Int64Counter
 	notifyDropped    metric.Int64Counter
+	notifySkipped    metric.Int64Counter
 	scheduleOverruns metric.Int64Counter
 	destroyed        metric.Int64Counter
 }
@@ -47,6 +48,7 @@ func NewObserver(meter metric.Meter) (converge.Observer, error) {
 		{&o.discarded, "converge.discarded", "Runs whose outcome was Discarded."},
 		{&o.leaseMoves, "converge.lease.transitions", "Job lease acquisitions and losses."},
 		{&o.notifyDropped, "converge.notifications.dropped", "Notifications dropped before reaching a job."},
+		{&o.notifySkipped, "converge.notifications.skipped", "Notifications an ID function declined as not for this job."},
 		{&o.scheduleOverruns, "converge.schedule.overruns", "Scheduled passes that started later than due."},
 		{&o.destroyed, "converge.destroyed", "Jobs that reached the Destroyed state."},
 	} {
@@ -81,6 +83,8 @@ func (o *observer) Observe(e converge.Event) {
 		))
 	case converge.NotificationDropped:
 		o.notifyDropped.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
+	case converge.NotificationSkipped:
+		o.notifySkipped.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
 	case converge.ScheduleOverrun:
 		o.scheduleOverruns.Add(ctx, 1, metric.WithAttributes(attribute.String(attrJob, v.Job)))
 	case converge.JobDestroyed:
@@ -97,7 +101,7 @@ func runStatus(err error) string {
 
 func RegisterGauges(meter metric.Meter, rt *converge.Runtime) error {
 	backlog, err := meter.Int64ObservableGauge("converge.backlog",
-		metric.WithDescription("Cluster-wide inbox depth as of this replica's last periodic poll (stale by up to one lease heartbeat); omitted when not known."))
+		metric.WithDescription("Cluster-wide backlog depth as of this replica's last periodic poll (stale by up to one lease heartbeat); omitted when not known."))
 	if err != nil {
 		return err
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/GareArc/converge"
 	"github.com/GareArc/converge/internal/hook"
+	"github.com/GareArc/converge/internal/wiring"
 )
 
 const (
@@ -45,11 +46,19 @@ func (d decodeError) Error() string { return "worker: decode: " + d.err.Error() 
 func (d decodeError) Unwrap() error { return d.err }
 
 func Handle[T any](rt *converge.Runtime, t Task[T], fn func(ctx context.Context, payload T) error, o HandleOpts) error {
-	if t.err != nil {
-		return fmt.Errorf("worker: Handle: %w", t.err)
+	if err := t.check(); err != nil {
+		return fmt.Errorf("worker: Handle: %w", err)
 	}
 	if fn == nil {
 		return fmt.Errorf("worker: task %q: handler fn is required", t.name)
+	}
+	deps, err := wiring.DepsFor(rt)
+	if err != nil {
+		return err
+	}
+	queue := t.QueueName(deps.Namespace)
+	if err := refuseSharedQueue(rt, t.name, queue); err != nil {
+		return err
 	}
 	run := func(ctx context.Context, payload []byte) error {
 		var p T
@@ -58,11 +67,24 @@ func Handle[T any](rt *converge.Runtime, t Task[T], fn func(ctx context.Context,
 		}
 		return fn(ctx, p)
 	}
-	e, err := newEngine(taskInfo{name: t.name, version: t.version}, run, o)
+	e, err := newEngine(taskInfo{name: t.name, queue: queue, version: t.version}, run, o)
 	if err != nil {
 		return err
 	}
 	return hook.RegisterJob(rt, e)
+}
+
+func refuseSharedQueue(rt *converge.Runtime, task, queue string) error {
+	infos, err := wiring.Jobs(rt)
+	if err != nil {
+		return err
+	}
+	for _, info := range infos {
+		if info.Surface == converge.SurfaceWorker && info.Queue == queue {
+			return fmt.Errorf("worker: task %q: queue %q is already read by task %q", task, queue, info.Job)
+		}
+	}
+	return nil
 }
 
 func newEngine(t taskInfo, run runFunc, o HandleOpts) (*engine, error) {

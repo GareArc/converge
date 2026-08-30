@@ -52,7 +52,10 @@ func (e envelope) enqueuedAt() time.Time {
 	return e.d.EnqueuedAt()
 }
 
-func (e envelope) schemaVersion() string { return e.m.Headers[converge.HeaderSchemaVersion] }
+func (e envelope) schemaVersion() (string, bool) {
+	v, ok := e.m.Headers[converge.HeaderSchemaVersion]
+	return v, ok
+}
 
 func (e envelope) snoozes() int {
 	n, _ := strconv.Atoi(e.m.Headers[converge.HeaderSnoozes])

@@ -79,6 +79,7 @@ var _ = []Event{
 	LeaseChanged{},
 	ScheduleOverrun{},
 	NotificationDropped{},
+	NotificationSkipped{},
 	JobDestroyed{},
 }
 
