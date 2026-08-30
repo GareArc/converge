@@ -33,12 +33,6 @@ func (m *recordingMQ) Consume(ctx context.Context, queue string, deliver func(De
 	return ctx.Err()
 }
 
-func (m *recordingMQ) sent() []recordedPublish {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]recordedPublish(nil), m.published...)
-}
-
 type fixedClock struct{ t time.Time }
 
 func (c fixedClock) Now() time.Time                         { return c.t }

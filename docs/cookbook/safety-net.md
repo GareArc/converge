@@ -107,7 +107,7 @@ difference between "we ran the backfill" and "the tier is never wrong".
 converge reads your counter before the run and again after it. If it moved,
 the ID is queued again, because whatever the function decided was decided
 from state that has since changed. Buying seats mid-run bumps the account's
-generation, and the log says so:
+generation, so `a-1001` is queued again and runs a second time:
 
 ```text
 run completed job=account-plan-tier id=a-1001 attempt=1 outcome=succeeded

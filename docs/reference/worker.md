@@ -378,7 +378,11 @@ func (s *Shelf) PurgeAll(ctx context.Context) error
 
 The durable store a message is set aside in when converge will not try it
 again. It lives in `Options.KV`, one record per message ID, under a key
-namespaced by the job. Nothing leaves it on its own.
+namespaced by the job. Nothing leaves it on its own. That is why a foreign
+producer whose distinct entries can be byte-identical must set its own
+`converge.message-id`: absent one the ID is derived from the bytes, so the
+second shelving overwrites the first record — see
+[the wire reference](wire.md#a-worker-queue-entry).
 
 There are exactly six ways to arrive:
 

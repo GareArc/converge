@@ -96,6 +96,12 @@ Two of those are compared, not parsed loosely:
 - **`converge.attempt` must be a non-negative decimal integer.** A value that
   is not shelves the message with reason `undecodable`.
 
+The synthetic `converge.message-id` is a pure function of `kind` and
+`payload`, so two entries carrying the same bytes are **one identity**: each
+one runs, but they share a single shelf record, and the later shelving
+overwrites the earlier. A producer whose distinct entries can be
+byte-identical must set its own `converge.message-id`.
+
 A producer that sets any `converge.*` header is **trusted**: setting one
 means taking over that field. Most producers should set none. The minimum
 entry is the payload alone (plus `enq` on Redis Streams — see
@@ -119,8 +125,7 @@ conflicts with an `id`.
 `{"all":true}` on a job with one ID runs that ID; on a job with many it
 starts a sweep now, on every `Schedule` trigger the job has and without
 moving the cadence. It is for the producer that just changed many IDs at
-once and would otherwise notify each. On a job with many IDs and no
-`Schedule` trigger there is nothing to sweep, and it does nothing.
+once and would otherwise notify each.
 
 ## A list element
 
@@ -186,5 +191,6 @@ are not yours to write, and not yours to collide with either:
    any channel a foreign producer writes to.
 3. **Declare a channel name beginning `convredis:p:`, `convredis:a:` or
    `convredis:d:`.** Those are the Streams adapter's own key prefixes, and a
-   channel named into that space silently shares storage with another
-   channel's bookkeeping.
+   channel named into that space collides with another channel's bookkeeping
+   — loudly, as a Redis `WRONGTYPE` error, because those keys are sorted sets
+   and a hash while a channel is a stream.

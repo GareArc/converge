@@ -188,7 +188,9 @@ Other behaviour worth knowing:
   `Options.Namespace`; the namespace is already part of a derived queue name.
   Those three prefixes are therefore reserved: a **declared** channel name
   beginning `convredis:p:`, `convredis:a:` or `convredis:d:` lands in another
-  channel's bookkeeping space, and nothing will tell you.
+  channel's bookkeeping space. It is not silent — those keys are sorted sets
+  and a hash while a channel is a stream, so the collision comes back from
+  `Publish` as a Redis `WRONGTYPE` error.
 - **A stream entry carries `payload`, `enq`, and optionally `kind` and
   `headers`.** `enq` is RFC 3339 with an offset, nanoseconds optional, and it
   is required: an entry the adapter cannot decode — including one a foreign

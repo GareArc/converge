@@ -34,8 +34,9 @@ is derivable from your store and you have not written that column yet: the
 workspace exists or it does not, the credential is expired or it is not, and
 the function can look. Or the verb really is an instruction nothing can
 re-derive, and what you have is a [worker](../glossary.md#worker) task you
-have not declared yet. A notification carries an ID and nothing else, and
-that is not a limitation to work around: it is what makes losing one free.
+have not declared yet. A notification carries an ID — or the marker that
+means *all* — and nothing else, and that is not a limitation to work around:
+it is what makes losing one free.
 
 ## A second trigger
 

@@ -395,7 +395,8 @@ id := func(payload []byte) (reconcile.ID, error) {
 ```
 
 Both return a function, so both are called at spec-construction time:
-`ID: reconcile.IDFromJSON("workspace_id")`.
+`reconcile.NotificationsFrom("their-stream", nil,
+reconcile.IDFromJSON("workspace_id"))`.
 
 ## Versions
 

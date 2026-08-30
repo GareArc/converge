@@ -154,10 +154,9 @@ without touching the job.
 
 **`reconcile.Periodic`** registers the job under the name
 `generate-invoices`, with the **schedule** it runs on, the function, and its
-options. The name is not decoration: it is how other code addresses this
-job, and it is what appears in every log line and every metric. `Namespace`
-scopes it, so two services on one Redis can each have a
-`generate-invoices` without colliding.
+options. The name is not decoration: it is what appears in every log line,
+every metric and every stats entry. `Namespace` scopes it, so two services
+on one Redis can each have a `generate-invoices` without colliding.
 
 **`reconcile.Cron("5 0 * * *", reconcile.CronOpts{Location: tokyo})`** is
 the schedule. Five cron fields, in a location you name; `reconcile.Every(d)`

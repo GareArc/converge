@@ -109,11 +109,11 @@ than a partial sum, because a partial sum would be a lie.
 `NewListMQ` exists for this one job and is honest about the rest — the full
 list is in the [adapters reference](../reference/adapters.md#list-mq):
 
-- A list cannot be a worker's queue. `worker.Handle` on a runtime whose `MQ`
-  is a list fails at `Run` with `cannot carry work` — the pop is destructive,
-  and making it safe means a processing list plus a recovery loop for entries
-  stranded by a dead process, which is exactly the half that never gets
-  written.
+- A list cannot be a worker's queue. A **durable** `worker.Handle` on a
+  runtime whose `MQ` is a list fails at `Run` with `cannot carry work` — the
+  pop is destructive, and making it safe means a processing list plus a
+  recovery loop for entries stranded by a dead process, which is exactly the
+  half that never gets written.
 - It has no consumer groups and no broadcast, so a job reading a foreign list
   runs under the default [run mode](../glossary.md#run-mode), `OnOneReplica`.
   Setting `OnAllReplicas` fails at `Run` with the missing capability named.
