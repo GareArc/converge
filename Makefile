@@ -1,7 +1,8 @@
 GO ?= go
 MODULES := . adapters/redis adapters/otel bridges/kratos
+EXAMPLES := examples/gin
 
-.PHONY: test vet fmt-check depcheck cover check
+.PHONY: test vet fmt-check depcheck cover examples check
 
 test:
 	@for m in $(MODULES); do (cd $$m && $(GO) test -race ./...) || exit 1; done
@@ -18,4 +19,7 @@ depcheck:
 cover:
 	$(GO) test -race -coverprofile=coverage.out ./...
 
-check: fmt-check vet depcheck test
+examples:
+	@for m in $(EXAMPLES); do (cd $$m && $(GO) build ./... && $(GO) vet ./...) || exit 1; done
+
+check: fmt-check vet depcheck examples test

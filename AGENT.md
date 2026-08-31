@@ -170,6 +170,8 @@ adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
 adapters/otel (convotel)     Observer over OpenTelemetry metrics; observable
                              gauges read from `Runtime.Stats()` on collection
                              — separate module
+examples/                    framework services showing converge inside a real
+                             application — one module per framework, no tests
 bridges/kratos (convkratos)  Runtime as a kratos transport.Server — separate module
 docs/                        the documentation: guide/, cookbook/, reference/,
                              glossary.md, index.md
