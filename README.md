@@ -363,6 +363,8 @@ came for:
   [converge terms in other systems](docs/reference/prior-art.md).
 - **[The glossary](docs/glossary.md)** — every converge-specific word,
   defined once, in plain language.
+- **[The examples](examples/README.md)** — complete services with converge
+  wired into the framework you already use.
 
 Contributing to converge itself starts with [`AGENT.md`](AGENT.md), which
 holds the verification commands and the design rules, and
