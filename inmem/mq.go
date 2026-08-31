@@ -1,3 +1,5 @@
+// Package inmem supplies stdlib-only MQ, Lease, and KV implementations so a
+// converge Runtime runs and tests without external services.
 package inmem
 
 import (

@@ -1,3 +1,6 @@
+// Package convergetest is the test harness for jobs built on converge: a
+// Runtime backed by in-process ports, a fake Clock advanced by hand, and
+// verbs that wait for the system to settle instead of the wall clock.
 package convergetest
 
 import (

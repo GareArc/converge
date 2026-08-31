@@ -1,3 +1,7 @@
+// Package worker is converge's edge-triggered surface: the message is the
+// work, carried at-least-once with retry, and shelved once the retries run
+// out. Use it when the truth lives in the message itself, not in a store
+// you can re-read.
 package worker
 
 import (

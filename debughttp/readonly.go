@@ -1,3 +1,5 @@
+// Package debughttp exposes read-only HTTP introspection over a Runtime's
+// jobs and failing IDs. Its handler has no mutating routes.
 package debughttp
 
 import (

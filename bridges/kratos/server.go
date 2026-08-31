@@ -1,3 +1,5 @@
+// Package convkratos wraps a converge Runtime as a kratos transport.Server,
+// so it can join the list of servers a kratos App starts and stops.
 package convkratos
 
 import (
