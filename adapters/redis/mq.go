@@ -51,8 +51,8 @@ type StreamsOpts struct {
 	Visibility time.Duration
 }
 
-func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) converge.MQ {
-	m := &streamsMQ{rdb: rdb, clock: o.Clock, visibility: o.Visibility, retention: o.Retention}
+func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) *StreamsMQ {
+	m := &StreamsMQ{rdb: rdb, clock: o.Clock, visibility: o.Visibility, retention: o.Retention}
 	if m.clock == nil {
 		m.clock = wallClock{}
 	}
@@ -62,7 +62,7 @@ func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) converge.MQ {
 	return m
 }
 
-type streamsMQ struct {
+type StreamsMQ struct {
 	rdb        *redis.Client
 	clock      converge.Clock
 	visibility time.Duration
@@ -87,7 +87,7 @@ type delayedRecord struct {
 	Payload []byte            `json:"payload,omitempty"`
 }
 
-func (m *streamsMQ) Publish(ctx context.Context, queue string, msg converge.Message) error {
+func (m *StreamsMQ) Publish(ctx context.Context, queue string, msg converge.Message) error {
 	values, err := encodeMessage(msg, m.clock.Now())
 	if err != nil {
 		return err
@@ -98,7 +98,7 @@ func (m *streamsMQ) Publish(ctx context.Context, queue string, msg converge.Mess
 	return m.trimRetention(ctx, queue)
 }
 
-func (m *streamsMQ) trimRetention(ctx context.Context, key string) error {
+func (m *StreamsMQ) trimRetention(ctx context.Context, key string) error {
 	if m.retention <= 0 {
 		return nil
 	}
@@ -109,11 +109,11 @@ func retentionMinID(now time.Time, retention time.Duration) string {
 	return strconv.FormatInt(now.Add(-retention).UnixMilli(), 10)
 }
 
-func (m *streamsMQ) Backlog(ctx context.Context, queue string) (int, error) {
+func (m *StreamsMQ) Backlog(ctx context.Context, queue string) (int, error) {
 	return m.BacklogForGroup(ctx, queue, reservedGroup)
 }
 
-func (m *streamsMQ) BacklogForGroup(ctx context.Context, queue, group string) (int, error) {
+func (m *StreamsMQ) BacklogForGroup(ctx context.Context, queue, group string) (int, error) {
 	entries, err := m.rdb.XLen(ctx, queue).Result()
 	if err != nil {
 		return 0, err
@@ -188,7 +188,7 @@ func replyFields(entry any) (map[string]any, bool) {
 	return nil, false
 }
 
-func (m *streamsMQ) PublishDelayed(ctx context.Context, queue string, msg converge.Message, delay time.Duration) error {
+func (m *StreamsMQ) PublishDelayed(ctx context.Context, queue string, msg converge.Message, delay time.Duration) error {
 	nonce, err := randomID()
 	if err != nil {
 		return err
@@ -201,15 +201,15 @@ func (m *streamsMQ) PublishDelayed(ctx context.Context, queue string, msg conver
 	return m.rdb.ZAdd(ctx, delayedKey(queue), redis.Z{Score: dueScore(due), Member: string(raw)}).Err()
 }
 
-func (m *streamsMQ) Consume(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
+func (m *StreamsMQ) Consume(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
 	return m.consumeGroup(ctx, queue, reservedGroup, deliver)
 }
 
-func (m *streamsMQ) ConsumeGroup(ctx context.Context, queue, group string, deliver func(converge.Delivery)) error {
+func (m *StreamsMQ) ConsumeGroup(ctx context.Context, queue, group string, deliver func(converge.Delivery)) error {
 	return m.consumeGroup(ctx, queue, group, deliver)
 }
 
-func (m *streamsMQ) ConsumeBroadcast(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
+func (m *StreamsMQ) ConsumeBroadcast(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
 	last := broadcastStartID
 	for {
 		if ctx.Err() != nil {
@@ -242,7 +242,7 @@ func (m *streamsMQ) ConsumeBroadcast(ctx context.Context, queue string, deliver 
 	}
 }
 
-func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliver func(converge.Delivery)) error {
+func (m *StreamsMQ) consumeGroup(ctx context.Context, queue, group string, deliver func(converge.Delivery)) error {
 	if err := m.ensureGroup(ctx, queue, group); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -281,7 +281,7 @@ func (m *streamsMQ) consumeGroup(ctx context.Context, queue, group string, deliv
 	}
 }
 
-func (m *streamsMQ) resume(ctx context.Context, queue, group string, err error) bool {
+func (m *StreamsMQ) resume(ctx context.Context, queue, group string, err error) bool {
 	if strings.HasPrefix(err.Error(), noGroupPrefix) && m.ensureGroup(ctx, queue, group) == nil {
 		return true
 	}
@@ -302,7 +302,7 @@ func pause(ctx context.Context) bool {
 	}
 }
 
-func (m *streamsMQ) ensureGroup(ctx context.Context, queue, group string) error {
+func (m *StreamsMQ) ensureGroup(ctx context.Context, queue, group string) error {
 	if err := m.trimRetention(ctx, queue); err != nil {
 		return err
 	}
@@ -313,7 +313,7 @@ func (m *streamsMQ) ensureGroup(ctx context.Context, queue, group string) error 
 	return err
 }
 
-func (m *streamsMQ) readNew(ctx context.Context, queue, group, consumer string) ([]redis.XMessage, error) {
+func (m *StreamsMQ) readNew(ctx context.Context, queue, group, consumer string) ([]redis.XMessage, error) {
 	res, err := m.rdb.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    group,
 		Consumer: consumer,
@@ -334,7 +334,7 @@ func (m *streamsMQ) readNew(ctx context.Context, queue, group, consumer string) 
 	return entries, nil
 }
 
-func (m *streamsMQ) moveDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
+func (m *StreamsMQ) moveDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
 	if err := m.releaseDelayed(ctx, queue); err != nil {
 		return err
 	}
@@ -344,7 +344,7 @@ func (m *streamsMQ) moveDue(ctx context.Context, queue, group, consumer string, 
 	return m.redeliverDue(ctx, queue, group, consumer, deliver)
 }
 
-func (m *streamsMQ) claimDue(ctx context.Context, key string, grace time.Duration) ([]string, error) {
+func (m *StreamsMQ) claimDue(ctx context.Context, key string, grace time.Duration) ([]string, error) {
 	now := m.clock.Now()
 	members, err := claimDueScript.Run(ctx, m.rdb, []string{key},
 		dueScore(now), dueScore(now.Add(grace)), readCount).StringSlice()
@@ -354,7 +354,7 @@ func (m *streamsMQ) claimDue(ctx context.Context, key string, grace time.Duratio
 	return members, err
 }
 
-func (m *streamsMQ) releaseDelayed(ctx context.Context, queue string) error {
+func (m *StreamsMQ) releaseDelayed(ctx context.Context, queue string) error {
 	key := delayedKey(queue)
 	records, err := m.claimDue(ctx, key, m.visibility)
 	if err != nil || len(records) == 0 {
@@ -377,7 +377,7 @@ func (m *streamsMQ) releaseDelayed(ctx context.Context, queue string) error {
 	return nil
 }
 
-func (m *streamsMQ) reconcilePending(ctx context.Context, queue, group string) error {
+func (m *StreamsMQ) reconcilePending(ctx context.Context, queue, group string) error {
 	start := pendingRangeMin
 	for {
 		pending, err := m.rdb.XPendingExt(ctx, &redis.XPendingExtArgs{
@@ -455,7 +455,7 @@ func entryIDParts(id string) (ms, seq uint64, ok bool) {
 	return msVal, seqVal, true
 }
 
-func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
+func (m *StreamsMQ) redeliverDue(ctx context.Context, queue, group, consumer string, deliver func(converge.Delivery)) error {
 	ids, err := m.claimDue(ctx, pendingKey(queue, group), m.visibility)
 	if err != nil {
 		return err
@@ -491,7 +491,7 @@ func (m *streamsMQ) redeliverDue(ctx context.Context, queue, group, consumer str
 	return nil
 }
 
-func (m *streamsMQ) deliverEntry(ctx context.Context, queue, group string, entry redis.XMessage, deliver func(converge.Delivery)) error {
+func (m *StreamsMQ) deliverEntry(ctx context.Context, queue, group string, entry redis.XMessage, deliver func(converge.Delivery)) error {
 	msg, enq, err := decodeMessage(entry.Values)
 	if err != nil {
 		return m.ack(ctx, queue, group, entry.ID)
@@ -512,18 +512,18 @@ func (m *streamsMQ) deliverEntry(ctx context.Context, queue, group string, entry
 	return nil
 }
 
-func (m *streamsMQ) ack(ctx context.Context, queue, group, id string) error {
+func (m *StreamsMQ) ack(ctx context.Context, queue, group, id string) error {
 	if err := m.ackStream(ctx, queue, group, id); err != nil {
 		return err
 	}
 	return m.forget(ctx, queue, group, id)
 }
 
-func (m *streamsMQ) ackStream(ctx context.Context, queue, group, id string) error {
+func (m *StreamsMQ) ackStream(ctx context.Context, queue, group, id string) error {
 	return m.rdb.XAck(ctx, queue, group, id).Err()
 }
 
-func (m *streamsMQ) ackAttempt(ctx context.Context, queue, group, id string, attempt int) (bool, error) {
+func (m *StreamsMQ) ackAttempt(ctx context.Context, queue, group, id string, attempt int) (bool, error) {
 	n, err := ackScript.Run(ctx, m.rdb,
 		[]string{attemptsKey(queue, group), queue},
 		id, strconv.Itoa(attempt), group).Int()
@@ -533,7 +533,7 @@ func (m *streamsMQ) ackAttempt(ctx context.Context, queue, group, id string, att
 	return n == 1, nil
 }
 
-func (m *streamsMQ) deferTo(ctx context.Context, queue, group, id string, attempt int, after time.Duration) (bool, error) {
+func (m *StreamsMQ) deferTo(ctx context.Context, queue, group, id string, attempt int, after time.Duration) (bool, error) {
 	n, err := deferScript.Run(ctx, m.rdb,
 		[]string{pendingKey(queue, group), attemptsKey(queue, group)},
 		id, strconv.Itoa(attempt), dueScore(m.clock.Now().Add(after))).Int()
@@ -543,7 +543,7 @@ func (m *streamsMQ) deferTo(ctx context.Context, queue, group, id string, attemp
 	return n == 1, nil
 }
 
-func (m *streamsMQ) forget(ctx context.Context, queue, group, id string) error {
+func (m *StreamsMQ) forget(ctx context.Context, queue, group, id string) error {
 	pipe := m.rdb.Pipeline()
 	pipe.ZRem(ctx, pendingKey(queue, group), id)
 	pipe.HDel(ctx, attemptsKey(queue, group), id)
@@ -551,7 +551,7 @@ func (m *streamsMQ) forget(ctx context.Context, queue, group, id string) error {
 	return err
 }
 
-func (m *streamsMQ) startAttempt(ctx context.Context, queue, group, id string) (int, error) {
+func (m *StreamsMQ) startAttempt(ctx context.Context, queue, group, id string) (int, error) {
 	pipe := m.rdb.Pipeline()
 	pipe.ZAdd(ctx, pendingKey(queue, group), redis.Z{Score: dueScore(m.clock.Now().Add(m.visibility)), Member: id})
 	attempt := pipe.HIncrBy(ctx, attemptsKey(queue, group), id, 1)

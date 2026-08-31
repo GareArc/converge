@@ -18,7 +18,7 @@ func TestStreamsMQReconcilesDeepPEL(t *testing.T) {
 	ctx := context.Background()
 	clock := convergetest.NewClock(time.Unix(1700000000, 0))
 
-	m := &streamsMQ{rdb: client, clock: clock, visibility: time.Minute}
+	m := &StreamsMQ{rdb: client, clock: clock, visibility: time.Minute}
 
 	const queue = "q"
 	const total = 2*pendingPageCount + 1

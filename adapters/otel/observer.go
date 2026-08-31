@@ -1,3 +1,5 @@
+// Package convotel implements converge's Observer port over OpenTelemetry
+// metrics, and reads observable gauges from Runtime.Stats on collection.
 package convotel
 
 import (
@@ -20,7 +22,7 @@ const (
 	statusError = "error"
 )
 
-type observer struct {
+type Observer struct {
 	runDuration      metric.Float64Histogram
 	shelved          metric.Int64Counter
 	discarded        metric.Int64Counter
@@ -31,8 +33,8 @@ type observer struct {
 	destroyed        metric.Int64Counter
 }
 
-func NewObserver(meter metric.Meter) (converge.Observer, error) {
-	o := &observer{}
+func NewObserver(meter metric.Meter) (*Observer, error) {
+	o := &Observer{}
 	h, err := meter.Float64Histogram("converge.run.duration",
 		metric.WithUnit("s"),
 		metric.WithDescription("Duration of reconcile and worker runs."))
@@ -61,7 +63,7 @@ func NewObserver(meter metric.Meter) (converge.Observer, error) {
 	return o, nil
 }
 
-func (o *observer) Observe(e converge.Event) {
+func (o *Observer) Observe(e converge.Event) {
 	ctx := context.Background()
 	switch v := e.(type) {
 	case converge.RunCompleted:

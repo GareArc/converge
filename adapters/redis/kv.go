@@ -6,21 +6,20 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/GareArc/converge"
 	"github.com/redis/go-redis/v9"
 )
 
 const scanPageSize = 200
 
-func NewKV(rdb *redis.Client) converge.KV {
-	return &kv{rdb: rdb}
+func NewKV(rdb *redis.Client) *KV {
+	return &KV{rdb: rdb}
 }
 
-type kv struct {
+type KV struct {
 	rdb *redis.Client
 }
 
-func (k *kv) Get(ctx context.Context, key string) ([]byte, bool, error) {
+func (k *KV) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	val, err := k.rdb.Get(ctx, key).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return nil, false, nil
@@ -31,7 +30,7 @@ func (k *kv) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	return val, true, nil
 }
 
-func (k *kv) SetCAS(ctx context.Context, key string, old, new []byte) (bool, error) {
+func (k *KV) SetCAS(ctx context.Context, key string, old, new []byte) (bool, error) {
 	present := "1"
 	if old == nil {
 		present = "0"
@@ -43,15 +42,15 @@ func (k *kv) SetCAS(ctx context.Context, key string, old, new []byte) (bool, err
 	return res == 1, nil
 }
 
-func (k *kv) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
+func (k *KV) Set(ctx context.Context, key string, val []byte, ttl time.Duration) error {
 	return k.rdb.Set(ctx, key, val, ttl).Err()
 }
 
-func (k *kv) Delete(ctx context.Context, key string) error {
+func (k *KV) Delete(ctx context.Context, key string) error {
 	return k.rdb.Del(ctx, key).Err()
 }
 
-func (k *kv) Scan(ctx context.Context, prefix, cursor string) ([]string, string, error) {
+func (k *KV) Scan(ctx context.Context, prefix, cursor string) ([]string, string, error) {
 	var cur uint64
 	if cursor != "" {
 		parsed, err := strconv.ParseUint(cursor, 10, 64)

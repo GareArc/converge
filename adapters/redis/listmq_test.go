@@ -80,7 +80,7 @@ func TestListMQExtendIsANoOp(t *testing.T) {
 
 func TestListMQBacklogReportsLLen(t *testing.T) {
 	client, _, _ := openMini(t)
-	mq := convredis.NewListMQ(client)
+	var mq converge.MQ = convredis.NewListMQ(client)
 	br, ok := mq.(converge.BacklogReporter)
 	if !ok {
 		t.Fatal("NewListMQ must implement converge.BacklogReporter")
@@ -179,7 +179,7 @@ func TestListMQConsumeStopsOnCancel(t *testing.T) {
 
 func TestListMQImplementsOnlyMQAndBacklogReporter(t *testing.T) {
 	client, _, _ := openMini(t)
-	mq := convredis.NewListMQ(client)
+	var mq converge.MQ = convredis.NewListMQ(client)
 	if _, ok := mq.(converge.GroupConsumer); ok {
 		t.Fatal("a list-backed MQ must not claim GroupConsumer")
 	}
@@ -297,7 +297,7 @@ func TestListMQCannotCarryWork(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	runErr := rt.Run(ctx)
-	want := `worker: task "credential-rotate": *convredis.listMQ cannot carry work: a worker's MQ needs DelayedPublisher and GroupConsumer`
+	want := `worker: task "credential-rotate": *convredis.ListMQ cannot carry work: a worker's MQ needs DelayedPublisher and GroupConsumer`
 	if runErr == nil || !strings.Contains(runErr.Error(), want) {
 		t.Fatalf("Run() = %v, want %q", runErr, want)
 	}

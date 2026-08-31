@@ -13,7 +13,7 @@ import (
 var ErrSettled = errors.New("convredis: delivery already settled")
 
 type streamDelivery struct {
-	mq      *streamsMQ
+	mq      *StreamsMQ
 	queue   string
 	group   string
 	id      string
