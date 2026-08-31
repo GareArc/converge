@@ -36,11 +36,14 @@ func (s *Store) Create(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *Store) Pay(ctx context.Context, id string) error {
-	_, err := s.db.Exec(ctx,
+func (s *Store) Pay(ctx context.Context, id string) (bool, error) {
+	tag, err := s.db.Exec(ctx,
 		`UPDATE orders SET status = $2 WHERE id = $1 AND status = $3`,
 		id, StatusPaid, StatusPending)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Order, bool, error) {
@@ -61,9 +64,9 @@ func (s *Store) PendingOlderThan(age time.Duration) func(context.Context) ([]str
 	return func(ctx context.Context) ([]string, error) {
 		rows, err := s.db.Query(ctx,
 			`SELECT id FROM orders
-			 WHERE status = $1 AND placed_at < now() - $2::interval
+			 WHERE status = $1 AND placed_at < now() - make_interval(secs => $2)
 			 ORDER BY id`,
-			StatusPending, age.String())
+			StatusPending, age.Seconds())
 		if err != nil {
 			return nil, err
 		}
@@ -75,7 +78,7 @@ func (s *Store) PendingOlderThan(age time.Duration) func(context.Context) ([]str
 func (s *Store) CancelIfUnpaid(ctx context.Context, id string, age time.Duration) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE orders SET status = $2
-		 WHERE id = $1 AND status = $3 AND placed_at < now() - $4::interval`,
-		id, StatusCancelled, StatusPending, age.String())
+		 WHERE id = $1 AND status = $3 AND placed_at < now() - make_interval(secs => $4)`,
+		id, StatusCancelled, StatusPending, age.Seconds())
 	return err
 }
