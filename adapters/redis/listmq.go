@@ -11,19 +11,19 @@ import (
 
 const listPopBlock = time.Second
 
-func NewListMQ(rdb *redis.Client) converge.MQ {
-	return &listMQ{rdb: rdb}
+func NewListMQ(rdb *redis.Client) *ListMQ {
+	return &ListMQ{rdb: rdb}
 }
 
-type listMQ struct {
+type ListMQ struct {
 	rdb *redis.Client
 }
 
-func (m *listMQ) Publish(ctx context.Context, queue string, msg converge.Message) error {
+func (m *ListMQ) Publish(ctx context.Context, queue string, msg converge.Message) error {
 	return m.rdb.LPush(ctx, queue, msg.Payload).Err()
 }
 
-func (m *listMQ) Consume(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
+func (m *ListMQ) Consume(ctx context.Context, queue string, deliver func(converge.Delivery)) error {
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -42,13 +42,13 @@ func (m *listMQ) Consume(ctx context.Context, queue string, deliver func(converg
 	}
 }
 
-func (m *listMQ) Backlog(ctx context.Context, queue string) (int, error) {
+func (m *ListMQ) Backlog(ctx context.Context, queue string) (int, error) {
 	n, err := m.rdb.LLen(ctx, queue).Result()
 	return int(n), err
 }
 
 type listDelivery struct {
-	mq      *listMQ
+	mq      *ListMQ
 	queue   string
 	payload []byte
 	enq     time.Time

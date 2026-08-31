@@ -14,15 +14,15 @@ import (
 
 var ErrLeaseLost = errors.New("convredis: lease lost")
 
-func NewLease(rdb *redis.Client) converge.Lease {
-	return &lease{rdb: rdb}
+func NewLease(rdb *redis.Client) *Lease {
+	return &Lease{rdb: rdb}
 }
 
-type lease struct {
+type Lease struct {
 	rdb *redis.Client
 }
 
-func (l *lease) TryAcquire(ctx context.Context, name string, ttl time.Duration) (converge.LeaseHandle, bool, error) {
+func (l *Lease) TryAcquire(ctx context.Context, name string, ttl time.Duration) (converge.LeaseHandle, bool, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return nil, false, err

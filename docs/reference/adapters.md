@@ -120,10 +120,10 @@ type StreamsOpts struct {
     Visibility time.Duration
 }
 
-func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) converge.MQ
-func NewListMQ(rdb *redis.Client) converge.MQ
-func NewLease(rdb *redis.Client) converge.Lease
-func NewKV(rdb *redis.Client) converge.KV
+func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) *StreamsMQ
+func NewListMQ(rdb *redis.Client) *ListMQ
+func NewLease(rdb *redis.Client) *Lease
+func NewKV(rdb *redis.Client) *KV
 
 var ErrLeaseLost = errors.New("convredis: lease lost")
 var ErrSettled = errors.New("convredis: delivery already settled")
