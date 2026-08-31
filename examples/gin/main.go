@@ -14,6 +14,7 @@ import (
 	"github.com/GareArc/converge"
 	convredis "github.com/GareArc/converge/adapters/redis"
 	"github.com/GareArc/converge/debughttp"
+	"github.com/GareArc/converge/examples/gin/internal/documents"
 	"github.com/GareArc/converge/examples/gin/internal/orders"
 	"github.com/GareArc/converge/examples/gin/internal/webhooks"
 	"github.com/gin-gonic/gin"
@@ -65,6 +66,7 @@ func run() error {
 	for _, register := range []func(*converge.Runtime, gin.IRouter, *pgxpool.Pool) error{
 		orders.Register,
 		webhooks.Register,
+		documents.Register,
 	} {
 		if err := register(rt, engine, db); err != nil {
 			return err
