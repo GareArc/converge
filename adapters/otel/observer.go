@@ -33,7 +33,7 @@ type Observer struct {
 	destroyed        metric.Int64Counter
 }
 
-func NewObserver(meter metric.Meter) (*Observer, error) {
+func NewObserver(meter metric.Meter) (converge.Observer, error) {
 	o := &Observer{}
 	h, err := meter.Float64Histogram("converge.run.duration",
 		metric.WithUnit("s"),
