@@ -56,7 +56,8 @@ func (s *Store) Index(ctx context.Context, id string) error {
 		   RETURNING document_id
 		 )
 		 UPDATE documents SET indexed_at = now()
-		 WHERE id IN (SELECT document_id FROM written)`,
+		 FROM source
+		 WHERE documents.id = source.id AND documents.updated_at = source.updated_at`,
 		id)
 	return err
 }
