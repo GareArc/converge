@@ -14,6 +14,7 @@ import (
 	"github.com/GareArc/converge"
 	convredis "github.com/GareArc/converge/adapters/redis"
 	"github.com/GareArc/converge/debughttp"
+	"github.com/GareArc/converge/examples/gin/internal/orders"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -60,7 +61,9 @@ func run() error {
 	engine.GET("/healthz", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 	engine.Any("/debug/*path", gin.WrapH(debughttp.ReadOnlyHandler(rt)))
 
-	for _, register := range []func(*converge.Runtime, gin.IRouter, *pgxpool.Pool) error{} {
+	for _, register := range []func(*converge.Runtime, gin.IRouter, *pgxpool.Pool) error{
+		orders.Register,
+	} {
 		if err := register(rt, engine, db); err != nil {
 			return err
 		}
