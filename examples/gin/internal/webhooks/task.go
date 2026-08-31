@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -17,12 +18,16 @@ import (
 )
 
 const (
-	concurrency = 8
-	maxAttempts = 6
-	maxAge      = 24 * time.Hour
-	runTimeout  = 15 * time.Second
-	defaultWait = 5 * time.Second
-	maxSnooze   = 5 * time.Minute
+	concurrency     = 8
+	maxAttempts     = 6
+	maxAge          = 24 * time.Hour
+	runTimeout      = 15 * time.Second
+	httpTimeout     = 10 * time.Second
+	defaultWait     = 5 * time.Second
+	maxSnooze       = 5 * time.Minute
+	rateLimitEvents = 50
+	rateLimitPer    = time.Second
+	maxDrainBytes   = 4 << 10
 )
 
 type Delivery struct {
@@ -37,12 +42,12 @@ var task = worker.NewTask[Delivery]("deliver-webhook", worker.TaskOpts{})
 
 func Register(rt *converge.Runtime, r gin.IRouter, db *pgxpool.Pool) error {
 	store := NewStore(db)
-	client := &http.Client{Timeout: runTimeout}
+	client := &http.Client{Timeout: httpTimeout}
 	err := worker.Handle(rt, task, func(ctx context.Context, d Delivery) error {
 		return deliver(ctx, client, store, d)
 	}, worker.HandleOpts{
 		Concurrency: concurrency,
-		RateLimit:   converge.Rate{Events: 50, Per: time.Second},
+		RateLimit:   converge.Rate{Events: rateLimitEvents, Per: rateLimitPer},
 		Retry:       worker.RetryPolicy{MaxAttempts: maxAttempts, MaxAge: maxAge},
 		Timeout:     runTimeout,
 	})
@@ -65,17 +70,14 @@ func Register(rt *converge.Runtime, r gin.IRouter, db *pgxpool.Pool) error {
 }
 
 func deliver(ctx context.Context, client *http.Client, store *Store, d Delivery) error {
-	attempt := 0
-	if meta, ok := worker.MetaFromContext(ctx); ok {
-		attempt = meta.Attempt
-	}
+	meta, _ := worker.MetaFromContext(ctx)
 	body, err := json.Marshal(d)
 	if err != nil {
-		return shelveDelivery(ctx, store, d.ID, attempt, "payload not encodable")
+		return shelveDelivery(ctx, store, d.ID, meta.Attempt, "payload not encodable")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.URL, bytes.NewReader(body))
 	if err != nil {
-		return shelveDelivery(ctx, store, d.ID, attempt, "unusable subscriber url")
+		return shelveDelivery(ctx, store, d.ID, meta.Attempt, "unusable subscriber url")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
@@ -83,14 +85,15 @@ func deliver(ctx context.Context, client *http.Client, store *Store, d Delivery)
 		return err
 	}
 	defer resp.Body.Close()
+	io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
 
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return worker.Snooze{In: retryAfter(resp)}
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return store.Record(ctx, d.ID, StatusDelivered, attempt)
+		return store.Record(ctx, d.ID, StatusDelivered, meta.Attempt)
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		return shelveDelivery(ctx, store, d.ID, attempt, fmt.Sprintf("subscriber refused with %d", resp.StatusCode))
+		return shelveDelivery(ctx, store, d.ID, meta.Attempt, fmt.Sprintf("subscriber refused with %d", resp.StatusCode))
 	default:
 		return fmt.Errorf("subscriber returned %d", resp.StatusCode)
 	}
@@ -108,7 +111,7 @@ func retryAfter(resp *http.Response) time.Duration {
 	if err != nil || secs <= 0 {
 		return defaultWait
 	}
-	if time.Duration(secs) > maxSnooze/time.Second {
+	if secs > int(maxSnooze/time.Second) {
 		return maxSnooze
 	}
 	return time.Duration(secs) * time.Second

@@ -2,6 +2,7 @@
 .github
 website
 docs
+.superpowers
 *.test
 *.out
 bin

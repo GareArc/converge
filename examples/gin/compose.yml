@@ -3,7 +3,12 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
 
   postgres:
     image: postgres:17-alpine
@@ -12,7 +17,7 @@ services:
       POSTGRES_PASSWORD: converge
       POSTGRES_DB: converge
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     healthcheck:
@@ -38,8 +43,9 @@ services:
       POSTGRES_DSN: "postgres://converge:converge@postgres:5432/converge?sslmode=disable"
     ports:
       - "8080:8080"
+    restart: unless-stopped
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy

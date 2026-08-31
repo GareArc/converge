@@ -22,4 +22,4 @@ cover:
 examples:
 	@for m in $(EXAMPLES); do (cd $$m && $(GO) build ./... && $(GO) vet ./...) || exit 1; done
 
-check: fmt-check vet depcheck test examples
+check: fmt-check vet depcheck examples test

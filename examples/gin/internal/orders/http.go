@@ -1,6 +1,7 @@
 package orders
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -23,8 +24,23 @@ func (h *handlers) create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "id is required"})
 		return
 	}
-	if err := h.store.Create(c.Request.Context(), req.ID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+	ctx := c.Request.Context()
+	created, err := h.store.Create(ctx, req.ID)
+	if err != nil {
+		fail(c, "order create failed", err)
+		return
+	}
+	if !created {
+		o, found, err := h.store.Get(ctx, req.ID)
+		if err != nil {
+			fail(c, "order create failed", err)
+			return
+		}
+		if !found {
+			fail(c, "order create failed", fmt.Errorf("order %q not found after a conflicting insert", req.ID))
+			return
+		}
+		c.JSON(http.StatusConflict, o)
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"id": req.ID, "status": StatusPending})
@@ -35,13 +51,13 @@ func (h *handlers) pay(c *gin.Context) {
 	ctx := c.Request.Context()
 	paid, err := h.store.Pay(ctx, id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		fail(c, "order pay failed", err)
 		return
 	}
 	if !paid {
 		_, found, err := h.store.Get(ctx, id)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			fail(c, "order pay failed", err)
 			return
 		}
 		if !found {
@@ -60,7 +76,7 @@ func (h *handlers) pay(c *gin.Context) {
 func (h *handlers) get(c *gin.Context) {
 	o, found, err := h.store.Get(c.Request.Context(), c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		fail(c, "order get failed", err)
 		return
 	}
 	if !found {
@@ -68,4 +84,9 @@ func (h *handlers) get(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, o)
+}
+
+func fail(c *gin.Context, logMsg string, err error) {
+	slog.Default().Error(logMsg, "error", err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 }

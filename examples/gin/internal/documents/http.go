@@ -27,7 +27,7 @@ func (h *handlers) upsert(c *gin.Context) {
 	id := c.Param("id")
 	ctx := c.Request.Context()
 	if err := h.store.Upsert(ctx, Document{ID: id, Title: req.Title, Body: req.Body}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		fail(c, "document upsert failed", err)
 		return
 	}
 	if err := h.notifier.Notify(ctx, reconcile.ID(id)); err != nil {
@@ -39,11 +39,16 @@ func (h *handlers) upsert(c *gin.Context) {
 func (h *handlers) search(c *gin.Context) {
 	found, err := h.store.Search(c.Request.Context(), c.Query("q"))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		fail(c, "document search failed", err)
 		return
 	}
 	if found == nil {
 		found = []Document{}
 	}
 	c.JSON(http.StatusOK, gin.H{"results": found})
+}
+
+func fail(c *gin.Context, logMsg string, err error) {
+	slog.Default().Error(logMsg, "error", err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 }

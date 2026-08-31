@@ -1,7 +1,9 @@
 package webhooks
 
 import (
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/GareArc/converge/worker"
@@ -28,7 +30,7 @@ func (h *handlers) publish(c *gin.Context) {
 	ctx := c.Request.Context()
 	subs, err := h.store.ActiveSubscribers(ctx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		fail(c, "list active subscribers failed", err)
 		return
 	}
 	eventID := uuid.NewString()
@@ -42,12 +44,12 @@ func (h *handlers) publish(c *gin.Context) {
 			Event:        req.Event,
 		}
 		if err := h.store.Queue(ctx, d); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			slog.Default().Error("webhook delivery queue failed", "id", d.ID, "error", err)
+			continue
 		}
 		if err := h.producer.Enqueue(ctx, d, worker.EnqueueOpts{}); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
+			slog.Default().Error("webhook delivery enqueue failed", "id", d.ID, "error", err)
+			continue
 		}
 		queued = append(queued, d.ID)
 	}
@@ -57,7 +59,7 @@ func (h *handlers) publish(c *gin.Context) {
 func (h *handlers) listShelved(c *gin.Context) {
 	shelved, err := h.shelf.List(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		fail(c, "list shelved webhook deliveries failed", err)
 		return
 	}
 	if shelved == nil {
@@ -68,8 +70,17 @@ func (h *handlers) listShelved(c *gin.Context) {
 
 func (h *handlers) requeue(c *gin.Context) {
 	if err := h.shelf.Requeue(c.Request.Context(), c.Param("id")); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		if errors.Is(err, worker.ErrNotShelved) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no such shelved message"})
+			return
+		}
+		fail(c, "webhook requeue failed", err)
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+func fail(c *gin.Context, logMsg string, err error) {
+	slog.Default().Error(logMsg, "error", err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 }

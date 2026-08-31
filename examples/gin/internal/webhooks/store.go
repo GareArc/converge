@@ -46,9 +46,7 @@ func (s *Store) Queue(ctx context.Context, d Delivery) error {
 
 func (s *Store) Record(ctx context.Context, id, status string, attempt int) error {
 	_, err := s.db.Exec(ctx,
-		`UPDATE deliveries
-		 SET status = $2, attempts = CASE WHEN $3 = 0 THEN attempts + 1 ELSE $3 END, updated_at = now()
-		 WHERE id = $1`,
+		`UPDATE deliveries SET status = $2, attempts = $3, updated_at = now() WHERE id = $1`,
 		id, status, attempt)
 	return err
 }

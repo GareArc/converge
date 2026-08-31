@@ -4,6 +4,8 @@ CREATE TABLE orders (
   placed_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE INDEX orders_pending_placed_at ON orders (placed_at) WHERE status = 'pending';
+
 CREATE TABLE subscribers (
   id     text PRIMARY KEY,
   url    text    NOT NULL,
@@ -34,6 +36,9 @@ CREATE TABLE document_index (
 );
 
 CREATE INDEX document_index_terms ON document_index USING gin (terms);
+
+CREATE INDEX documents_needing_index ON documents (id)
+  WHERE indexed_at IS NULL OR indexed_at < updated_at;
 
 INSERT INTO subscribers (id, url, active) VALUES
   ('sub-slow', 'http://httpbin:80/status/429', true),

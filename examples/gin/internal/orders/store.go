@@ -29,11 +29,14 @@ func NewStore(db *pgxpool.Pool) *Store {
 	return &Store{db: db}
 }
 
-func (s *Store) Create(ctx context.Context, id string) error {
-	_, err := s.db.Exec(ctx,
+func (s *Store) Create(ctx context.Context, id string) (bool, error) {
+	tag, err := s.db.Exec(ctx,
 		`INSERT INTO orders (id, status) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
 		id, StatusPending)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (s *Store) Pay(ctx context.Context, id string) (bool, error) {
