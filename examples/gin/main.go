@@ -23,7 +23,12 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const shutdownGrace = 10 * time.Second
+const (
+	shutdownGrace     = 10 * time.Second
+	readTimeout       = 15 * time.Second
+	readHeaderTimeout = 5 * time.Second
+	idleTimeout       = 60 * time.Second
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -45,7 +50,11 @@ func run() error {
 	defer db.Close()
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer rdb.Close()
+	defer func() {
+		if err := rdb.Close(); err != nil {
+			slog.Default().Error("redis client close failed", "error", err)
+		}
+	}()
 
 	rt, err := converge.New(converge.Options{
 		Namespace: cfg.Namespace,
@@ -73,7 +82,13 @@ func run() error {
 		}
 	}
 
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: engine}
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           engine,
+		ReadTimeout:       readTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+	}
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return rt.Run(gctx) })
 	g.Go(func() error {

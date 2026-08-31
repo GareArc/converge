@@ -14,7 +14,7 @@ program lifecycle themselves — the
 servers a kratos `App` starts and stops. Gin has no such list: a
 `gin.Engine` is an `http.Handler` and nothing more, so `main.go`'s
 `errgroup` and the context `signal.NotifyContext` returns are the entire
-integration. The same shape works verbatim for chi, echo, fiber, or plain
+integration. The same shape works verbatim for chi, echo, or plain
 `net/http` — see
 [How converge is wired into Gin](#how-converge-is-wired-into-gin) below.
 
@@ -343,8 +343,14 @@ func deliver(ctx context.Context, client *http.Client, store *Store, d Delivery)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Default().Error("webhook response body close failed", "id", d.ID, "error", err)
+		}
+	}()
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes)); err != nil {
+		slog.Default().Error("webhook response body drain failed", "id", d.ID, "error", err)
+	}
 
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
@@ -366,14 +372,26 @@ func shelveDelivery(ctx context.Context, store *Store, id string, attempt int, r
 }
 
 func retryAfter(resp *http.Response) time.Duration {
-	secs, err := strconv.Atoi(resp.Header.Get("Retry-After"))
-	if err != nil || secs <= 0 {
-		return defaultWait
+	v := resp.Header.Get("Retry-After")
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return defaultWait
+		}
+		return clampSnooze(time.Duration(secs) * time.Second)
 	}
-	if secs > int(maxSnooze/time.Second) {
+	if when, err := http.ParseTime(v); err == nil {
+		if wait := time.Until(when); wait > 0 {
+			return clampSnooze(wait)
+		}
+	}
+	return defaultWait
+}
+
+func clampSnooze(d time.Duration) time.Duration {
+	if d > maxSnooze {
 		return maxSnooze
 	}
-	return time.Duration(secs) * time.Second
+	return d
 }
 ```
 
@@ -633,8 +651,10 @@ waits on `gctx.Done()` and calls `srv.Shutdown` with a 10-second grace
 period. Cancelling the shared context — SIGINT, SIGTERM, or any of the
 three goroutines returning an error — stops all three, and `g.Wait()` is
 the only thing `main` waits on. Nothing here is Gin-specific: the same
-three goroutines, unchanged, are the whole integration for chi, echo,
-fiber, or plain `net/http`, because none of them own process lifecycle any
+three goroutines, unchanged, are the whole integration for chi, echo, or
+plain `net/http` — each implements `http.Handler` directly, unlike Fiber's
+`fasthttp`-based `App`, which needs `adaptor.FiberApp` before it can be a
+`http.Server.Handler` — because none of them own process lifecycle any
 more than Gin does — only a framework like kratos, with its own `App` that
 starts and stops a list of servers, needs the extra step a bridge like
 `convkratos` provides.
@@ -665,7 +685,12 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-const shutdownGrace = 10 * time.Second
+const (
+	shutdownGrace     = 10 * time.Second
+	readTimeout       = 15 * time.Second
+	readHeaderTimeout = 5 * time.Second
+	idleTimeout       = 60 * time.Second
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -687,7 +712,11 @@ func run() error {
 	defer db.Close()
 
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer rdb.Close()
+	defer func() {
+		if err := rdb.Close(); err != nil {
+			slog.Default().Error("redis client close failed", "error", err)
+		}
+	}()
 
 	rt, err := converge.New(converge.Options{
 		Namespace: cfg.Namespace,
@@ -715,7 +744,13 @@ func run() error {
 		}
 	}
 
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: engine}
+	srv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           engine,
+		ReadTimeout:       readTimeout,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+	}
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return rt.Run(gctx) })
 	g.Go(func() error {

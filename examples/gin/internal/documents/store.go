@@ -48,6 +48,7 @@ func (s *Store) Index(ctx context.Context, id string) error {
 		`WITH source AS (
 		   SELECT id, to_tsvector('english', title || ' ' || body) AS terms, updated_at
 		   FROM documents WHERE id = $1
+		   FOR UPDATE
 		 ), written AS (
 		   INSERT INTO document_index (document_id, terms, indexed_at)
 		   SELECT id, terms, now() FROM source

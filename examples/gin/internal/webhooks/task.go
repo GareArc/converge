@@ -84,8 +84,14 @@ func deliver(ctx context.Context, client *http.Client, store *Store, d Delivery)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			slog.Default().Error("webhook response body close failed", "id", d.ID, "error", err)
+		}
+	}()
+	if _, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes)); err != nil {
+		slog.Default().Error("webhook response body drain failed", "id", d.ID, "error", err)
+	}
 
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
@@ -107,12 +113,24 @@ func shelveDelivery(ctx context.Context, store *Store, id string, attempt int, r
 }
 
 func retryAfter(resp *http.Response) time.Duration {
-	secs, err := strconv.Atoi(resp.Header.Get("Retry-After"))
-	if err != nil || secs <= 0 {
-		return defaultWait
+	v := resp.Header.Get("Retry-After")
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return defaultWait
+		}
+		return clampSnooze(time.Duration(secs) * time.Second)
 	}
-	if secs > int(maxSnooze/time.Second) {
+	if when, err := http.ParseTime(v); err == nil {
+		if wait := time.Until(when); wait > 0 {
+			return clampSnooze(wait)
+		}
+	}
+	return defaultWait
+}
+
+func clampSnooze(d time.Duration) time.Duration {
+	if d > maxSnooze {
 		return maxSnooze
 	}
-	return time.Duration(secs) * time.Second
+	return d
 }

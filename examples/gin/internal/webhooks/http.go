@@ -49,6 +49,9 @@ func (h *handlers) publish(c *gin.Context) {
 		}
 		if err := h.producer.Enqueue(ctx, d, worker.EnqueueOpts{}); err != nil {
 			slog.Default().Error("webhook delivery enqueue failed", "id", d.ID, "error", err)
+			if err := h.store.Record(ctx, d.ID, StatusFailed, 0); err != nil {
+				slog.Default().Error("webhook delivery mark-failed failed", "id", d.ID, "error", err)
+			}
 			continue
 		}
 		queued = append(queued, d.ID)
