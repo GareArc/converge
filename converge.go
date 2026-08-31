@@ -1,8 +1,3 @@
-// Package converge gives a service one model for all background work: a
-// level-triggered reconcile surface and an edge-triggered worker surface on
-// one hexagonal kernel. The kernel owns the ports (MQ, Lease, KV, Clock,
-// Observer), the runtime, and the shared value types; surfaces and adapters
-// plug in around it.
 package converge
 
 import (

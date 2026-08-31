@@ -1,7 +1,3 @@
-// Package reconcile is converge's level-triggered surface: a notification
-// only names an ID, and the registered function re-reads the caller's store
-// and converges its state. Losing a notification costs latency, never
-// correctness — the schedule sweep is the backstop.
 package reconcile
 
 import (

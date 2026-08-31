@@ -1,5 +1,3 @@
-// Package convotel implements converge's Observer port over OpenTelemetry
-// metrics, and reads observable gauges from Runtime.Stats on collection.
 package convotel
 
 import (
