@@ -1,7 +1,9 @@
 package webhooks
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -20,6 +22,7 @@ const (
 	maxAge      = 24 * time.Hour
 	runTimeout  = 15 * time.Second
 	defaultWait = 5 * time.Second
+	maxSnooze   = 5 * time.Minute
 )
 
 type Delivery struct {
@@ -66,10 +69,15 @@ func deliver(ctx context.Context, client *http.Client, store *Store, d Delivery)
 	if meta, ok := worker.MetaFromContext(ctx); ok {
 		attempt = meta.Attempt
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.URL, nil)
+	body, err := json.Marshal(d)
 	if err != nil {
-		return worker.Shelve{Reason: "unusable subscriber url"}
+		return shelveDelivery(ctx, store, d.ID, attempt, "payload not encodable")
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.URL, bytes.NewReader(body))
+	if err != nil {
+		return shelveDelivery(ctx, store, d.ID, attempt, "unusable subscriber url")
+	}
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -79,21 +87,29 @@ func deliver(ctx context.Context, client *http.Client, store *Store, d Delivery)
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return worker.Snooze{In: retryAfter(resp)}
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return store.Record(ctx, d.ID, StatusDelivered, attempt)
 	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		if err := store.Record(ctx, d.ID, StatusFailed, attempt); err != nil {
-			slog.Default().Error("webhook delivery record failed", "id", d.ID, "error", err)
-		}
-		return worker.Shelve{Reason: fmt.Sprintf("subscriber refused with %d", resp.StatusCode)}
-	case resp.StatusCode >= 500:
+		return shelveDelivery(ctx, store, d.ID, attempt, fmt.Sprintf("subscriber refused with %d", resp.StatusCode))
+	default:
 		return fmt.Errorf("subscriber returned %d", resp.StatusCode)
 	}
-	return store.Record(ctx, d.ID, StatusDelivered, attempt)
+}
+
+func shelveDelivery(ctx context.Context, store *Store, id string, attempt int, reason string) error {
+	if err := store.Record(ctx, id, StatusFailed, attempt); err != nil {
+		slog.Default().Error("webhook delivery record failed", "id", id, "error", err)
+	}
+	return worker.Shelve{Reason: reason}
 }
 
 func retryAfter(resp *http.Response) time.Duration {
 	secs, err := strconv.Atoi(resp.Header.Get("Retry-After"))
 	if err != nil || secs <= 0 {
 		return defaultWait
+	}
+	if time.Duration(secs) > maxSnooze/time.Second {
+		return maxSnooze
 	}
 	return time.Duration(secs) * time.Second
 }

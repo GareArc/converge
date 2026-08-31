@@ -60,6 +60,9 @@ func (h *handlers) listShelved(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if shelved == nil {
+		shelved = []worker.ShelvedMessage{}
+	}
 	c.JSON(http.StatusOK, gin.H{"shelved": shelved})
 }
 
