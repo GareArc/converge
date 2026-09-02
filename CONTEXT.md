@@ -178,7 +178,7 @@ or trimmed and the sweep covers it. Declared on the job as
 `JobOpts.Notifications`, otherwise derived as
 `<namespace>/converge/notifications/<job>`; the verb is `Notify`, the
 trigger is `Notifications()`, and a source some other system writes is read
-with `NotificationsFrom`. *Channel* is the umbrella word for this and for a
+with `convredis.ListTrigger`. *Channel* is the umbrella word for this and for a
 queue; it names no third thing.
 _Avoid_: inbox, topic, stream, queue (that word is the worker's)
 

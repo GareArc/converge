@@ -316,10 +316,15 @@ Sometimes the thing that knows an ID changed is not yours, and it is not
 going to learn your conventions. A Python service pushes JSON onto a Redis
 list; you want that to hurry a reconcile job along.
 
-`reconcile.NotificationsFrom` takes that name and uses it exactly as given:
+`convredis.ListTrigger` takes that name and uses it exactly as given:
 
 ```go
-reconcile.NotificationsFrom(foreignQueue, convredis.NewListMQ(rdb), reconcile.IDFromJSON("workspace_id")),
+trig, err := convredis.ListTrigger(rdb, foreignQueue, convredis.ListTriggerOpts{
+    ID: reconcile.IDFromJSON("workspace_id"),
+})
+if err != nil {
+    return err
+}
 ```
 
 Three things are different from `Notifications`:
@@ -329,10 +334,10 @@ Three things are different from `Notifications`:
   prefix it, or own it — and it is called a *source*, not a queue, because
   from this job's side that is all it is: where notifications come from,
   whatever the other system calls it.
-- **You supply the `MQ`**, because it is not "which Redis" but "how to read
-  this source": a list and a stream on the same server are different
-  readers. Here it is a Redis list rather than the stream the runtime is
-  wired to.
+- **The constructor can fail.** `ListTrigger` checks `rdb` and the key up
+  front and returns its error immediately rather than deferring it to
+  `Run`, so it has to be built — and its error checked — before the
+  `Triggers` slice exists, not inline inside it.
 - **You supply the ID function.** It is an open function,
   `func(payload []byte) (reconcile.ID, error)`, and converge ships two
   conveniences for the common shapes — `reconcile.IDFromJSON("workspace_id")`

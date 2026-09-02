@@ -11,8 +11,13 @@ import (
 	"github.com/GareArc/converge/internal/notice"
 )
 
+type Sink interface {
+	Notify(id ID)
+	Drop(err error)
+}
+
 type Trigger interface {
-	Run(ctx context.Context, notify func(ID)) error
+	Run(ctx context.Context, sink Sink) error
 }
 
 type PeriodicTrigger interface {
@@ -28,9 +33,7 @@ const (
 var triggerRestartCurve = backoff.Curve{Min: triggerRestartMin, Max: triggerRestartMax}
 
 type notificationTrigger struct {
-	source  string
-	foreign bool
-	id      func(payload []byte) (ID, error)
+	source string
 
 	mq        converge.MQ
 	broadcast bool
@@ -40,36 +43,19 @@ func Notifications() Trigger {
 	return &notificationTrigger{}
 }
 
-func NotificationsFrom(source string, mq converge.MQ, id func(payload []byte) (ID, error)) Trigger {
-	return &notificationTrigger{source: source, foreign: true, mq: mq, id: id}
-}
-
-func (t *notificationTrigger) Run(ctx context.Context, notify func(ID)) error {
+func (t *notificationTrigger) Run(ctx context.Context, sink Sink) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-func (t *notificationTrigger) decode(payload []byte) (notice.Notification, error) {
-	if t.foreign {
-		id, err := t.id(payload)
-		return notice.Notification{ID: string(id)}, err
-	}
-	return notice.Decode(payload)
-}
-
 func (t *notificationTrigger) bind(e *engine) error {
-	if !t.foreign {
-		e.mu.Lock()
-		t.source = e.cfg.job.NotificationsName(e.deps.Namespace)
-		e.mu.Unlock()
-	}
+	e.mu.Lock()
+	t.source = e.cfg.job.NotificationsName(e.deps.Namespace)
+	e.mu.Unlock()
 	if t.mq == nil {
 		t.mq = e.deps.MQ
 	}
 	if t.mq == nil {
-		if t.foreign {
-			return fmt.Errorf("reconcile: job %q: NotificationsFrom(%q) needs an MQ", e.cfg.job.Name(), t.source)
-		}
 		return fmt.Errorf("reconcile: job %q: Notifications needs Options.MQ", e.cfg.job.Name())
 	}
 	switch e.cfg.runMode {
@@ -96,7 +82,27 @@ func (e *engine) runTrigger(ctx context.Context, idx int, t Trigger) {
 		e.runNotifications(ctx, tr)
 		return
 	}
-	e.supervise(ctx, func() { t.Run(ctx, func(id ID) { e.notify(ctx, id) }) })
+	e.supervise(ctx, func() { t.Run(ctx, engineSink{e: e, ctx: ctx}) })
+}
+
+type engineSink struct {
+	e   *engine
+	ctx context.Context
+}
+
+func (s engineSink) Notify(id ID) {
+	s.e.notifyVia(s.ctx, s.e.idQueueRef(), id, causeNotification)
+}
+
+func (s engineSink) Drop(err error) {
+	if errors.Is(err, Skip) {
+		s.e.deps.Observer.Observe(converge.NotificationSkipped{Job: s.e.cfg.job.Name()})
+		return
+	}
+	s.e.deps.Observer.Observe(converge.NotificationDropped{
+		Job: s.e.cfg.job.Name(),
+		Err: fmt.Errorf("%w: %v", converge.ErrNotificationUndecodable, err),
+	})
 }
 
 func (e *engine) runNotifications(ctx context.Context, t *notificationTrigger) {
@@ -136,10 +142,8 @@ func (e *engine) supervise(ctx context.Context, run func()) {
 }
 
 func (e *engine) deliverNotification(ctx context.Context, t *notificationTrigger, d converge.Delivery) {
-	n, err := t.decode(d.Message().Payload)
+	n, err := notice.Decode(d.Message().Payload)
 	switch {
-	case errors.Is(err, Skip):
-		e.deps.Observer.Observe(converge.NotificationSkipped{Job: e.cfg.job.Name()})
 	case err != nil:
 		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), Err: converge.ErrNotificationUndecodable})
 	case n.All:

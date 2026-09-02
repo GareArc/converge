@@ -519,7 +519,7 @@ type JobDestroyed struct {
 | `LeaseChanged` | an `OnOneReplica` job takes or gives up its lease. Emitted only by jobs that take one. |
 | `ScheduleOverrun` | a scheduled sweep boundary passed while the previous sweep was still running. One event per missed boundary, with how late it is. |
 | `NotificationDropped` | a notification never reached the queue of pending IDs. |
-| `NotificationSkipped` | an ID function returned `reconcile.Skip`; the entry was acknowledged and not counted as a drop. |
+| `NotificationSkipped` | an ID function returned `reconcile.Skip`; the element is already gone (the pop is destructive) and it was not counted as a drop. |
 | `JobDestroyed` | a job's stop condition fired. Emitted once per replica, with the cause. |
 
 A run that ends because the engine is shutting down is **not** reported: the

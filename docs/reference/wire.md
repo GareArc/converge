@@ -129,11 +129,11 @@ once and would otherwise notify each.
 
 ## A list element
 
-A Redis list read with `convredis.NewListMQ` carries **only** the payload —
-any bytes. The job's ID function owns decoding. Producers `LPUSH`; the
-adapter `BRPOP`s, and the pop is destructive: an element the ID function
-rejects is gone. A list can be a reconcile job's source and can never be a
-worker's queue.
+A Redis list read with `convredis.ListTrigger` carries **only** the
+payload — any bytes. The job's ID function owns decoding. Producers
+`LPUSH`; the adapter `BRPOP`s, and the pop is destructive: an element the
+ID function rejects is gone. A list can be a reconcile job's source and
+can never be a worker's queue.
 
 ## Redis Streams encoding
 

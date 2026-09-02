@@ -2,7 +2,7 @@
 
 > Assumes [chapter 3, telling a job to look sooner](../guide/03-notifications.md).
 > Unlike the rest of the cookbook this needs a real Redis: reading a list
-> another system writes is `convredis.NewListMQ`, and `inmem` has no
+> another system writes is `convredis.ListTrigger`, and `inmem` has no
 > equivalent.
 
 Another team's service already pushes JSON onto a Redis list when a
@@ -19,9 +19,16 @@ so this is a [reconcile](../glossary.md#reconcile) job and their list is one
 of its triggers:
 
 ```go
+listTrigger, err := convredis.ListTrigger(rdb, foreignQueue, convredis.ListTriggerOpts{
+    ID: reconcile.IDFromJSON("workspace_id"),
+})
+if err != nil {
+    return err
+}
+
 Triggers: []reconcile.Trigger{
     reconcile.Schedule(reconcile.IDsByPage(workspaces.page), reconcile.Every(5*time.Minute)),
-    reconcile.NotificationsFrom(foreignQueue, convredis.NewListMQ(rdb), reconcile.IDFromJSON("workspace_id")),
+    listTrigger,
 },
 ```
 
@@ -53,21 +60,21 @@ producer's shape needs more than that, write the function yourself — it is
 
 This is the part worth being precise about, because it is not recoverable.
 
-Every delivery on a notifications trigger is **acknowledged, decodable or
-not**. On a Redis list the message is already gone before your ID function
-even runs: the adapter pops it to receive it, and the pop is destructive.
-There is no retry, no requeue, and nothing to look at afterwards.
+Every element `ListTrigger` pops is **gone, decodable or not**. The pop is
+destructive — the adapter has already removed it from the list before your
+ID function runs. There is no retry, no requeue, and nothing to look at
+afterwards.
 
 `IDFromJSON` rejects a payload four ways: the bytes are not a JSON object
 (which covers not being JSON at all), the field is missing, the field is not
 a string, or the field is the empty string. `RawID` rejects one thing, an
 empty payload. Both are in the
-[reconcile reference](../reference/reconcile.md#id-functions-for-foreign-queues).
+[reconcile reference](../reference/reconcile.md#id-functions).
 In every case converge reports a `NotificationDropped` event and moves on,
 which `converge.LogObserver` renders as one warn-level line:
 
 ```text
-WARN converge: notification dropped job=workspace-credentials id="" err="converge: notification: undecodable"
+WARN converge: notification dropped job=workspace-credentials id="" err="converge: notification: undecodable: reconcile: notification has no field \"workspace_id\""
 ```
 
 That line, and the `converge.notifications.dropped` counter, are the entire
@@ -95,38 +102,30 @@ for a way to make their queue reliable.
 
 ## What you can see
 
-`convredis.NewListMQ` reports a [backlog](../glossary.md#backlog) through
-`LLEN`, so `/debug/jobs` shows the depth of a queue you do not own. That is a
-genuinely useful number: it is your lag behind their producer, and it is the
-one thing on that page that is about *them*.
-
-It is all or nothing across triggers. If a job has two notifications triggers
-and either one cannot report a depth, the job's backlog is unknown rather
-than a partial sum, because a partial sum would be a lie.
+`ListTrigger` reports no [backlog](../glossary.md#backlog) — `/debug/jobs`
+shows this job's backlog as unknown if a list trigger is its only
+notification source. `LLEN` on the key, run against your own Redis
+directly, is the number you actually want: your lag behind their producer.
+It is not on `/debug/jobs` because converge does not own the key.
 
 ## The limits of a list
 
-`NewListMQ` exists for this one job and is honest about the rest — the full
-list is in the [adapters reference](../reference/adapters.md#list-mq):
+`ListTrigger` exists for this one job and is honest about the rest — the
+full list is in the [adapters reference](../reference/adapters.md#list-trigger):
 
-- A list cannot be a worker's queue. A **durable** `worker.Handle` on a
-  runtime whose `MQ` is a list fails at `Run` with `cannot carry work` — the
-  pop is destructive, and making it safe means a processing list plus a
-  recovery loop for entries stranded by a dead process, which is exactly the
-  half that never gets written.
-- It has no consumer groups and no broadcast, so a job reading a foreign list
-  runs under the default [run mode](../glossary.md#run-mode), `OnOneReplica`.
-  Setting `OnAllReplicas` fails at `Run` with the missing capability named.
-- `Publish` writes the payload and drops everything else, so a list cannot
-  carry a worker message's headers.
-- `EnqueuedAt` is the moment the payload was popped, not the moment it was
-  written. Do not measure their latency with it.
+- It has no run-mode refusal. Under the default
+  [run mode](../glossary.md#run-mode), `OnOneReplica`, only the
+  [lease](../glossary.md#lease) holder pops the list. Setting `OnAllReplicas` is allowed, and every
+  replica pops a share of it — correct, because the schedule still covers
+  everything either way, but worth knowing before you set it.
+- The element is used exactly as popped; there is no `EnqueuedAt` to
+  measure their latency with, because `reconcile.Sink` never carries one.
 
 ## What you cannot do
 
 **You cannot point a worker job at a foreign queue.** `worker.Handle` reads
 the [queue](../glossary.md#queue) the task declares or converge derives, and
-there is no equivalent of `NotificationsFrom` on that surface. This is not an
+there is no equivalent of `ListTrigger` on that surface. This is not an
 oversight: a worker message has to arrive carrying an
 [envelope](../glossary.md#envelope), and a queue somebody else writes does
 not have one.
@@ -153,10 +152,13 @@ setting:
 ## When the source is not a queue at all
 
 A trigger does not have to be a queue. `reconcile.Trigger` is one method —
-`Run(ctx context.Context, notify func(ID)) error` — and anything that can
-learn an identifier can implement it: a pub/sub subscription, a filesystem
-watch, a long-poll against somebody's API. Call `notify(id)` for each one you
-learn about, and return when `ctx` is done.
+`Run(ctx context.Context, sink reconcile.Sink) error` — and anything that
+can learn an identifier can implement it: a pub/sub subscription, a
+filesystem watch, a long-poll against somebody's API. Call
+`sink.Notify(id)` for each one you learn about, `sink.Drop(err)` for
+something you could not turn into one, and return when `ctx` is done.
+`ListTrigger`, above, is the model to copy — it is not special-cased
+anywhere in the engine.
 
 Three things about that seam are worth knowing before you rely on it, and
 none of them is obvious from the signature:
@@ -166,14 +168,13 @@ none of them is obvious from the signature:
   disconnect does not need handling inside your loop.
 - **The error you return is discarded.** Nothing logs it, no event carries
   it, and no metric counts the restart. A trigger that is failing every
-  second looks exactly like one that is idle, so if you want to know, you
-  have to say so yourself before you return.
-- **An ID from a custom trigger is treated as a sweep, not as a
-  notification.** It will queue an ID and it will pull an ID forward out of a
-  `CheckAgain` delay, but it will *not* pull one out of failure backoff —
-  that bypass belongs to `Notifications` and `NotificationsFrom` only. If you
-  are writing a trigger specifically so an operator can retry a failing
-  thing, send a notification instead.
+  second looks exactly like one that is idle, so if you want to know, call
+  `sink.Drop` yourself before returning, or observe it another way.
+- **`sink.Notify(id)` is a notification, not a sweep.** It resets a failing
+  ID's backoff exactly like `Notifications()` does. `sink.Drop(err)` is
+  reported as `NotificationDropped`, with `err`'s message kept, unless
+  `errors.Is(err, reconcile.Skip)` — then it is a `NotificationSkipped`
+  instead.
 
 The schedule is what makes the job correct while any of this is down, and
 with a custom trigger that is not a figure of speech: a trigger whose backend

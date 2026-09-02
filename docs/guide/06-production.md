@@ -43,9 +43,10 @@ too short and a message can vanish before a replica that was down comes back
 for it. Seven days, above, reads as "survive a week-long outage, then give
 up"; choose yours the same way.
 
-`convredis.NewListMQ(rdb)` is the other one, for reading a Redis list some
-other system pushes onto. That is a [chapter 3](03-notifications.md)
-concern, and it is the only place a raw queue name appears.
+`convredis.ListTrigger(rdb, key, o)` is the other one, for reading a Redis
+list some other system pushes onto. That is a
+[chapter 3](03-notifications.md) concern, and it is the only place a raw
+queue name appears.
 
 ## Logs, for free
 

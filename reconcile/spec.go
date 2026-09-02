@@ -76,15 +76,6 @@ func newEngine(s Spec) (*engine, error) {
 			if tr.source.single {
 				cfg.single = true
 			}
-		case *notificationTrigger:
-			if tr.foreign {
-				if tr.source == "" {
-					return nil, fail("NotificationsFrom needs a source name")
-				}
-				if tr.id == nil {
-					return nil, fail("NotificationsFrom needs an ID function")
-				}
-			}
 		default:
 			if _, ok := t.(PeriodicTrigger); ok {
 				return nil, fail("only Schedule is swept; a custom PeriodicTrigger runs but never sweeps")
