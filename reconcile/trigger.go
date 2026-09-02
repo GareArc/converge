@@ -101,16 +101,24 @@ func (e *engine) runTrigger(ctx context.Context, idx int, t Trigger) {
 		e.runNotifications(ctx, tr)
 		return
 	}
-	e.supervise(ctx, func() { t.Run(ctx, sweepSink{e: e, ctx: ctx}) })
+	e.supervise(ctx, func() { t.Run(ctx, engineSink{e: e, ctx: ctx}) })
 }
 
-type sweepSink struct {
+type engineSink struct {
 	e   *engine
 	ctx context.Context
 }
 
-func (s sweepSink) Notify(id ID) { s.e.notify(s.ctx, id) }
-func (s sweepSink) Drop(error)   {}
+func (s engineSink) Notify(id ID) {
+	s.e.notifyVia(s.ctx, s.e.idQueueRef(), id, causeNotification)
+}
+
+func (s engineSink) Drop(err error) {
+	s.e.deps.Observer.Observe(converge.NotificationDropped{
+		Job: s.e.cfg.job.Name(),
+		Err: fmt.Errorf("%w: %v", converge.ErrNotificationUndecodable, err),
+	})
+}
 
 func (e *engine) runNotifications(ctx context.Context, t *notificationTrigger) {
 	deliver := func(d converge.Delivery) {

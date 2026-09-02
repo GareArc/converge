@@ -49,6 +49,82 @@ func TestCustomTriggerQueuesIDs(t *testing.T) {
 	})
 }
 
+func TestCustomTriggerNotifyPullsIDOutOfFailureBackoff(t *testing.T) {
+	var mu sync.Mutex
+	attempts := 0
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n == 1 {
+			return errors.New("boom")
+		}
+		return nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	te.e.notify(ctx, "ws_1")
+	convergetest.Await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return attempts == 1
+	})
+
+	fired := make(chan struct{})
+	trig := funcTrigger{run: func(ctx context.Context, sink Sink) error {
+		sink.Notify("ws_1")
+		close(fired)
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	go te.e.runTrigger(ctx, 0, trig)
+	<-fired
+
+	convergetest.Await(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return attempts == 2
+	})
+}
+
+func TestCustomTriggerDropReportsNotificationDropped(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	fired := make(chan struct{})
+	reason := errors.New("boom: not JSON")
+	trig := funcTrigger{run: func(ctx context.Context, sink Sink) error {
+		sink.Drop(reason)
+		close(fired)
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	go te.e.runTrigger(ctx, 0, trig)
+	<-fired
+
+	convergetest.Await(t, func() bool {
+		return te.rec.Count(func(e converge.Event) bool {
+			_, ok := e.(converge.NotificationDropped)
+			return ok
+		}) == 1
+	})
+	var ev converge.NotificationDropped
+	for _, e := range te.rec.Events() {
+		if nd, ok := e.(converge.NotificationDropped); ok {
+			ev = nd
+		}
+	}
+	if !errors.Is(ev.Err, converge.ErrNotificationUndecodable) {
+		t.Fatalf("Drop error = %v, want it to wrap ErrNotificationUndecodable", ev.Err)
+	}
+	if !strings.Contains(ev.Err.Error(), "boom: not JSON") {
+		t.Fatalf("Drop error = %v, want the reason to appear in the message", ev.Err)
+	}
+}
+
 func TestCustomTriggerIsRestartedAfterFailure(t *testing.T) {
 	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	ctx, cancel := context.WithCancel(context.Background())
