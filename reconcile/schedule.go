@@ -84,7 +84,7 @@ func (s *scheduleTrigger) requestSweep() {
 	}
 }
 
-func (s *scheduleTrigger) Run(ctx context.Context, notify func(ID)) error {
+func (s *scheduleTrigger) Run(ctx context.Context, sink Sink) error {
 	<-ctx.Done()
 	return ctx.Err()
 }

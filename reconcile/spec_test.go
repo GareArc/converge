@@ -145,13 +145,13 @@ func TestNewEngineAppliesDefaults(t *testing.T) {
 
 type customPeriodic struct{}
 
-func (customPeriodic) Run(ctx context.Context, notify func(ID)) error { <-ctx.Done(); return ctx.Err() }
+func (customPeriodic) Run(ctx context.Context, sink Sink) error { <-ctx.Done(); return ctx.Err() }
 
 func (customPeriodic) NextAfter(t time.Time) time.Time { return t.Add(time.Hour) }
 
 type customTrigger struct{}
 
-func (customTrigger) Run(ctx context.Context, notify func(ID)) error { <-ctx.Done(); return ctx.Err() }
+func (customTrigger) Run(ctx context.Context, sink Sink) error { <-ctx.Done(); return ctx.Err() }
 
 func TestCustomPeriodicTriggerCannotStandInForASchedule(t *testing.T) {
 	s := okSpec()

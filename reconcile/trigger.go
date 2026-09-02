@@ -11,8 +11,13 @@ import (
 	"github.com/GareArc/converge/internal/notice"
 )
 
+type Sink interface {
+	Notify(id ID)
+	Drop(err error)
+}
+
 type Trigger interface {
-	Run(ctx context.Context, notify func(ID)) error
+	Run(ctx context.Context, sink Sink) error
 }
 
 type PeriodicTrigger interface {
@@ -44,7 +49,7 @@ func NotificationsFrom(source string, mq converge.MQ, id func(payload []byte) (I
 	return &notificationTrigger{source: source, foreign: true, mq: mq, id: id}
 }
 
-func (t *notificationTrigger) Run(ctx context.Context, notify func(ID)) error {
+func (t *notificationTrigger) Run(ctx context.Context, sink Sink) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -96,8 +101,16 @@ func (e *engine) runTrigger(ctx context.Context, idx int, t Trigger) {
 		e.runNotifications(ctx, tr)
 		return
 	}
-	e.supervise(ctx, func() { t.Run(ctx, func(id ID) { e.notify(ctx, id) }) })
+	e.supervise(ctx, func() { t.Run(ctx, sweepSink{e: e, ctx: ctx}) })
 }
+
+type sweepSink struct {
+	e   *engine
+	ctx context.Context
+}
+
+func (s sweepSink) Notify(id ID) { s.e.notify(s.ctx, id) }
+func (s sweepSink) Drop(error)   {}
 
 func (e *engine) runNotifications(ctx context.Context, t *notificationTrigger) {
 	deliver := func(d converge.Delivery) {
