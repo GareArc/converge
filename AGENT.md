@@ -165,7 +165,7 @@ reconcile/, worker/          surface engines
 debughttp/      read-only HTTP introspection (ReadOnlyHandler) over
                 wiring.Jobs and wiring.FailingIDs — no mutating routes
 adapters/redis (convredis)   MQ over Redis Streams; Lease and KV over plain
-                             keys; a list-backed MQ (NewListMQ) for queues
+                             keys; a list trigger (ListTrigger) for a list
                              another system writes — separate module
 adapters/otel (convotel)     Observer over OpenTelemetry metrics; observable
                              gauges read from `Runtime.Stats()` on collection
