@@ -153,8 +153,8 @@ idempotency key they give you, and make the insert conflict-safe
 success). The duplicate collapses into a no-op and the retry still
 acknowledges.
 
-You write that consumer. `reconcile.NotificationsFrom` is *not* it, and
-reaching for it here is the mistake this section exists to prevent: that
-trigger acknowledges every delivery whether it decoded or not, and keeps
-nothing anywhere. It is the right answer when losing a message costs latency
-and the wrong one when losing a message costs the message.
+You write that consumer. `convredis.ListTrigger` is *not* it, and reaching
+for it here is the mistake this section exists to prevent: that trigger
+pops every element whether it decoded or not, and keeps nothing anywhere.
+It is the right answer when losing a message costs latency and the wrong
+one when losing a message costs the message.
