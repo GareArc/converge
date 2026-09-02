@@ -113,6 +113,7 @@ Package `github.com/GareArc/converge/adapters/redis`, imported as
 
 ```go
 const DefaultVisibility = 5 * time.Minute
+const DefaultListPoll = time.Second
 
 type StreamsOpts struct {
     Clock      converge.Clock
@@ -121,7 +122,7 @@ type StreamsOpts struct {
 }
 
 func NewStreamsMQ(rdb *redis.Client, o StreamsOpts) *StreamsMQ
-func NewListMQ(rdb *redis.Client) *ListMQ
+func ListTrigger(rdb *redis.Client, key string, o ListTriggerOpts) (reconcile.Trigger, error)
 func NewLease(rdb *redis.Client) *Lease
 func NewKV(rdb *redis.Client) *KV
 
@@ -198,28 +199,48 @@ Other behaviour worth knowing:
   encoding, for producers that are not Go, is in the
   [wire reference](wire.md).
 
-### List MQ
+### List trigger
 
-`NewListMQ` reads and writes a plain Redis list. It exists for exactly one
-job: [`reconcile.NotificationsFrom`](reconcile.md#triggers), pointed at a
-source some other system already writes. It **cannot carry worker work**: a
-`BRPOP` deletes the element the instant it is read, so a durable task
-registered against it fails at `Run` with `cannot carry work`, naming the
-adapter type.
+```go
+const DefaultListPoll = time.Second
 
-It is deliberately minimal, and the limits matter if you point it anywhere
-else:
+type ListTriggerOpts struct {
+    ID   func(payload []byte) (reconcile.ID, error)
+    Poll time.Duration
+}
 
-- **`Publish` writes the payload only.** `Message.Kind` and `Message.Headers`
-  are dropped, so it cannot carry a worker envelope.
-- `Ack` and `Extend` are no-ops; `Nack` returns the payload to the queue
-  regardless of the delay you asked for, and because this list is written at
-  one end and read from the other, it lands behind everything already
-  waiting rather than at the front. `Attempt()` is always 1.
-- `EnqueuedAt()` is the wall-clock time the payload was popped, not when it
-  was written.
-- It satisfies `BacklogReporter` via `LLEN`, and nothing else — no groups, no
-  broadcast, no delayed publish.
+func ListTrigger(rdb *redis.Client, key string, o ListTriggerOpts) (reconcile.Trigger, error)
+```
+
+`ListTrigger` reads a plain Redis list with `BRPOP` and reports each
+element to a [`reconcile.Sink`](reconcile.md#triggers) — it exists for
+exactly one job, a [reconcile](../glossary.md#reconcile) job's source when
+another system writes the list. It cannot carry worker work at all: it
+implements `reconcile.Trigger`, not `converge.MQ`, and there is no
+equivalent for `worker.Handle`.
+
+| Option | Zero value means | Notes |
+| --- | --- | --- |
+| `ID` | `reconcile.RawID()` | The whole element becomes the ID. |
+| `Poll` | `DefaultListPoll`, one second | The `BRPOP` block time; bounds only how quickly a stopped `Run` notices. go-redis floors the `BRPOP` block timeout at one second regardless of `Poll`, so a value under one second still blocks for one second. |
+
+Constructor errors — returned immediately, not deferred to `Run` — are
+`convredis: ListTrigger needs a client` (nil `rdb`), `convredis: ListTrigger
+needs a list key` (empty `key`), and `convredis: ListTrigger Poll must not
+be negative`.
+
+The loop: `BRPOP key Poll`; on `ctx` done, return `ctx.Err()`; on the block
+timing out (`redis.Nil`), continue; on any other error, return it — the
+engine restarts the trigger under its usual backoff; otherwise call `ID` on
+the element, `sink.Drop(err)` on failure or `sink.Notify(id)` on success.
+The pop is destructive, so a rejected element is already gone.
+
+There is no run-mode refusal. Under `OnOneReplica` only the lease holder
+runs it; under `OnAllReplicas` every replica pops and each sees a share of
+the list — correct because the [schedule](../glossary.md#schedule) still
+covers everything either way. `ListTrigger` reports no
+[backlog](../glossary.md#backlog); read `LLEN` on the key directly if you
+need that number.
 
 ### Lease and KV
 
