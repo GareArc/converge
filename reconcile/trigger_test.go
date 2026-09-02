@@ -210,6 +210,24 @@ func TestCustomTriggerStopsOnCancel(t *testing.T) {
 	}
 }
 
+func TestCustomTriggerSinkCallsAfterStopDoNotPanic(t *testing.T) {
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
+	ctx, cancel := context.WithCancel(context.Background())
+
+	sink := engineSink{e: te.e, ctx: ctx}
+	cancel()
+	te.cancel()
+	te.hstop()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Notify/Drop after stop panicked: %v", r)
+		}
+	}()
+	sink.Notify("ws_1")
+	sink.Drop(errors.New("boom"))
+}
+
 func TestNotificationsBindResolvesOwnChannelAndCapabilities(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	mq := inmem.NewMQWithClock(clock)
