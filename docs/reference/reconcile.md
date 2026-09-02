@@ -15,7 +15,7 @@ is the surface, its defaults, and its refusals.
 - [Cadences](#cadences)
 - [ID sources](#id-sources)
 - [ID and ToIDs](#id-and-toids)
-- [ID functions for foreign queues](#id-functions-for-foreign-queues)
+- [ID functions](#id-functions)
 - [Versions](#versions)
 - [CheckAgain and ErrOutdated](#checkagain-and-erroutdated)
 - [What a run costs when it fails](#what-a-run-costs-when-it-fails)
@@ -139,8 +139,6 @@ the whole list of things a reconcile job can get wrong at declaration time:
 | `reconcile: job %q: Schedule needs an IDSource` | `Schedule` built from a zero `IDSource` — including one built from a nil function |
 | `reconcile: job %q: Schedule needs a Cadence; use Every or Cron` | zero `Cadence` |
 | `reconcile: cron %q: ...` | a `Cadence` that failed to parse; the error is carried from `Cron` and surfaces here |
-| `reconcile: job %q: NotificationsFrom needs a source name` | empty `source` |
-| `reconcile: job %q: NotificationsFrom needs an ID function` | nil `id` on a foreign source |
 
 Plus the runtime's own three: empty name, duplicate name, and registering
 after `Run` has started.
@@ -150,9 +148,9 @@ was wired with rather than what the spec says:
 
 - `reconcile: job %q: OnOneReplica needs Options.Lease`
 - `reconcile: job %q: Until needs Options.KV`
-- `reconcile: job %q: Notifications needs Options.MQ`, or for a foreign queue
-  `NotificationsFrom(%q) needs an MQ`, and — under `OnAllReplicas` —
-  `notifications from %q need the BroadcastConsumer capability`
+- `reconcile: job %q: Notifications needs Options.MQ`, and — under
+  `OnAllReplicas` — `notifications from %q need the BroadcastConsumer
+  capability`
 
 ## Periodic
 
@@ -183,8 +181,13 @@ see in `RunCompleted.ID` and in the `id=""` of a log line, and it is what
 ## Triggers
 
 ```go
+type Sink interface {
+    Notify(id ID)
+    Drop(err error)
+}
+
 type Trigger interface {
-    Run(ctx context.Context, notify func(ID)) error
+    Run(ctx context.Context, sink Sink) error
 }
 
 type PeriodicTrigger interface {
@@ -198,23 +201,28 @@ feed **one deduplicated queue**, so a sweep and a burst of notifications for
 the same ID collapse into one run rather than racing. A trigger only ever
 names an ID; it never runs the function and never carries instructions.
 
-`Trigger` is implemented for you three times over — `Schedule`,
-`Notifications` and `NotificationsFrom`. `PeriodicTrigger` marks the
+`Trigger` is implemented for you twice over — `Schedule` and
+`Notifications`. `convredis.ListTrigger` is a third, shipped implementation
+rather than a built-in. `PeriodicTrigger` marks the
 schedule; a job is refused at registration unless one of its triggers is a
 `Schedule`.
 
 You can implement `Trigger` yourself: return when `ctx` is done, and call
-`notify(id)` for every ID you learn about. A custom trigger that returns before
-its context is done is restarted under a bounded backoff (1s to 1m), so a
-transient failure does not need handling inside it — but the error it returns
-is discarded: nothing logs it, counts it, or reports the restart. If you want
-to know your trigger is failing, observe it yourself before returning.
+`sink.Notify(id)` for every ID you learn about, or `sink.Drop(err)` for
+something you received but could not turn into one. A custom trigger that
+returns before its context is done is restarted under a bounded backoff (1s
+to 1m), so a transient failure does not need handling inside it — but the
+error `Run` returns is discarded: nothing logs it, counts it, or reports
+the restart. If you want to know your trigger is failing, call `Drop`
+yourself before returning, or observe it another way.
 
-Two things a custom trigger does **not** get. Its IDs are classed as swept
-rather than notified, so they do not reset a failing ID's backoff the way
-`Notifications` and `NotificationsFrom` do — converge cannot tell whether your
-trigger is reporting fresh news or re-listing what it already knew, and takes
-the conservative reading. And a custom trigger is never swept on a cadence,
+An ID passed to `sink.Notify` is treated exactly like a notification from
+`Notifications()`: it resets a failing ID's backoff, the same bypass
+[chapter 3](../guide/03-notifications.md) describes. A call to
+`sink.Drop(err)` is reported as `NotificationDropped` with `err` wrapped
+alongside `converge.ErrNotificationUndecodable` — unless `errors.Is(err,
+Skip)`, in which case it is a `NotificationSkipped` instead, the same as a
+built-in trigger's `Skip`. A custom trigger is never swept on a cadence,
 whatever it implements. The engine dispatches by concrete type, so `Schedule`
 is swept and anything else is simply run. Implementing `PeriodicTrigger` does
 not change that, so registration **rejects** a trigger that implements it and
@@ -231,8 +239,6 @@ this library leans on. Do your own timing inside `Run`, and keep a real
 
 ```go
 func Notifications() Trigger
-func NotificationsFrom(source string, mq converge.MQ,
-    id func(payload []byte) (ID, error)) Trigger
 ```
 
 **`Notifications`** reads the job's own channel — `JobOpts.Notifications`
@@ -243,15 +249,11 @@ explicit: a job with only a schedule is a valid job that should not pay for
 a consumer, and the trigger list is the one place a reader learns what runs
 a job.
 
-**`NotificationsFrom`** reads a source some other system already writes.
-The parameter is `source`, not queue, because from the job's side that is
-what it is: where notifications come from, whatever the other system calls
-it. The string is used **exactly as given** — not namespaced, not prefixed.
-`id` is required, because converge has no idea what shape that system's
-messages are. `mq` is not "which Redis" but "how to read this source": a
-list and a stream on the same server are different readers, so a source
-written as a list needs `convredis.NewListMQ`; pass nil to read it the way
-the runtime reads its own channels, over `Options.MQ`.
+A source some other system writes is not read through `reconcile.Trigger`
+built-ins at all — it is read through a custom `Trigger`, and
+`convredis.ListTrigger` is the shipped one for a Redis list. See
+[the adapters reference](adapters.md#list-trigger) and
+[the foreign-queue cookbook](../cookbook/foreign-queue.md).
 
 Every delivery on a notifications trigger is acknowledged, decodable or not.
 A payload that will not decode raises `NotificationDropped` with
@@ -356,14 +358,15 @@ The name of one unit of reconcile work. Any string is a legal ID, including
 the empty one — which is reserved for `SingleID` jobs. `ToIDs` is the bulk
 conversion `StringIDs` uses internally.
 
-## ID functions for foreign queues
+## ID functions
 
 ```go
 func RawID() func(payload []byte) (ID, error)
 func IDFromJSON(field string) func(payload []byte) (ID, error)
 ```
 
-For the `id` parameter of `NotificationsFrom`.
+For the `ID` field of `convredis.ListTriggerOpts`, or any custom `Trigger`
+that decodes a foreign payload into a `reconcile.ID`.
 
 - **`RawID()`** takes the whole payload as the ID. An empty payload is
   `reconcile: empty payload`. The whole payload becomes the ID, and an ID
@@ -395,8 +398,8 @@ id := func(payload []byte) (reconcile.ID, error) {
 ```
 
 Both return a function, so both are called at spec-construction time:
-`reconcile.NotificationsFrom("their-stream", nil,
-reconcile.IDFromJSON("workspace_id"))`.
+`convredis.ListTrigger(rdb, "their-list", convredis.ListTriggerOpts{ID:
+reconcile.IDFromJSON("workspace_id")})`.
 
 ## Versions
 

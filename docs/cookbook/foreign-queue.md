@@ -62,7 +62,7 @@ There is no retry, no requeue, and nothing to look at afterwards.
 (which covers not being JSON at all), the field is missing, the field is not
 a string, or the field is the empty string. `RawID` rejects one thing, an
 empty payload. Both are in the
-[reconcile reference](../reference/reconcile.md#id-functions-for-foreign-queues).
+[reconcile reference](../reference/reconcile.md#id-functions).
 In every case converge reports a `NotificationDropped` event and moves on,
 which `converge.LogObserver` renders as one warn-level line:
 
