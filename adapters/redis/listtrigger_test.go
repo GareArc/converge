@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GareArc/converge"
 	convredis "github.com/GareArc/converge/adapters/redis"
 	"github.com/GareArc/converge/reconcile"
 	"github.com/redis/go-redis/v9"
@@ -182,6 +183,82 @@ func TestListTriggerTwoTriggersOnOneKeySplitElements(t *testing.T) {
 	n2, d2 := sink2.counts()
 	if n1+d1+n2+d2 != 10 {
 		t.Fatalf("total events across both sinks = %d, want 10", n1+d1+n2+d2)
+	}
+}
+
+func TestListTriggerDrivesAReconcileJobUnderOnOneReplica(t *testing.T) {
+	rdb, _, _ := openMini(t)
+	key := "test:e2e:workspace-sync"
+
+	listTrig, err := convredis.ListTrigger(rdb, key, convredis.ListTriggerOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	kv := convredis.NewKV(rdb)
+	lease := convredis.NewLease(rdb)
+	mq := convredis.NewStreamsMQ(rdb, convredis.StreamsOpts{})
+
+	var mu sync.Mutex
+	var seen []reconcile.ID
+	reconcileFn := func(_ context.Context, id reconcile.ID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		seen = append(seen, id)
+		return nil
+	}
+
+	job := reconcile.NewJob("list-trigger-e2e", reconcile.JobOpts{})
+	rt, err := converge.New(converge.Options{
+		Namespace: "list-trigger-e2e",
+		MQ:        mq,
+		Lease:     lease,
+		KV:        kv,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reconcile.Register(rt, reconcile.Spec{
+		Job:       job,
+		Reconcile: reconcileFn,
+		RunMode:   converge.OnOneReplica,
+		Triggers: []reconcile.Trigger{
+			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) {
+				return nil, nil
+			}), reconcile.Every(time.Hour)),
+			listTrig,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- rt.Run(ctx) }()
+
+	if err := rdb.LPush(context.Background(), key, "ws-e2e-1").Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		got := len(seen) > 0 && seen[0] == reconcile.ID("ws-e2e-1")
+		mu.Unlock()
+		if got {
+			break
+		}
+		if time.Now().After(deadline) {
+			mu.Lock()
+			t.Fatalf("timed out waiting for reconcile of ws-e2e-1, seen = %v", seen)
+			mu.Unlock()
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("rt.Run() error = %v", err)
 	}
 }
 

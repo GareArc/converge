@@ -221,8 +221,10 @@ An ID passed to `sink.Notify` is treated exactly like a notification from
 [chapter 3](../guide/03-notifications.md) describes. A call to
 `sink.Drop(err)` is reported as `NotificationDropped` with `err` wrapped
 alongside `converge.ErrNotificationUndecodable` — unless `errors.Is(err,
-Skip)`, in which case it is a `NotificationSkipped` instead, the same as a
-built-in trigger's `Skip`. A custom trigger is never swept on a cadence,
+Skip)`, in which case it is a `NotificationSkipped` instead. `Skip` is a
+signal for a custom `Trigger`'s own ID function to say an entry is not for
+this job; it never arrives through a built-in trigger. A custom trigger is
+never swept on a cadence,
 whatever it implements. The engine dispatches by concrete type, so `Schedule`
 is swept and anything else is simply run. Implementing `PeriodicTrigger` does
 not change that, so registration **rejects** a trigger that implements it and
@@ -378,11 +380,11 @@ that decodes a foreign payload into a `reconcile.ID`.
   it is not a string, or if it is the empty string. Unknown extra fields are
   ignored.
 - **`Skip`** is a value your own ID function returns — `return "",
-  reconcile.Skip` — to say *this entry is not for this job*. The delivery is
-  acknowledged and a `NotificationSkipped` event is recorded; nothing is
-  dropped and nothing is logged as a fault. Two jobs reading one stream
-  through separate consumer groups need it. Two jobs cannot share one
-  **list** at all — a list pop is destructive — and must be fed two lists.
+  reconcile.Skip` — to say *this entry is not for this job*. The element is
+  already gone (a `convredis.ListTrigger` pop is destructive) and a
+  `NotificationSkipped` event is recorded; nothing is dropped and nothing is
+  logged as a fault. Two jobs cannot share one **list** at all — a list pop
+  is destructive — and must be fed two lists.
 
 These are conveniences, not the menu. The parameter is an open function,
 `func(payload []byte) (reconcile.ID, error)`: a composite ID is

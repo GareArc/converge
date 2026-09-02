@@ -74,7 +74,7 @@ In every case converge reports a `NotificationDropped` event and moves on,
 which `converge.LogObserver` renders as one warn-level line:
 
 ```text
-WARN converge: notification dropped job=workspace-credentials id="" err="converge: notification: undecodable"
+WARN converge: notification dropped job=workspace-credentials id="" err="converge: notification: undecodable: reconcile: notification has no field \"workspace_id\""
 ```
 
 That line, and the `converge.notifications.dropped` counter, are the entire

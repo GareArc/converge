@@ -48,10 +48,6 @@ func (t *notificationTrigger) Run(ctx context.Context, sink Sink) error {
 	return ctx.Err()
 }
 
-func (t *notificationTrigger) decode(payload []byte) (notice.Notification, error) {
-	return notice.Decode(payload)
-}
-
 func (t *notificationTrigger) bind(e *engine) error {
 	e.mu.Lock()
 	t.source = e.cfg.job.NotificationsName(e.deps.Namespace)
@@ -146,10 +142,8 @@ func (e *engine) supervise(ctx context.Context, run func()) {
 }
 
 func (e *engine) deliverNotification(ctx context.Context, t *notificationTrigger, d converge.Delivery) {
-	n, err := t.decode(d.Message().Payload)
+	n, err := notice.Decode(d.Message().Payload)
 	switch {
-	case errors.Is(err, Skip):
-		e.deps.Observer.Observe(converge.NotificationSkipped{Job: e.cfg.job.Name()})
 	case err != nil:
 		e.deps.Observer.Observe(converge.NotificationDropped{Job: e.cfg.job.Name(), Err: converge.ErrNotificationUndecodable})
 	case n.All:
