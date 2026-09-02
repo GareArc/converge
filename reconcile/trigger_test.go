@@ -275,20 +275,6 @@ func TestNotificationsBindResolvesOwnChannelAndCapabilities(t *testing.T) {
 	}
 }
 
-func TestNotificationsFromBindKeepsTheGivenSource(t *testing.T) {
-	clock := convergetest.NewClock(wqStart)
-	mq := inmem.NewMQWithClock(clock)
-	e := &engine{cfg: config{job: NewJob("job", JobOpts{}), runMode: converge.OnOneReplica}}
-	e.deps = converge.JobDeps{MQ: mq, Namespace: "acme", Clock: clock, Observer: &convergetest.Recorder{}}
-	trig := NotificationsFrom("legacy:queue", nil, RawID()).(*notificationTrigger)
-	if err := trig.bind(e); err != nil {
-		t.Fatal(err)
-	}
-	if trig.source != "legacy:queue" {
-		t.Fatalf("source = %q, want the foreign name unchanged", trig.source)
-	}
-}
-
 func TestNotificationsBindUsesADeclaredName(t *testing.T) {
 	clock := convergetest.NewClock(wqStart)
 	mq := inmem.NewMQWithClock(clock)
@@ -313,13 +299,6 @@ func TestMissingMQErrorNamesTheTriggerConstructor(t *testing.T) {
 	err := (Notifications().(*notificationTrigger)).bind(bareEngine())
 	if err == nil || !strings.Contains(err.Error(), "Notifications needs Options.MQ") {
 		t.Fatalf("Notifications bind error = %v, want it to name Notifications", err)
-	}
-	if strings.Contains(err.Error(), "NotificationsFrom") {
-		t.Fatalf("Notifications bind error = %v, must not name NotificationsFrom", err)
-	}
-	err = (NotificationsFrom("legacy:queue", nil, RawID()).(*notificationTrigger)).bind(bareEngine())
-	if err == nil || !strings.Contains(err.Error(), `NotificationsFrom("legacy:queue")`) {
-		t.Fatalf(`NotificationsFrom bind error = %v, want it to name NotificationsFrom("legacy:queue")`, err)
 	}
 }
 
@@ -426,116 +405,50 @@ func TestNotificationsUndecodablePayloadCountedAndDropped(t *testing.T) {
 	}
 }
 
-func TestNotificationsFromQueuesUsingIDFunc(t *testing.T) {
-	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
-	mq := inmem.NewMQWithClock(te.clock)
-	te.e.deps.MQ = mq
-	trig := NotificationsFrom("app-events", nil, IDFromJSON("workspace_id")).(*notificationTrigger)
-	if err := trig.bind(te.e); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go te.e.runNotifications(ctx, trig)
-	if err := mq.Publish(context.Background(), "app-events", converge.Message{Payload: []byte(`{"workspace_id": "ws_9"}`)}); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			rc, ok := e.(converge.RunCompleted)
-			return ok && rc.ID == "ws_9"
-		}) == 1
-	})
-}
-
-func TestNotificationsFromUndecodablePayloadCountedAndDropped(t *testing.T) {
-	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
-	mq := inmem.NewMQWithClock(te.clock)
-	te.e.deps.MQ = mq
-	trig := NotificationsFrom("app-events", nil, RawID()).(*notificationTrigger)
-	if err := trig.bind(te.e); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go te.e.runNotifications(ctx, trig)
-	if err := mq.Publish(context.Background(), "app-events", converge.Message{Payload: nil}); err != nil {
-		t.Fatal(err)
-	}
-	convergetest.Await(t, func() bool {
-		return te.rec.Count(func(e converge.Event) bool {
-			nd, ok := e.(converge.NotificationDropped)
-			return ok && errors.Is(nd.Err, converge.ErrNotificationUndecodable)
-		}) == 1
-	})
-	if n := te.rec.Count(func(e converge.Event) bool {
-		_, ok := e.(converge.RunCompleted)
-		return ok
-	}); n != 0 {
-		t.Fatalf("undecodable notification must not run anything, got %d runs", n)
-	}
-}
-
 func TestSkipFromAnIDFunctionAcksAndReportsSkipped(t *testing.T) {
-	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
-	mq := inmem.NewMQWithClock(te.clock)
-	te.e.deps.MQ = mq
-	mine := func(payload []byte) (ID, error) {
-		if string(payload) == "theirs" {
-			return "", Skip
-		}
-		return ID(payload), nil
-	}
-	trig := NotificationsFrom("shared", nil, mine).(*notificationTrigger)
-	if err := trig.bind(te.e); err != nil {
-		t.Fatal(err)
-	}
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go te.e.runNotifications(ctx, trig)
-	for _, p := range []string{"theirs", "ws-1"} {
-		if err := mq.Publish(context.Background(), "shared", converge.Message{Payload: []byte(p)}); err != nil {
-			t.Fatal(err)
-		}
-	}
+
+	fired := make(chan struct{})
+	trig := funcTrigger{run: func(ctx context.Context, sink Sink) error {
+		sink.Drop(Skip)
+		close(fired)
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	go te.e.runTrigger(ctx, 0, trig)
+	<-fired
+
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
-			rc, ok := e.(converge.RunCompleted)
-			return ok && rc.ID == "ws-1"
+			s, ok := e.(converge.NotificationSkipped)
+			return ok && s.Job == "job"
 		}) == 1
 	})
-	if n := te.rec.Count(func(e converge.Event) bool {
-		s, ok := e.(converge.NotificationSkipped)
-		return ok && s.Job == "job"
-	}); n != 1 {
-		t.Fatalf("NotificationSkipped count = %d, want 1", n)
-	}
 	if n := te.rec.Count(func(e converge.Event) bool {
 		_, ok := e.(converge.NotificationDropped)
 		return ok
 	}); n != 0 {
 		t.Fatalf("a Skip is not a drop; NotificationDropped count = %d", n)
 	}
-	convergetest.AssertStable(t, func() bool { return mq.Idle() })
 }
 
 func TestSkipWrappedInFmtErrorfIsStillRecognized(t *testing.T) {
-	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
-	mq := inmem.NewMQWithClock(te.clock)
-	te.e.deps.MQ = mq
-	wrapped := func(payload []byte) (ID, error) {
-		return "", fmt.Errorf("mine: %w", Skip)
-	}
-	trig := NotificationsFrom("shared", nil, wrapped).(*notificationTrigger)
-	if err := trig.bind(te.e); err != nil {
-		t.Fatal(err)
-	}
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go te.e.runNotifications(ctx, trig)
-	if err := mq.Publish(context.Background(), "shared", converge.Message{Payload: []byte("theirs")}); err != nil {
-		t.Fatal(err)
-	}
+
+	fired := make(chan struct{})
+	trig := funcTrigger{run: func(ctx context.Context, sink Sink) error {
+		sink.Drop(fmt.Errorf("mine: %w", Skip))
+		close(fired)
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	go te.e.runTrigger(ctx, 0, trig)
+	<-fired
+
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
 			s, ok := e.(converge.NotificationSkipped)
@@ -551,54 +464,55 @@ func TestSkipWrappedInFmtErrorfIsStillRecognized(t *testing.T) {
 }
 
 func TestSkipWithANonEmptyIDIsStillSkipped(t *testing.T) {
-	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
-	mq := inmem.NewMQWithClock(te.clock)
-	te.e.deps.MQ = mq
-	confused := func(payload []byte) (ID, error) {
-		return ID(payload), Skip
-	}
-	trig := NotificationsFrom("shared", nil, confused).(*notificationTrigger)
-	if err := trig.bind(te.e); err != nil {
-		t.Fatal(err)
-	}
+	var mu sync.Mutex
+	var got []ID
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, id)
+		return nil
+	})
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go te.e.runNotifications(ctx, trig)
-	if err := mq.Publish(context.Background(), "shared", converge.Message{Payload: []byte("ws-1")}); err != nil {
-		t.Fatal(err)
-	}
+
+	fired := make(chan struct{})
+	trig := funcTrigger{run: func(ctx context.Context, sink Sink) error {
+		sink.Drop(Skip)
+		close(fired)
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	go te.e.runTrigger(ctx, 0, trig)
+	<-fired
+
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
 			s, ok := e.(converge.NotificationSkipped)
 			return ok && s.Job == "job"
 		}) == 1
 	})
-	if n := te.rec.Count(func(e converge.Event) bool {
-		rc, ok := e.(converge.RunCompleted)
-		return ok && rc.ID == "ws-1"
-	}); n != 0 {
-		t.Fatalf("Skip alongside a non-empty ID must not queue that ID, got %d runs", n)
-	}
-	convergetest.AssertStable(t, func() bool { return mq.Idle() })
+	convergetest.AssertStable(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(got) == 0
+	})
 }
 
 func TestUnknownErrorFromAnIDFunctionIsDroppedNotSkipped(t *testing.T) {
-	te := startEngine(t, config{runMode: converge.OnOneReplica}, func(ctx context.Context, id ID) error { return nil })
-	mq := inmem.NewMQWithClock(te.clock)
-	te.e.deps.MQ = mq
-	broken := func(payload []byte) (ID, error) {
-		return "", errors.New("some other system's error")
-	}
-	trig := NotificationsFrom("shared", nil, broken).(*notificationTrigger)
-	if err := trig.bind(te.e); err != nil {
-		t.Fatal(err)
-	}
+	te := startEngine(t, config{}, func(ctx context.Context, id ID) error { return nil })
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go te.e.runNotifications(ctx, trig)
-	if err := mq.Publish(context.Background(), "shared", converge.Message{Payload: []byte("anything")}); err != nil {
-		t.Fatal(err)
-	}
+
+	fired := make(chan struct{})
+	trig := funcTrigger{run: func(ctx context.Context, sink Sink) error {
+		sink.Drop(errors.New("some other system's error"))
+		close(fired)
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	go te.e.runTrigger(ctx, 0, trig)
+	<-fired
+
 	convergetest.Await(t, func() bool {
 		return te.rec.Count(func(e converge.Event) bool {
 			nd, ok := e.(converge.NotificationDropped)

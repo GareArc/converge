@@ -33,9 +33,7 @@ const (
 var triggerRestartCurve = backoff.Curve{Min: triggerRestartMin, Max: triggerRestartMax}
 
 type notificationTrigger struct {
-	source  string
-	foreign bool
-	id      func(payload []byte) (ID, error)
+	source string
 
 	mq        converge.MQ
 	broadcast bool
@@ -45,36 +43,23 @@ func Notifications() Trigger {
 	return &notificationTrigger{}
 }
 
-func NotificationsFrom(source string, mq converge.MQ, id func(payload []byte) (ID, error)) Trigger {
-	return &notificationTrigger{source: source, foreign: true, mq: mq, id: id}
-}
-
 func (t *notificationTrigger) Run(ctx context.Context, sink Sink) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
 
 func (t *notificationTrigger) decode(payload []byte) (notice.Notification, error) {
-	if t.foreign {
-		id, err := t.id(payload)
-		return notice.Notification{ID: string(id)}, err
-	}
 	return notice.Decode(payload)
 }
 
 func (t *notificationTrigger) bind(e *engine) error {
-	if !t.foreign {
-		e.mu.Lock()
-		t.source = e.cfg.job.NotificationsName(e.deps.Namespace)
-		e.mu.Unlock()
-	}
+	e.mu.Lock()
+	t.source = e.cfg.job.NotificationsName(e.deps.Namespace)
+	e.mu.Unlock()
 	if t.mq == nil {
 		t.mq = e.deps.MQ
 	}
 	if t.mq == nil {
-		if t.foreign {
-			return fmt.Errorf("reconcile: job %q: NotificationsFrom(%q) needs an MQ", e.cfg.job.Name(), t.source)
-		}
 		return fmt.Errorf("reconcile: job %q: Notifications needs Options.MQ", e.cfg.job.Name())
 	}
 	switch e.cfg.runMode {
@@ -114,6 +99,10 @@ func (s engineSink) Notify(id ID) {
 }
 
 func (s engineSink) Drop(err error) {
+	if errors.Is(err, Skip) {
+		s.e.deps.Observer.Observe(converge.NotificationSkipped{Job: s.e.cfg.job.Name()})
+		return
+	}
 	s.e.deps.Observer.Observe(converge.NotificationDropped{
 		Job: s.e.cfg.job.Name(),
 		Err: fmt.Errorf("%w: %v", converge.ErrNotificationUndecodable, err),

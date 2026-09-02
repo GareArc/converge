@@ -153,29 +153,14 @@ func TestNotifyFromAnotherBinaryReconcilesTheID(t *testing.T) {
 	}
 }
 
-func TestNotificationsFromRequiresAnIDFunction(t *testing.T) {
-	h := convergetest.New(t)
-	rt := h.Build(t)
-	err := reconcile.Register(rt, reconcile.Spec{
-		Job:       reconcile.NewJob("workspaces", reconcile.JobOpts{}),
-		Reconcile: func(context.Context, reconcile.ID) error { return nil },
-		Triggers: []reconcile.Trigger{
-			reconcile.Schedule(reconcile.SingleID(), reconcile.Every(time.Hour)),
-			reconcile.NotificationsFrom("legacy:queue", nil, nil),
-		},
-	})
-	if err == nil {
-		t.Fatal("NotificationsFrom accepted with no ID function")
-	}
-}
-
 func TestMalformedNotificationsCountedAndDropped(t *testing.T) {
 	h := convergetest.New(t)
 	rt := h.Build(t)
+	job := reconcile.NewJob("member-sync", reconcile.JobOpts{})
 	var mu sync.Mutex
 	var got []reconcile.ID
 	err := reconcile.Register(rt, reconcile.Spec{
-		Job: reconcile.NewJob("member-sync", reconcile.JobOpts{}),
+		Job: job,
 		Reconcile: func(ctx context.Context, id reconcile.ID) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -184,18 +169,22 @@ func TestMalformedNotificationsCountedAndDropped(t *testing.T) {
 		},
 		Triggers: []reconcile.Trigger{
 			reconcile.Schedule(reconcile.IDs(func(context.Context) ([]reconcile.ID, error) { return nil, nil }), reconcile.Every(time.Hour)),
-			reconcile.NotificationsFrom("member-events", nil, reconcile.IDFromJSON("workspace_id")),
+			reconcile.Notifications(),
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.Drain(t)
-	ctx := context.Background()
-	if err := h.MQ.Publish(ctx, "member-events", converge.Message{Payload: []byte(`{"unexpected": true}`)}); err != nil {
+	p, err := job.NewProducer(rt.Scope())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.MQ.Publish(ctx, "member-events", converge.Message{Payload: []byte(`{"workspace_id": "ws_5", "type": "a-kind-invented-next-year"}`)}); err != nil {
+	ctx := context.Background()
+	if err := h.MQ.Publish(ctx, p.Notifications(), converge.Message{Payload: []byte(`not json`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.MQ.Publish(ctx, p.Notifications(), converge.Message{Payload: []byte(`{"id": "ws_5", "schema": "a-kind-invented-next-year"}`)}); err != nil {
 		t.Fatal(err)
 	}
 	convergetest.Await(t, func() bool {

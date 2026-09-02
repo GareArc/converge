@@ -895,38 +895,35 @@ func TestBacklogIsZeroOnceNotificationsAreConsumed(t *testing.T) {
 	}
 }
 
-func TestBacklogSumsEveryNotificationTrigger(t *testing.T) {
+func TestBacklogUnknownWhenTheRuntimeMQCannotReport(t *testing.T) {
+	clock := convergetest.NewClock(wqStart)
+	rec := &convergetest.Recorder{}
+	lease := inmem.NewLeaseWithClock(clock)
+	kv := inmem.NewKVWithClock(clock)
 	spec := specWithSchedule()
-	spec.Triggers = append(spec.Triggers,
-		NotificationsFrom("first", countingMQ{backlog: 2}, firstPayloadID),
-		NotificationsFrom("second", countingMQ{backlog: 1}, firstPayloadID),
-	)
-	le, _ := startRun(t, spec, nil)
-	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })
-	convergetest.Await(t, func() bool {
-		s := le.e.Stats()
-		return s.BacklogKnown && s.Backlog == 3
-	})
-	if s := le.e.Stats(); s.Backlog != 3 || s.BacklogAt.IsZero() {
-		t.Fatalf("Stats = %+v, want a dated backlog of 3: the total is every notifications source, not the first", s)
+	spec.Triggers = append(spec.Triggers, Notifications())
+	e, err := newEngine(spec)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestBacklogUnknownWhenOneNotificationTriggerCannotReport(t *testing.T) {
-	spec := specWithSchedule()
-	spec.Triggers = append(spec.Triggers,
-		NotificationsFrom("first", countingMQ{backlog: 2}, firstPayloadID),
-		NotificationsFrom("second", silentMQ{}, firstPayloadID),
-	)
-	le, _ := startRun(t, spec, nil)
-	convergetest.Await(t, func() bool { return acquired(le.rec) == 1 })
+	deps := converge.JobDeps{
+		MQ:           silentMQ{},
+		Lease:        lease,
+		KV:           kv,
+		Observer:     rec,
+		Clock:        clock,
+		LeaseTTL:     30 * time.Second,
+		DrainTimeout: 30 * time.Second,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.Run(ctx, deps)
+	convergetest.Await(t, func() bool { return acquired(rec) == 1 })
 	convergetest.AssertStable(t, func() bool {
-		s := le.e.Stats()
+		s := e.Stats()
 		return !s.BacklogKnown && s.Backlog == 0
 	})
 }
-
-func firstPayloadID(payload []byte) (ID, error) { return ID(payload), nil }
 
 type silentMQ struct{}
 
@@ -936,13 +933,6 @@ func (silentMQ) Consume(ctx context.Context, _ string, _ func(converge.Delivery)
 	<-ctx.Done()
 	return ctx.Err()
 }
-
-type countingMQ struct {
-	silentMQ
-	backlog int
-}
-
-func (m countingMQ) Backlog(context.Context, string) (int, error) { return m.backlog, nil }
 
 func TestHeartbeatSurvivesTransientExtendFailureDuringDrain(t *testing.T) {
 	clock, lease, cancel, done := startDrainingLeader(t)

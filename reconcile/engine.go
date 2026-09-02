@@ -229,16 +229,10 @@ func (e *engine) Info() converge.JobInfo {
 }
 
 func (e *engine) triggerLabel(t Trigger) string {
-	switch tr := t.(type) {
+	switch t.(type) {
 	case *scheduleTrigger:
 		return "schedule"
 	case *notificationTrigger:
-		e.mu.Lock()
-		source := tr.source
-		e.mu.Unlock()
-		if tr.foreign {
-			return "notifications-from " + source
-		}
 		return "notifications"
 	default:
 		return "custom"
@@ -717,9 +711,6 @@ func (e *engine) backlogReaders() []func(context.Context) (int, error) {
 }
 
 func (e *engine) triggerBacklogReader(t *notificationTrigger) func(context.Context) (int, error) {
-	if t.mq == nil {
-		return nil
-	}
 	switch e.cfg.runMode {
 	case converge.OnAllReplicas:
 		return nil

@@ -36,12 +36,6 @@ func TestSpecValidationMatrix(t *testing.T) {
 		{"bad cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Every(-time.Second))} }, "positive"},
 		{"zero cadence", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cadence{})} }, "Cadence"},
 		{"bad cron", func(s *Spec) { s.Triggers = []Trigger{Schedule(SingleID(), Cron("@daily", CronOpts{}))} }, "descriptors"},
-		{"notifications-from trigger without a source", func(s *Spec) {
-			s.Triggers = append(s.Triggers, NotificationsFrom("", nil, RawID()))
-		}, "source"},
-		{"notifications-from trigger without id function", func(s *Spec) {
-			s.Triggers = append(s.Triggers, NotificationsFrom("q", nil, nil))
-		}, "ID function"},
 		{"no periodic trigger", func(s *Spec) {
 			s.Triggers = []Trigger{Notifications()}
 		}, "Schedule trigger"},
@@ -206,13 +200,13 @@ func TestEngineInfoRendersTriggerComposition(t *testing.T) {
 	s.Triggers = []Trigger{
 		Schedule(SingleID(), Every(time.Hour)),
 		Notifications(),
-		NotificationsFrom("deploy-hints", nil, RawID()),
+		customTrigger{},
 	}
 	e, err := newEngine(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "schedule + notifications + notifications-from deploy-hints"
+	want := "schedule + notifications + custom"
 	if got := e.Info().Settings["triggers"]; got != want {
 		t.Fatalf("triggers = %q, want %q", got, want)
 	}
